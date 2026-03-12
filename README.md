@@ -113,7 +113,7 @@ Add Dino to your GitHub Actions workflow:
 | `format` | No | `markdown` | Output format (`markdown` or `json`) |
 | `cli-version` | No | `latest` | Version of `@dino-hq/cli` to install |
 
-The scan report is uploaded as a GitHub Actions artifact (`dino-scan-report`). See [example-dino-scan.yml](./.github/workflows/example-dino-scan.yml) for a complete example.
+The scan report is uploaded as a GitHub Actions artifact (`dino-scan-report`). See [examples/dino-scan.yml](./examples/dino-scan.yml) for a complete workflow you can copy into your repo.
 
 ---
 
