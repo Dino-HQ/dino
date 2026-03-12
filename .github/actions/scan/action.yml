@@ -1,0 +1,97 @@
+name: 'Dino Scan'
+description: 'Run Dino API quality scans in CI — fuzzing, RBAC, rate limits, schema diffs, and more.'
+author: 'Dino-HQ'
+
+branding:
+  icon: 'shield'
+  color: 'gray-dark'
+
+inputs:
+  api-url:
+    description: 'Target API endpoint (e.g. https://api.example.com/graphql)'
+    required: true
+  api-token:
+    description: 'Auth token for the target API (optional)'
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'Anthropic API key for AI-powered descriptions'
+    required: true
+  fail-on-breaking:
+    description: 'Fail the workflow if breaking schema changes are detected'
+    required: false
+    default: 'false'
+  format:
+    description: 'Output format (markdown or json)'
+    required: false
+    default: 'markdown'
+  cli-version:
+    description: 'Version of @dino-hq/cli to install (default: latest)'
+    required: false
+    default: 'latest'
+
+outputs:
+  report-path:
+    description: 'Path to the generated scan report'
+    value: ${{ steps.scan.outputs.report-path }}
+  has-breaking-changes:
+    description: 'Whether breaking schema changes were detected'
+    value: ${{ steps.diff.outputs.has-breaking }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Dino CLI
+      shell: bash
+      run: npm install -g @dino-hq/cli@${{ inputs.cli-version }}
+
+    - name: Initialize Dino
+      shell: bash
+      run: |
+        mkdir -p .dino
+        cat > .dino.yml <<EOF
+        apiUrl: ${{ inputs.api-url }}
+        EOF
+
+    - name: Run Dino Scan
+      id: scan
+      shell: bash
+      env:
+        DINO_API_TOKEN: ${{ inputs.api-token }}
+        DINO_AI_KEY: ${{ inputs.anthropic-api-key }}
+      run: |
+        REPORT_DIR=".dino/reports"
+        mkdir -p "$REPORT_DIR"
+        REPORT_FILE="$REPORT_DIR/scan-report.${{ inputs.format == 'json' && 'json' || 'md' }}"
+
+        dino scan \
+          --url "${{ inputs.api-url }}" \
+          --format "${{ inputs.format }}" \
+          --output "$REPORT_FILE" \
+          ${DINO_API_TOKEN:+--token "$DINO_API_TOKEN"} \
+          ${DINO_AI_KEY:+--reasoning}
+
+        echo "report-path=$REPORT_FILE" >> "$GITHUB_OUTPUT"
+
+    - name: Check for Breaking Changes
+      id: diff
+      if: inputs.fail-on-breaking == 'true'
+      shell: bash
+      env:
+        DINO_API_TOKEN: ${{ inputs.api-token }}
+      run: |
+        if dino diff --url "${{ inputs.api-url }}" ${DINO_API_TOKEN:+--token "$DINO_API_TOKEN"} --fail-on-breaking; then
+          echo "has-breaking=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "has-breaking=true" >> "$GITHUB_OUTPUT"
+          echo "::error::Dino detected breaking API changes. Review the scan report for details."
+          exit 1
+        fi
+
+    - name: Upload Scan Report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: dino-scan-report
+        path: .dino/reports/
+        retention-days: 30

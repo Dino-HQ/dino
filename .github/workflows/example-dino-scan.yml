@@ -1,0 +1,32 @@
+# Example: Run Dino scan on every push to main and on PRs.
+# Copy this into your repo's .github/workflows/ directory.
+#
+# Required secrets:
+#   API_URL          — your API endpoint
+#   API_TOKEN        — auth token for your API (optional)
+#   ANTHROPIC_API_KEY — Anthropic key for AI descriptions
+
+name: API Quality Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dino-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: Dino-HQ/dino/.github/actions/scan@main
+        with:
+          api-url: ${{ secrets.API_URL }}
+          api-token: ${{ secrets.API_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          fail-on-breaking: true
