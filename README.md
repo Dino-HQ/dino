@@ -15,7 +15,7 @@ dino scan
 ## What Dino Does
 
 | Command | What It Does |
-|---------|-------------|
+| --- | --- |
 | `dino scan` | Full health scan — fuzzing, RBAC, rate limits, error codes, deprecation tracking |
 | `dino docs` | AI-powered documentation for undocumented operations |
 | `dino diff` | Schema change detection with breaking change alerts |
@@ -80,7 +80,7 @@ Shadow Mode watches your API continuously. Builds a baseline silently, then aler
 Every other API quality tool starts at maximum noise. Dino does the opposite.
 
 | Level | Name | What Happens |
-|-------|------|-------------|
+| --- | --- | --- |
 | 1 | **Observe** | Watches silently, builds baseline |
 | 2 | **Suggest** | Shows ranked findings with confidence scores |
 | 3 | **Write** | Creates PRs with human approval |
@@ -95,12 +95,25 @@ Dino doesn't demand your trust. It earns it.
 Add Dino to your GitHub Actions workflow:
 
 ```yaml
-- uses: Dino-HQ/dino/.github/actions/scan@v1
+- uses: Dino-HQ/dino/.github/actions/scan@main
   with:
     api-url: ${{ secrets.API_URL }}
     anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
     fail-on-breaking: true
 ```
+
+### Action Inputs
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `api-url` | Yes | — | Target API endpoint |
+| `anthropic-api-key` | Yes | — | Anthropic API key for AI descriptions |
+| `api-token` | No | — | Auth token for the target API |
+| `fail-on-breaking` | No | `false` | Fail CI on breaking schema changes |
+| `format` | No | `markdown` | Output format (`markdown` or `json`) |
+| `cli-version` | No | `latest` | Version of `@dino-hq/cli` to install |
+
+The scan report is uploaded as a GitHub Actions artifact (`dino-scan-report`). See [examples/dino-scan.yml](./examples/dino-scan.yml) for a complete workflow you can copy into your repo.
 
 ---
 
@@ -135,7 +148,7 @@ The bottom four layers have zero AI dependencies. If AI is disabled or unavailab
 ## Packages
 
 | Package | Description |
-|---------|-------------|
+| --- | --- |
 | `@dino-hq/cli` | Command-line interface |
 | `@dino-hq/core` | Types, config, severity model, tenant isolation |
 | `@dino-hq/agents` | Agent tools — fuzzer, RBAC, rate limits, error codes, deprecation, response validation |
@@ -147,15 +160,15 @@ The bottom four layers have zero AI dependencies. If AI is disabled or unavailab
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and guidelines.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for our security policy and vulnerability disclosure process.
+See [SECURITY.md](./SECURITY.md) for our security policy and vulnerability disclosure process.
 
 ## License
 
-[MIT](LICENSE)
+[Proprietary](LICENSE) — see LICENSE file for details.
 
 ---
 
