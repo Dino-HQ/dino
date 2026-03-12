@@ -1,0 +1,9 @@
+# Default owners for all files
+* @Dino-HQ/core
+
+# Workflows require CTO review
+.github/ @Dino-HQ/core
+
+# Security-sensitive files require explicit approval
+SECURITY.md @Dino-HQ/core
+CODEOWNERS @Dino-HQ/core
