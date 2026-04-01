@@ -1,0 +1,17 @@
+{
+  "name": "@dino/core",
+  "version": "0.1.0",
+  "description": "Core types, tenant config, and utilities for Project Dino",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "test": "echo \"No tests yet\"",
+    "lint": "echo \"No lint yet\""
+  },
+  "dependencies": {
+    "yaml": "^2.8.3",
+    "zod": "^4.3.6"
+  }
+}
