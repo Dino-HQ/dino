@@ -1,0 +1,38 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "./dist",
+    "rootDir": "../..",
+    "baseUrl": "../..",
+    "paths": {
+      "@introspection/*": ["src/introspection/*"],
+      "@reporters/*": ["src/reporters/*"],
+      "@intelligence": ["src/intelligence/index.ts"],
+      "@intelligence/*": ["src/intelligence/*"],
+      "@pipeline/*": ["src/pipeline/*"],
+      "@config/*": ["src/config/*"],
+      "@utils/*": ["src/utils/*"],
+      "@dino/core": ["packages/core/src/index.ts"],
+      "@dino/core/*": ["packages/core/src/*"],
+      "@dino/plugins": ["packages/plugins/src/index.ts"],
+      "@dino/plugins/*": ["packages/plugins/src/*"],
+      "@dino/agents": ["packages/agents/src/index.ts"],
+      "@dino/agents/*": ["packages/agents/src/*"],
+      "@dino/analytics": ["packages/analytics/src/index.ts"],
+      "@dino/analytics/*": ["packages/analytics/src/*"],
+      "@dino/reasoning": ["packages/reasoning/src/index.ts"],
+      "@dino/reasoning/*": ["packages/reasoning/src/*"],
+      "@dino/cli": ["packages/cli/src/index.ts"],
+      "@dino/cli/*": ["packages/cli/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "../../src/**/*.ts"],
+  "exclude": ["node_modules", "dist"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../plugins" },
+    { "path": "../agents" },
+    { "path": "../analytics" }
+  ]
+}

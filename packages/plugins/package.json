@@ -1,0 +1,17 @@
+{
+  "name": "@dino/plugins",
+  "version": "0.1.0",
+  "description": "API discovery and auth adapter plugins for Project Dino",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "test": "echo \"No tests yet\"",
+    "lint": "echo \"No lint yet\""
+  },
+  "dependencies": {
+    "@dino/core": "*"
+  },
+  "devDependencies": {}
+}
