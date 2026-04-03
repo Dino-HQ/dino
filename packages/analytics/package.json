@@ -1,6 +1,6 @@
 {
   "name": "@dino/analytics",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Typed analytics events and tracking for Project Dino",
   "private": true,
   "main": "dist/index.js",

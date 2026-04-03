@@ -1,6 +1,6 @@
 {
   "name": "@dino/agents",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Domain-specific QA agents for Project Dino",
   "private": true,
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "@dino/plugins",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "API discovery and auth adapter plugins for Project Dino",
   "private": true,
   "main": "dist/index.js",
