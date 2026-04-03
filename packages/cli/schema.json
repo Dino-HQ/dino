@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "dino-config-schema",
+  "title": "Dino Configuration",
+  "description": "Configuration for .dino.yml — the Dino API quality scanner.",
+  "type": "object",
+  "properties": {
+    "endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "Direct API endpoint URL for ad-hoc scans. Omit when using tenant."
+    },
+    "protocol": {
+      "type": "string",
+      "enum": ["graphql"],
+      "default": "graphql",
+      "description": "API protocol. Only GraphQL is supported currently."
+    },
+    "tenant": {
+      "type": "string",
+      "description": "Tenant ID for multi-tenant deployments."
+    },
+    "environment": {
+      "type": "string",
+      "description": "Target environment name (e.g., staging, production)."
+    },
+    "format": {
+      "type": "string",
+      "enum": ["json", "markdown"],
+      "default": "json",
+      "description": "Output format. JSON is machine-readable; markdown is human-readable."
+    },
+    "snapshotDir": {
+      "type": "string",
+      "default": ".dino/snapshots",
+      "description": "Directory for schema snapshots (used by dino diff)."
+    },
+    "aiKey": {
+      "type": "string",
+      "description": "API key for AI reasoning features (Pro tier). Also reads DINO_AI_KEY env var."
+    },
+    "autonomy": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["observe", "enforce"],
+          "default": "observe",
+          "description": "Shadow Mode autonomy level for dino watch."
+        }
+      },
+      "additionalProperties": true
+    },
+    "auth": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable authenticated scans. Required for RBAC testing."
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "default": "USER",
+          "description": "Default auth role for scans."
+        }
+      },
+      "additionalProperties": true
+    },
+    "rateLimit": {
+      "type": "object",
+      "properties": {
+        "burst": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Rate limit burst size override. Free: 10, Pro: 50, Team: 100."
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

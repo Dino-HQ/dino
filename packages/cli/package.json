@@ -1,0 +1,58 @@
+{
+  "name": "@dino-hq/cli",
+  "version": "0.1.0",
+  "description": "Dino CLI — autonomous API quality scanner. Scan, document, diff, lint, and monitor your APIs.",
+  "license": "MIT",
+  "bin": {
+    "dino": "dist/bin.js"
+  },
+  "files": [
+    "dist/bin.js",
+    "LICENSE",
+    "README.md",
+    "schema.json"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "bundle": "node build.mjs",
+    "prepublishOnly": "node build.mjs",
+    "test": "echo \"No tests yet\"",
+    "lint": "echo \"No lint yet\""
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "api",
+    "graphql",
+    "testing",
+    "documentation",
+    "cli",
+    "dino",
+    "api-testing",
+    "schema-validation",
+    "api-quality",
+    "autonomous-qa"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dino-HQ/dino.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://usedino.dev",
+  "bugs": {
+    "url": "https://github.com/Dino-HQ/dino/issues"
+  },
+  "devDependencies": {
+    "@dino/core": "*",
+    "@dino/plugins": "*",
+    "@dino/agents": "*",
+    "@dino/analytics": "*",
+    "cosmiconfig": "^9.0.0",
+    "esbuild": "^0.27.4",
+    "prompts": "^2.4.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
