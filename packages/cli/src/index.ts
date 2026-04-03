@@ -125,6 +125,50 @@ function handleEarlyExit(
   return null;
 }
 
+// B14 (#587): Validate --format before dispatch — unknown values silently fall through to markdown
+const VALID_FORMATS = new Set(['markdown', 'json']);
+
+function validateFormat(raw: string | undefined): 'markdown' | 'json' | undefined {
+  if (raw !== undefined && !VALID_FORMATS.has(raw)) {
+    console.error(`Invalid --format: "${raw}". Valid: markdown, json`);
+    return undefined;
+  }
+  return raw as 'markdown' | 'json' | undefined;
+}
+
+function handleCommandError(
+  err: unknown,
+  context: CommandContext,
+  command: string,
+  startMs: number,
+): number {
+  const durationMs = Date.now() - startMs; // determinism:allowed
+  // B15 (#588): Read CliError.exitCode instead of hardcoding 1
+  const exitCode = err instanceof CliError ? err.exitCode : 1;
+  context.tracker.track({
+    type: 'cli.command.failed',
+    timestamp: new Date().toISOString(), // determinism:allowed
+    tenantId: context.tenantId,
+    properties: {
+      command: command || 'unknown',
+      durationMs,
+      error: sanitizeEventError(err instanceof Error ? err.message : String(err)),
+    },
+  });
+  console.error(err instanceof Error ? err.message : String(err));
+  return exitCode;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dispatch map avoids 6 if-chains (CC reduction)
+const COMMAND_HANDLERS: Record<string, (ctx: CommandContext, f: any) => Promise<number>> = {
+  scan: runScan,
+  docs: runDocs,
+  diff: runDiff,
+  watch: runWatch,
+  lint: runLint,
+  changelog: runChangelog,
+};
+
 /**
  * Main CLI entry point. Parses argv, routes to command handler.
  * Returns process exit code.
@@ -139,8 +183,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     tenantId: typeof flags.tenant === 'string' ? flags.tenant : undefined,
   });
 
-  // B14 (#587): Validate --format before dispatch — unknown values silently fall through to markdown
-  const VALID_FORMATS = new Set(['markdown', 'json']);
   const rawFormat = flags.format as string | undefined;
   if (rawFormat !== undefined && !VALID_FORMATS.has(rawFormat)) {
     console.error(`Invalid --format: "${rawFormat}". Valid: markdown, json`);
@@ -150,7 +192,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const commonFlags = {
     tenant: (flags.tenant ?? config?.tenant) as string,
     env: flags.env as string | undefined,
-    format: rawFormat as 'markdown' | 'json' | undefined,
+    format: validateFormat(rawFormat),
     quiet: flags.quiet === true,
     verbose: flags.verbose === true, // #560
   };
@@ -165,8 +207,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return runInit({ quiet: commonFlags.quiet, force: flags.force === true });
   }
 
-  const knownCommands = new Set(['scan', 'watch', 'docs', 'diff', 'lint', 'changelog']);
-  if (!knownCommands.has(command)) {
+  const handler = recordGet(COMMAND_HANDLERS, command);
+  if (!handler) {
     console.error(`Unknown command: ${command}`);
     printUsage();
     return 1;
@@ -178,47 +220,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 1;
-    // No tracker yet, so no cli.command.failed
   }
 
   const commandStartMs = Date.now(); // determinism:allowed
   try {
     const mergedFlags = { ...config, ...commonFlags, ...flags };
     normalizeToolsAndModules(mergedFlags);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dispatch map avoids 6 if-chains (CC reduction)
-    const commands: Record<string, (ctx: CommandContext, f: any) => Promise<number>> = {
-      scan: runScan,
-      docs: runDocs,
-      diff: runDiff,
-      watch: runWatch,
-      lint: runLint,
-      changelog: runChangelog,
-    };
-
-    const handler = recordGet(commands, command);
-    if (!handler) {
-      console.error(`Unknown command: ${command}`);
-      printUsage();
-      return 1;
-    }
     return await handler(context, mergedFlags);
   } catch (err) {
-    const durationMs = Date.now() - commandStartMs; // determinism:allowed
-    // B15 (#588): Read CliError.exitCode instead of hardcoding 1
-    const exitCode = err instanceof CliError ? err.exitCode : 1;
-    context.tracker.track({
-      type: 'cli.command.failed',
-      timestamp: new Date().toISOString(), // determinism:allowed
-      tenantId: context.tenantId,
-      properties: {
-        command: command || 'unknown',
-        durationMs,
-        error: sanitizeEventError(err instanceof Error ? err.message : String(err)),
-      },
-    });
-    console.error(err instanceof Error ? err.message : String(err));
-    return exitCode;
+    return handleCommandError(err, context, command, commandStartMs);
   } finally {
     await context.tracker.shutdown();
   }
