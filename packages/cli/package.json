@@ -1,13 +1,14 @@
 {
   "name": "@dino-hq/cli",
   "version": "0.1.1",
-  "description": "Dino CLI — autonomous API quality scanner. Scan, document, diff, lint, and monitor your APIs.",
+  "description": "Dino CLI \u2014 autonomous API quality scanner. Scan, document, diff, lint, and monitor your APIs.",
   "license": "MIT",
   "bin": {
     "dino": "dist/bin.js"
   },
   "files": [
     "dist/bin.js",
+    "SECURITY.md",
     "LICENSE",
     "README.md",
     "schema.json"
@@ -15,13 +16,20 @@
   "scripts": {
     "build": "tsc --build",
     "bundle": "node build.mjs",
-    "prepublishOnly": "node build.mjs",
-    "test": "echo \"No tests yet\"",
+    "prepublishOnly": "cp ../../SECURITY.md . && node build.mjs",
+    "test": "jest --passWithNoTests",
     "lint": "echo \"No lint yet\""
   },
   "publishConfig": {
     "access": "public"
   },
+  "author": "Dino-HQ (https://usedino.dev)",
+  "contributors": [
+    {
+      "name": "Dennis Mary",
+      "url": "https://github.com/dennismarye"
+    }
+  ],
   "keywords": [
     "api",
     "graphql",
