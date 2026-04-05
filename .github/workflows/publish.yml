@@ -1,0 +1,95 @@
+# Dino npm Publish — OIDC Trusted Publishing
+# Triggered by project-dino after security gates + build pass.
+# Receives tarball artifact, verifies checksum, publishes with provenance.
+#
+# IMPORTANT: This workflow contains NO security gate logic.
+# All gates run in the private repo before dispatch.
+#
+# Copy into Dino-HQ/dino repository root (public). Requires:
+# - npm Trusted Publishing: org Dino-HQ, repo dino, workflow publish.yml
+# - Secret PROJECT_DINO_ACTIONS_TOKEN: fine-grained PAT, Actions: Read on Dino-HQ/project-dino
+
+name: 'Publish to npm'
+
+on:
+  repository_dispatch:
+    types: [publish-packages]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'project-dino workflow run ID containing tarballs'
+        required: true
+      version:
+        description: 'Package version to publish'
+        required: true
+      checksums:
+        description: 'Base64-encoded SHA256 checksums'
+        required: true
+
+permissions: {}
+
+jobs:
+  publish:
+    name: 'Publish with provenance'
+    runs-on: ubuntu-latest # MUST be GitHub-hosted for OIDC
+    permissions:
+      contents: read
+      id-token: write # Required for OIDC token generation
+    steps:
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify OIDC availability
+        run: |
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL}" ]; then
+            echo "❌ OIDC token not available — cannot publish with provenance"
+            exit 1
+          fi
+          echo "✅ OIDC endpoint available"
+
+      - name: Resolve inputs
+        id: inputs
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "run_id=${{ github.event.client_payload.run_id }}" >> "$GITHUB_OUTPUT"
+            echo "version=${{ github.event.client_payload.version }}" >> "$GITHUB_OUTPUT"
+            echo "checksums=${{ github.event.client_payload.checksums }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_id=${{ github.event.inputs.run_id }}" >> "$GITHUB_OUTPUT"
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "checksums=${{ github.event.inputs.checksums }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download tarballs from private repo
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dino-tarballs
+          path: /tmp/tarballs
+          github-token: ${{ secrets.PROJECT_DINO_ACTIONS_TOKEN }}
+          repository: Dino-HQ/project-dino
+          run-id: ${{ steps.inputs.outputs.run_id }}
+
+      - name: Verify checksums
+        run: |
+          cd /tmp/tarballs
+          echo "${{ steps.inputs.outputs.checksums }}" | base64 -d > expected.sha256
+          echo "Expected checksums:"
+          cat expected.sha256
+
+          sha256sum --check expected.sha256
+          echo "✅ All checksums verified"
+
+      - name: Publish with provenance
+        run: |
+          cd /tmp/tarballs
+          shopt -s nullglob
+          for tgz in ./*.tgz; do
+            [ -f "$tgz" ] || continue
+            PKG_NAME=$(tar -xOzf "$tgz" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).name")
+            echo "Publishing ${PKG_NAME} from ${tgz}..."
+
+            npm publish "$tgz" --provenance --access public
+            echo "✅ Published ${PKG_NAME} with provenance"
+          done
