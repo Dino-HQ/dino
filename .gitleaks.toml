@@ -1,0 +1,8 @@
+title = "Gitleaks Config"
+
+[allowlist]
+  description = "Known false positives"
+  paths = [
+    '\\.env\\.example$',
+    'tests/.*/fixtures/.*',
+  ]
