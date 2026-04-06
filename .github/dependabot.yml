@@ -4,12 +4,13 @@ updates:
     directory: "/packages/cli"
     schedule:
       interval: "weekly"
-  # Disable for packages that only exist in private repo
-  - package-ecosystem: "npm"
-    directory: "/packages/reasoning"
-    open-pull-requests-limit: 0
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-
+    groups:
+      all-actions:
+        patterns: ["*"]
