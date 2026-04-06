@@ -36,7 +36,7 @@ jobs:
       contents: read
       id-token: write # Required for OIDC token generation
     steps:
-      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
@@ -63,7 +63,7 @@ jobs:
           fi
 
       - name: Download tarballs from private repo
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dino-tarballs
           path: /tmp/tarballs
