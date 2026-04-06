@@ -36,17 +36,19 @@ jobs:
       contents: read
       id-token: write # Required for OIDC token generation
     steps:
+      # Node 24 LTS ships npm 11.11+ which supports OIDC trusted publishing.
+      # Node 22 ships npm 10.9.7 which: (a) doesn't support OIDC, (b) the toolcache
+      # build is broken — `npm install -g` crashes with MODULE_NOT_FOUND for promise-retry.
+      # See: actions/runner-images#13883, nodejs/node#62425
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      # OIDC Trusted Publishing requires npm >= 11.5.1.
-      # Node 22 ships npm 10.x by default which only supports legacy NPM_TOKEN auth.
-      - name: Upgrade npm to latest (OIDC support)
+      - name: Print versions
         run: |
-          npm install -g npm@latest
-          echo "npm version: $(npm --version)"
+          echo "node: $(node --version)"
+          echo "npm: $(npm --version)"
 
       - name: Verify OIDC availability
         run: |
