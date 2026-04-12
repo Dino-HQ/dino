@@ -9,6 +9,7 @@ import { CliError } from '../shared/errors';
 import {
   loadOperationRegistry,
   getAllOperations,
+  hasOperationsFile,
   type OperationMapping,
 } from '@reporters/operation-mapper';
 import {
@@ -35,7 +36,11 @@ import {
   validateRbacRoles,
   validateConfigConsistency,
   VALID_TOOL_NAMES,
+  computeGlobalHealthScore,
 } from '../shared/pipeline-helpers';
+import { detectUi, createSpinner, colorize, healthLabel } from '../shared/ui';
+import { shouldRenderInkView } from '../ink/render';
+import { CLI_VERSION } from '../version';
 import { createTokenFactory } from '@shared/auth/token-factory';
 import { createAuthAdapter } from '@shared/auth/adapter-factory';
 import { resolveConfig } from '@dino/core';
@@ -60,7 +65,10 @@ export interface ScanFlags extends CommonFlags {
  *
  * @internal Exported for unit tests (#953).
  */
-export function buildAdHocRegistry(ops: GraphQLOperation[]): Record<string, string[]> {
+export function buildAdHocRegistry(
+  ops: GraphQLOperation[],
+  moduleSlug: string = 'adhoc',
+): Record<string, string[]> {
   const queries: string[] = [];
   const mutations: string[] = [];
   const subscriptions: string[] = [];
@@ -83,13 +91,13 @@ export function buildAdHocRegistry(ops: GraphQLOperation[]): Record<string, stri
   }
   const registry: Record<string, string[]> = {};
   if (queries.length > 0) {
-    registry['adhoc:query'] = queries;
+    registry[`${moduleSlug}:query`] = queries;
   }
   if (mutations.length > 0) {
-    registry['adhoc:mutation'] = mutations;
+    registry[`${moduleSlug}:mutation`] = mutations;
   }
   if (subscriptions.length > 0) {
-    registry['adhoc:subscription'] = subscriptions;
+    registry[`${moduleSlug}:subscription`] = subscriptions;
   }
   return registry;
 }
@@ -100,11 +108,14 @@ export function buildAdHocRegistry(ops: GraphQLOperation[]): Record<string, stri
  *
  * @internal Exported for unit tests (#953).
  */
-export function buildAdHocOperationMappings(ops: GraphQLOperation[]): OperationMapping[] {
+export function buildAdHocOperationMappings(
+  ops: GraphQLOperation[],
+  moduleSlug: string = 'adhoc',
+): OperationMapping[] {
   return ops.map((op) => ({
     name: op.name,
     type: op.type,
-    module: 'adhoc',
+    module: moduleSlug,
     coverageCollection: null,
     coverageStatus: 'absent' as const,
     testFiles: [],
@@ -241,14 +252,23 @@ async function runPipelineCatalogSnapshotAndPrint(options: {
     rbacRoles,
   } = options;
 
+  // #994: Fall back to auto-generated registry when no operations file exists.
+  // This enables zero-config scans for new tenants and demos.
+  const useAdHocFallback = context.tenantId === 'adhoc' || !hasOperationsFile(context.tenantId);
+
+  if (useAdHocFallback && context.tenantId !== 'adhoc') {
+    console.info(
+      `No operations file found for "${context.tenantId}" — auto-generating from introspection.`,
+    );
+  }
+
   const result = await runPipeline({
     tenantId: context.tenantId,
     environment: context.environment,
     trigger: 'manual',
-    registry:
-      context.tenantId === 'adhoc'
-        ? buildAdHocRegistry(graphqlOps)
-        : loadOperationRegistry(context.tenantId),
+    registry: useAdHocFallback
+      ? buildAdHocRegistry(graphqlOps, context.tenantId)
+      : loadOperationRegistry(context.tenantId),
     executor,
     tokenResolver,
     rbacRoles,
@@ -273,10 +293,9 @@ async function runPipelineCatalogSnapshotAndPrint(options: {
       ...result.report,
       envelopes: result.envelopesForCatalog ?? result.report.envelopes,
     },
-    registry:
-      context.tenantId === 'adhoc'
-        ? buildAdHocOperationMappings(graphqlOps)
-        : getAllOperations(context.tenantId),
+    registry: useAdHocFallback
+      ? buildAdHocOperationMappings(graphqlOps, context.tenantId)
+      : getAllOperations(context.tenantId),
     timestamp: new Date().toISOString(), // determinism:allowed
   });
 
@@ -296,6 +315,50 @@ async function runPipelineCatalogSnapshotAndPrint(options: {
     console.info(output);
   }
 
+  const uiSummary = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
+  let inkSummaryShown = false;
+  if (shouldRenderInkView(uiSummary, { format: resolvedConfig.format, quiet: flags.quiet })) {
+    try {
+      const React = await import('react');
+      const { renderViewSafe } = await import('../ink/render');
+      const { ScanView } = await import('../views/ScanView');
+      const findingCount = result.condensed.envelopes.flatMap((e) => e.findings).length;
+      const healthScore = computeGlobalHealthScore(result.condensed);
+      inkSummaryShown = renderViewSafe(
+        React.createElement(ScanView, {
+          version: CLI_VERSION,
+          tenant: context.tenantId,
+          environment: context.environment,
+          operationCount: graphqlOps.length,
+          healthScore,
+          findingCount,
+          toolsRun: result.metadata.toolsRun.length,
+          breakingChanges: 0,
+          durationMs: result.durationMs,
+          degraded: Boolean(result.report.degraded),
+          colored: uiSummary.colored,
+        }),
+      );
+    } catch (inkErr) {
+      console.warn(
+        '[dino] Ink scan view failed:',
+        inkErr instanceof Error ? inkErr.message : String(inkErr),
+      );
+      inkSummaryShown = false;
+    }
+  }
+
+  if (!flags.quiet && resolvedConfig.format !== 'json' && !inkSummaryShown) {
+    const findingCount = result.condensed.envelopes.flatMap((e) => e.findings).length;
+    const healthScore = computeGlobalHealthScore(result.condensed);
+    const summary = [
+      `${graphqlOps.length} operations tested`,
+      `${findingCount} findings`,
+      `health ${healthLabel(healthScore, uiSummary)}`,
+    ].join(' · ');
+    console.info(colorize(summary, 'dim', uiSummary));
+  }
+
   return getScanExitCode(result);
 }
 
@@ -313,6 +376,8 @@ export async function runScan(context: CommandContext, flags: ScanFlags): Promis
       modules: flags.modules,
       tools: flags.tools,
       reasoning: flags.reasoning,
+      debug: flags.debug,
+      noColor: flags.noColor,
     },
     flags.quiet,
     async () => {
@@ -338,7 +403,17 @@ export async function runScan(context: CommandContext, flags: ScanFlags): Promis
       assertReasoningRequiresApiKey(flags);
 
       const endpoint = getEndpoint(context);
-      const graphqlOps = await discoverOperations(context);
+      const ui = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
+      const discoverSpinner = createSpinner('Scanning operations…', ui);
+      discoverSpinner.start();
+      let graphqlOps;
+      try {
+        graphqlOps = await discoverOperations(context);
+        discoverSpinner.succeed(`Discovered ${graphqlOps.length} operations`);
+      } catch (err) {
+        discoverSpinner.fail('Scan failed');
+        throw err;
+      }
       const rbacRoles = readRbacRolesFromContext(context);
 
       logRbacRolesHintWhenMissing(context, rbacRoles);

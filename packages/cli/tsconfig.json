@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
+    "jsx": "react-jsx",
     "outDir": "./dist",
     "rootDir": "../..",
     "baseUrl": "../..",
@@ -27,7 +28,7 @@
       "@dino/cli/*": ["packages/cli/src/*"]
     }
   },
-  "include": ["src/**/*.ts", "../../src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "../../src/**/*.ts"],
   "exclude": ["node_modules", "dist"],
   "references": [
     { "path": "../core" },

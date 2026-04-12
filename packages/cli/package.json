@@ -1,7 +1,8 @@
 {
   "name": "@dino-hq/cli",
-  "version": "0.1.1",
-  "description": "Dino CLI \u2014 autonomous API quality scanner. Scan, document, diff, lint, and monitor your APIs.",
+  "version": "0.3.0",
+  "type": "module",
+  "description": "Dino CLI — autonomous API quality scanner. Scan, document, diff, lint, and monitor your APIs.",
   "license": "MIT",
   "bin": {
     "dino": "dist/bin.js"
@@ -27,7 +28,7 @@
   "contributors": [
     {
       "name": "Dennis Mary",
-      "url": "https://github.com/dennismarye"
+      "url": "https://github.com/dennismary"
     }
   ],
   "keywords": [
@@ -52,15 +53,19 @@
     "url": "https://github.com/Dino-HQ/dino/issues"
   },
   "devDependencies": {
-    "@dino/core": "*",
-    "@dino/plugins": "*",
     "@dino/agents": "*",
     "@dino/analytics": "*",
+    "@dino/core": "*",
+    "@dino/plugins": "*",
+    "chalk": "^5.6.2",
     "cosmiconfig": "^9.0.0",
     "esbuild": "^0.28.0",
-    "prompts": "^2.4.2"
+    "ink": "^7.0.0",
+    "ora": "^8.2.0",
+    "prompts": "^2.4.2",
+    "react": "^19.2.5"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

@@ -49,6 +49,9 @@ const tsconfigPathsPlugin = {
           if (!existsSync(resolved) && existsSync(resolved + '.ts')) {
             resolved = resolved + '.ts';
           }
+          if (!existsSync(resolved) && existsSync(resolved.replace(/\.ts$/, '.tsx'))) {
+            resolved = resolved.replace(/\.ts$/, '.tsx');
+          }
           return { path: resolved };
         }
       }
@@ -61,23 +64,24 @@ const result = await build({
   entryPoints: [join(__dirname, 'src/bin.ts')],
   bundle: true,
   platform: 'node',
-  target: 'node18',
-  format: 'cjs',
+  target: 'node22',
+  format: 'esm',
   outfile: join(__dirname, 'dist/bin.js'),
   sourcemap: true,
-  minify: true,
+  minify: false,
   treeShaking: true,
+  jsx: 'automatic',
   banner: {
-    js: '#!/usr/bin/env node',
+    // ESM bundle: esbuild may emit nested `require()` for CJS shims — expose on globalThis (#1014).
+    js: '#!/usr/bin/env node\nimport{createRequire}from"module";const require=createRequire(import.meta.url);globalThis.require=require;',
   },
-  // Prevent `if (require.main === module)` guards from firing inside the bundle.
-  // In CJS bundles, `require.main === module` is always true since everything is
-  // in one file — this silences self-executing blocks in bundled source files.
-  define: { 'require.main': 'undefined' },
-  // Mark true externals (things users must install or are Node built-ins).
-  // @dino/reasoning is lazy-loaded via dynamic import() — exclude it and its
-  // transitive deps (@anthropic-ai/sdk) from the bundle so Free tier ships no LLM code.
-  external: [...Object.keys(pkg.peerDependencies ?? {}), '@dino/reasoning'],
+  define: { 'process.env.NODE_ENV': '"production"' },  // production React builds (684KB → 394KB savings)
+  alias: { 'react-devtools-core': join(__dirname, 'noop-devtools.js') },
+  external: [
+    ...Object.keys(pkg.peerDependencies ?? {}),
+    '@dino/reasoning',
+    'typescript',  // dev tool — 9.7MB, must not be bundled
+  ],
   plugins: [tsconfigPathsPlugin],
   metafile: true,
 });
@@ -85,7 +89,10 @@ const result = await build({
 // B49 (#614): Save metafile for CI bundle tracking
 if (result.metafile) {
   const fs = await import('node:fs');
-  fs.writeFileSync('dist/metafile.json', JSON.stringify(result.metafile, null, 2));
+  fs.writeFileSync(
+    join(__dirname, 'dist/metafile.json'),
+    JSON.stringify(result.metafile, null, 2),
+  );
 }
 
 console.log('Bundle built: dist/bin.js');

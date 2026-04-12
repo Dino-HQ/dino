@@ -12,6 +12,10 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import prompts from 'prompts';
+import { detectUi, colorize } from '../shared/ui';
+import type { UiOptions } from '../shared/ui';
+import { shouldRenderInkView } from '../ink/render';
+import { CLI_VERSION } from '../version';
 
 export interface InitFlags {
   quiet?: boolean;
@@ -111,28 +115,46 @@ function initPromptQuestions(): Parameters<typeof prompts>[0] {
   ];
 }
 
-function printInitNextSteps(answers: {
+/** Lines after the "Next steps:" heading (export hints + dino scan). */
+function buildInitNextStepLines(answers: {
   authEnabled: boolean;
   reasoningEnabled: boolean;
   authEnvVar?: string;
   aiKeyVar?: string;
-}): void {
-  console.info('Next steps:');
+}): string[] {
+  const lines: string[] = [];
   if (
     answers.authEnabled &&
     typeof answers.authEnvVar === 'string' &&
     answers.authEnvVar.length > 0
   ) {
-    console.info(`  export ${answers.authEnvVar}="your-token-here"`);
+    lines.push(`  export ${answers.authEnvVar}="your-token-here"`);
   }
   if (
     answers.reasoningEnabled &&
     typeof answers.aiKeyVar === 'string' &&
     answers.aiKeyVar.length > 0
   ) {
-    console.info(`  export ${answers.aiKeyVar}="sk-ant-..."`);
+    lines.push(`  export ${answers.aiKeyVar}="sk-ant-..."`);
   }
-  console.info('  dino scan\n');
+  lines.push('  dino scan');
+  return lines;
+}
+
+function printInitNextSteps(
+  answers: {
+    authEnabled: boolean;
+    reasoningEnabled: boolean;
+    authEnvVar?: string;
+    aiKeyVar?: string;
+  },
+  ui: UiOptions,
+): void {
+  console.info(colorize('Next steps:', 'bold', ui));
+  for (const line of buildInitNextStepLines(answers)) {
+    console.info(line);
+  }
+  console.info('');
 }
 
 /** Validate endpoint reachability (INV-5: 5s timeout). Returns true if reachable. */
@@ -157,6 +179,7 @@ export async function checkEndpoint(url: string): Promise<boolean> {
  */
 export async function runInit(flags: InitFlags): Promise<number> {
   const configPath = resolve(process.cwd(), '.dino.yml');
+  const ui = detectUi({ quiet: flags.quiet });
 
   if (!flags.force && existsSync(configPath)) {
     const { overwrite } = await prompts({
@@ -172,7 +195,7 @@ export async function runInit(flags: InitFlags): Promise<number> {
   }
 
   if (!flags.quiet) {
-    console.info('\nWelcome to Dino — API Intelligence\n');
+    console.info(colorize('\nWelcome to Dino — API Intelligence\n', 'bold', ui));
     console.info("Let's set up your project.\n");
   }
 
@@ -221,14 +244,48 @@ export async function runInit(flags: InitFlags): Promise<number> {
     return 1;
   }
 
-  console.info('Created .dino.yml\n');
+  console.info(colorize('✔ Created .dino.yml\n', 'green', ui));
 
-  printInitNextSteps({
+  const nextStepAnswers = {
     authEnabled,
     reasoningEnabled,
     authEnvVar: answers.authEnvVar as string | undefined,
     aiKeyVar: answers.aiKeyVar as string | undefined,
-  });
+  };
+
+  let inkSummary = false;
+  if (shouldRenderInkView(ui, { quiet: flags.quiet })) {
+    try {
+      const React = await import('react');
+      const { renderViewSafe } = await import('../ink/render');
+      const { InitView } = await import('../views/InitView');
+      const lines: string[] = [
+        `Config: ${configPath}`,
+        `Endpoint: ${endpoint}`,
+        `Protocol: ${protocol}`,
+        `Format: ${format}`,
+        'Next steps:',
+        ...buildInitNextStepLines(nextStepAnswers),
+      ];
+      inkSummary = renderViewSafe(
+        React.createElement(InitView, {
+          version: CLI_VERSION,
+          lines,
+          colored: ui.colored,
+        }),
+      );
+    } catch (inkErr) {
+      console.warn(
+        '[dino] Ink init view failed:',
+        inkErr instanceof Error ? inkErr.message : String(inkErr),
+      );
+      inkSummary = false;
+    }
+  }
+
+  if (!inkSummary) {
+    printInitNextSteps(nextStepAnswers, ui);
+  }
 
   return 0;
 }

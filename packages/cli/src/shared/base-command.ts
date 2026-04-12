@@ -16,6 +16,7 @@ import { createDiscoveryBridge } from '@introspection/create-discovery-bridge';
 import type { DinoCliConfig } from '../config/loader';
 import { CliError } from './errors';
 import { CLI_VERSION } from '../version';
+import { printError, detectUi } from './ui';
 
 /** Parsed CLI flags common to all commands */
 export interface CommonFlags {
@@ -24,6 +25,8 @@ export interface CommonFlags {
   format?: 'markdown' | 'json';
   quiet?: boolean;
   verbose?: boolean;
+  debug?: boolean;
+  noColor?: boolean;
 }
 
 /** Context assembled before command execution */
@@ -40,12 +43,18 @@ export interface CommandContext {
  */
 export function getEndpoint(context: CommandContext): string {
   if (!context.tenantConfig.environments) {
-    throw new CliError('Tenant has no environments configuration');
+    throw new CliError(
+      'Tenant has no environments configuration',
+      1,
+      'Check your tenant YAML has an environments: section.',
+    );
   }
   const envConfig = recordGet(context.tenantConfig.environments, context.environment);
   if (!envConfig) {
     throw new CliError(
       `Environment "${context.environment}" not found. Available: ${Object.keys(context.tenantConfig.environments).join(', ')}`,
+      1,
+      'Run dino validate to check your config.',
     );
   }
   const apiName = context.tenantConfig.apis[0]?.name;
@@ -83,7 +92,11 @@ export async function discoverOperations(context: CommandContext): Promise<Graph
     !discoveryResult.raw ||
     !Array.isArray((discoveryResult.raw as { operations?: unknown }).operations)
   ) {
-    throw new CliError('Discovery returned no operations');
+    throw new CliError(
+      'Discovery returned no operations',
+      1,
+      'Confirm the endpoint supports GraphQL introspection.',
+    );
   }
   return (discoveryResult.raw as { operations: GraphQLOperation[] }).operations;
 }
@@ -132,7 +145,15 @@ export async function withTracking(
       },
     });
     if (!quiet) {
-      console.error(err instanceof Error ? err.message : String(err));
+      const ui = detectUi({
+        quiet,
+        noColor: (flagsPayload as { noColor?: boolean }).noColor === true,
+      });
+      printError(
+        err instanceof Error ? err : new Error(String(err)),
+        ui,
+        Boolean((flagsPayload as { debug?: boolean }).debug),
+      );
     }
     return exitCode;
   }
@@ -244,9 +265,11 @@ export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): 
   }
 
   if (!tenantId) {
-    throw new Error(
+    throw new CliError(
       'tenant is required (--tenant <id> or set in .dino.yml). ' +
         'Or provide endpoint + protocol for an ad-hoc scan.',
+      1,
+      'Run dino init to create a .dino.yml config.',
     );
   }
   const tenantConfig = loadTenantById(tenantId);

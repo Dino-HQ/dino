@@ -5,6 +5,8 @@
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 import { getEndpoint, discoverOperations, withTracking } from '../shared/base-command';
 import { CliError } from '../shared/errors';
+import { detectUi, createSpinner, healthLabel, durationLabel, colorize } from '../shared/ui';
+import { shouldRenderInkView } from '../ink/render';
 import { loadOperationRegistry, clearTenantCache } from '@reporters/operation-mapper';
 import { buildSnapshot, saveSnapshot, loadLatestSnapshot, diffSnapshots } from '@intelligence';
 import { runPipeline } from '@pipeline/runner';
@@ -12,8 +14,6 @@ import { saveHistoryEntry } from '../shared/history';
 import type { WatchHistoryEntry } from '../shared/history';
 import path from 'node:path';
 import { safePath } from '@utils/safe-path';
-import { calculateNumericScore } from '@orchestration/severity-scorer';
-import type { CondensedReport } from '@orchestration';
 import type { TokenResolver } from '../../../../src/pipeline/runner.types';
 import {
   DEFAULT_REASONING_OPTS,
@@ -24,6 +24,7 @@ import {
   buildTokenResolver,
   validateRbacRoles,
   validateConfigConsistency,
+  computeGlobalHealthScore,
 } from '../shared/pipeline-helpers';
 import { createTokenFactory } from '@shared/auth/token-factory';
 import { createAuthAdapter } from '@shared/auth/adapter-factory';
@@ -75,7 +76,11 @@ function cancellableSleep(ms: number): { promise: Promise<void>; cancel: () => v
 
 function validateInterval(interval: number): void {
   if (!Number.isFinite(interval) || interval <= 0) {
-    throw new CliError(`Invalid interval: ${interval}. Must be a positive number of seconds.`);
+    throw new CliError(
+      `Invalid interval: ${interval}. Must be a positive number of seconds.`,
+      1,
+      'Use a positive number of seconds, e.g. --interval 300.',
+    );
   }
 }
 
@@ -103,6 +108,8 @@ function resolveMaxIterations(flags: WatchFlags): number {
     if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
       throw new CliError(
         `Invalid --iterations: "${flags.iterations}". Must be a positive integer.`,
+        1,
+        'Use a positive integer, e.g. --iterations 5.',
       );
     }
     return n;
@@ -138,17 +145,6 @@ function buildExecutor(
     '⚠️  No auth config — running unauthenticated. RBAC matrix will only test UNAUTHENTICATED role.',
   );
   return { executor: base };
-}
-
-/**
- * Global health score for watch summary. Inverted numericScore (100 = healthy, 0 = critical).
- * Different from catalog's per-operation computeHealthScore — this covers the entire run.
- * B21 (#602): Renamed to avoid confusion with catalog's per-op algorithm.
- */
-function computeGlobalHealthScore(condensed: CondensedReport): number {
-  const allFindings = condensed.envelopes.flatMap((e) => e.findings);
-  const problemScore = calculateNumericScore(allFindings);
-  return Math.max(0, 100 - Math.min(100, problemScore));
 }
 
 function buildDegradedEntry(iteration: number, context: CommandContext): WatchHistoryEntry {
@@ -205,6 +201,8 @@ interface IterationConfig {
   historyDir: string;
   historyLimit: number;
   maxConsecutiveFailures: number;
+  /** Seconds until next iteration (for Ink countdown when another loop is scheduled). */
+  intervalSec: number;
   // B102 (#671) + B103 (#672): Shared across iterations so watch mode preserves state
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- inline import() required: top-level @dino/reasoning import is restricted (CLI bundle)
   circuitBreaker?: import('@dino/reasoning').CircuitBreaker;
@@ -217,12 +215,24 @@ async function runIteration(
   cfg: IterationConfig,
   iteration: number,
   quiet?: boolean,
+  noColor?: boolean,
+  nextSleepSec?: number,
 ): Promise<number | null> {
   const { context } = cfg;
   // B11 (#584): Clear tenant cache each iteration — watch runs indefinitely,
   // registry may change between iterations. Stale cache → stale module slugs.
   clearTenantCache();
-  const ops = await discoverOperations(context);
+  const ui = detectUi({ quiet, noColor });
+  const discoverSpinner = createSpinner('Discovering operations…', ui);
+  discoverSpinner.start();
+  let ops;
+  try {
+    ops = await discoverOperations(context);
+    discoverSpinner.succeed(`Found ${ops.length} operations`);
+  } catch (err) {
+    discoverSpinner.fail('Discovery failed');
+    throw err;
+  }
   const result = await runPipeline({
     tenantId: context.tenantId,
     environment: context.environment,
@@ -277,9 +287,57 @@ async function runIteration(
   await saveHistoryEntry(entry, { historyDir: cfg.historyDir, historyLimit: cfg.historyLimit });
 
   if (!quiet) {
-    console.info(
-      `[watch] iteration ${iteration}: ${entry.operationCount} ops, health ${entry.healthScore}, ${changes.breakingChanges} breaking`,
-    );
+    const summaryUi = detectUi({ quiet, noColor });
+    let inkShown = false;
+    if (shouldRenderInkView(summaryUi, { quiet })) {
+      try {
+        const React = await import('react');
+        const { renderViewSafe } = await import('../ink/render');
+        const { WatchIterationView } = await import('../views/WatchIterationView');
+        const { CLI_VERSION } = await import('../version');
+        inkShown = renderViewSafe(
+          React.createElement(WatchIterationView, {
+            version: CLI_VERSION,
+            tenant: context.tenantId,
+            environment: context.environment,
+            iteration,
+            healthScore,
+            operationCount: entry.operationCount,
+            toolsRun: entry.toolsRun,
+            toolsCompleted: entry.toolsCompleted,
+            toolsFailed: entry.toolsFailed,
+            breakingChanges: changes.breakingChanges,
+            durationMs: result.durationMs,
+            degraded: Boolean(result.metadata.degraded),
+            nextScanInSec: nextSleepSec,
+            colored: summaryUi.colored,
+          }),
+        );
+      } catch (inkErr) {
+        console.warn(
+          '[dino] Ink watch view failed:',
+          inkErr instanceof Error ? inkErr.message : String(inkErr),
+        );
+        inkShown = false;
+      }
+    }
+    if (!inkShown) {
+      const lines = [
+        '',
+        colorize(`── Iteration ${iteration} — ${context.environment} ──`, 'dim', summaryUi),
+        `  Health:     ${healthLabel(healthScore, summaryUi)}`,
+        `  Operations: ${entry.operationCount}`,
+        `  Tools:      ${entry.toolsRun} run, ${entry.toolsCompleted} completed, ${entry.toolsFailed} failed`,
+        `  Breaking:   ${changes.breakingChanges > 0 ? colorize(`${changes.breakingChanges} breaking`, 'redBold', summaryUi) : colorize('0', 'green', summaryUi)}`,
+        `  Duration:   ${colorize(durationLabel(result.durationMs), 'dim', summaryUi)}`,
+      ];
+      if (result.metadata.degraded) {
+        const degradedMsg = '⚠  Degraded — all tools failed. Health score may be unreliable.';
+        lines.push(`  ${colorize(degradedMsg, 'yellow', summaryUi)}`);
+      }
+      lines.push('');
+      console.info(lines.join('\n'));
+    }
   }
 
   if (cfg.autonomy === 'enforce' && diff && diff.summary.breakingChanges > 0) {
@@ -381,6 +439,7 @@ function validateAndBuildConfig(
     historyDir: path.join(process.cwd(), DEFAULT_HISTORY_DIR),
     historyLimit,
     maxConsecutiveFailures,
+    intervalSec,
   };
 }
 
@@ -403,6 +462,8 @@ export async function runWatch(context: CommandContext, flags: WatchFlags): Prom
       autonomy: flags.autonomy,
       historyLimit,
       maxConsecutiveFailures: flags.maxConsecutiveFailures,
+      debug: flags.debug,
+      noColor: flags.noColor,
     },
     flags.quiet,
     async () => {
@@ -426,7 +487,14 @@ export async function runWatch(context: CommandContext, flags: WatchFlags): Prom
         while (!interrupted && iteration < maxIterations) {
           iteration++;
           try {
-            const exitCode = await runIteration(cfg, iteration, flags.quiet);
+            const willSleepAgain = !interrupted && iteration < maxIterations;
+            const exitCode = await runIteration(
+              cfg,
+              iteration,
+              flags.quiet,
+              flags.noColor,
+              willSleepAgain ? intervalSec : undefined,
+            );
             if (exitCode !== null) return exitCode;
             consecutiveFailures = 0;
           } catch (iterError) {
