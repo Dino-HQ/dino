@@ -21,12 +21,12 @@ export interface ScanDefaults {
 /**
  * Default scan configuration. Applied when user omits a field from `.dino.yml`.
  *
- * Pipeline timeout: 300s (matches scan.ts pre-#560 behavior).
+ * Pipeline timeout: 600s — 10 min (#999, generous for slow APIs).
  * Request timeout: 30s (per-request, conservative for unknown APIs).
  * Format: json (machine-readable by default; --format markdown for humans).
  */
 export const DEFAULT_SCAN_CONFIG: ScanDefaults = Object.freeze({
-  timeoutMs: 300_000,
+  timeoutMs: 600_000,
   toolTimeoutMs: 120_000,
   concurrency: 5,
   format: 'json',

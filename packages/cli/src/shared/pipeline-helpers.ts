@@ -10,6 +10,8 @@ import { resolveAndValidateDNS } from '@dino/core';
 import { safeEndpointUrl } from '../../../../src/introspection/introspect';
 import { getModuleSlugs } from '@reporters/operation-mapper';
 import { logger } from '../../../../src/utils/logger';
+import { calculateNumericScore } from '@orchestration/severity-scorer';
+import type { CondensedReport } from '@orchestration';
 import { CliError } from './errors';
 
 /** Wraps createExecutor with automatic token injection — reuses existing auth logic */
@@ -46,6 +48,8 @@ export function validateTools(tools: string[]): ToolName[] {
   if (invalid.length > 0) {
     throw new CliError(
       `Invalid tool name(s): ${invalid.join(', ')}. Valid: ${[...VALID_TOOL_NAMES].join(', ')}`,
+      1,
+      'Use --tools with comma-separated names from the list above.',
     );
   }
   return tools as ToolName[];
@@ -58,6 +62,8 @@ export function validateModules(modules: string[], tenantId: string): string[] {
   if (invalid.length > 0) {
     throw new CliError(
       `Invalid module(s): ${invalid.join(', ')}. Valid: ${[...validSlugs].join(', ')}`,
+      1,
+      'Check available modules with dino scan --verbose.',
     );
   }
   return modules;
@@ -137,7 +143,11 @@ export function createExecutor(endpoint: string): PipelineExecutor {
   return async (document, variables, options) => {
     const dnsCheck = await resolveAndValidateDNS(endpoint);
     if (!dnsCheck.allowed) {
-      throw new CliError(`SSRF blocked: endpoint failed DNS validation (${dnsCheck.reason})`);
+      throw new CliError(
+        `SSRF blocked: endpoint failed DNS validation (${dnsCheck.reason})`,
+        1,
+        'Ensure your endpoint uses a public hostname, not a private IP.',
+      );
     }
 
     const res = await fetch(endpoint, {
@@ -186,4 +196,19 @@ export function createExecutor(endpoint: string): PipelineExecutor {
       })(),
     };
   };
+}
+
+/**
+ * Global health score for CLI summaries. Inverted numericScore (100 = healthy, 0 = critical).
+ * Different from catalog's per-operation computeHealthScore — this covers the entire run.
+ * Extracted from watch.ts (#1013) so scan.ts can reuse it.
+ */
+export function computeGlobalHealthScore(condensed: CondensedReport): number {
+  const allFindings = condensed.envelopes.flatMap((e) => e.findings);
+  const problemScore = calculateNumericScore(allFindings);
+  const score = 100 - Math.min(100, problemScore);
+  // Guard: if calculateNumericScore returned NaN (malformed input), default to 0
+  // so healthLabel shows "Critical (0)" rather than a misleading value.
+  if (!Number.isFinite(score)) return 0;
+  return Math.max(0, score);
 }

@@ -9,6 +9,7 @@ import { getAllOperations } from '@reporters/operation-mapper';
 import { buildCatalog, renderCatalogMarkdown, renderCatalogJson } from '@intelligence';
 import { safePath } from '@utils/safe-path';
 import { safeWriteFile } from '@dino/core';
+import { detectUi, createSpinner } from '../shared/ui';
 
 export interface DocsFlags extends CommonFlags {
   output?: string;
@@ -32,10 +33,22 @@ export async function runDocs(context: CommandContext, flags: DocsFlags): Promis
       title: flags.title,
       ai: flags.ai,
       threshold: flags.threshold,
+      debug: flags.debug,
+      noColor: flags.noColor,
     },
     flags.quiet,
     async () => {
-      const graphqlOps = await discoverOperations(context);
+      const ui = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
+      const spinner = createSpinner('Generating documentation…', ui);
+      spinner.start();
+      let graphqlOps;
+      try {
+        graphqlOps = await discoverOperations(context);
+        spinner.text = 'Building documentation…';
+      } catch (err) {
+        spinner.fail('Docs failed');
+        throw err;
+      }
 
       const catalog = buildCatalog({
         introspection: graphqlOps,
@@ -60,6 +73,8 @@ export async function runDocs(context: CommandContext, flags: DocsFlags): Promis
               includeAiDescriptions: flags.ai ?? false,
               healthScoreThreshold: flags.threshold,
             });
+
+      spinner.succeed('Docs generated');
 
       if (flags.output) {
         const resolvedOutput = safePath(flags.output);

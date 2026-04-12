@@ -43,12 +43,17 @@ const TokenRefreshSchema = z.object({
   expiryBuffer: z.number().int().min(0),
 });
 
-const AuthConfigSchema = z.object({
-  adapter: z.string().min(1),
-  adapterConfig: z.record(z.string(), z.unknown()).default({}),
-  roles: z.array(RoleConfigSchema).min(1),
-  tokenRefresh: TokenRefreshSchema.optional(),
-});
+const AuthConfigSchema = z
+  .object({
+    adapter: z.string().min(1),
+    adapterConfig: z.record(z.string(), z.unknown()).default({}),
+    roles: z.array(RoleConfigSchema),
+    tokenRefresh: TokenRefreshSchema.optional(),
+  })
+  .refine((auth) => auth.adapter.toLowerCase() === 'none' || auth.roles.length >= 1, {
+    message: 'auth.roles must have at least 1 role when adapter is not "none"',
+    path: ['roles'],
+  });
 
 const BLOCKED_METADATA_HOSTS = new Set([
   'metadata.google.internal',
