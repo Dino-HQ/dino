@@ -1,6 +1,6 @@
 {
   "name": "@dino-hq/cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Dino CLI — autonomous API quality scanner. Scan, document, diff, lint, and monitor your APIs.",
   "license": "MIT",

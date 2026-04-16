@@ -83,10 +83,19 @@ export async function discoverOperations(context: CommandContext): Promise<Graph
     tenant: context.tenantConfig,
     environment: context.environment,
   });
-  const discoveryResult = await plugin.discover({
-    endpoint,
-    timeout: envConfig.timeout,
-  });
+
+  let discoveryResult;
+  try {
+    discoveryResult = await plugin.discover({
+      endpoint,
+      timeout: envConfig.timeout,
+    });
+  } catch (err: unknown) {
+    if (isIntrospectionTimeout(err)) {
+      throw buildIntrospectionTimeoutError(endpoint, envConfig.timeout, err);
+    }
+    throw err;
+  }
 
   if (
     !discoveryResult.raw ||
@@ -99,6 +108,36 @@ export async function discoverOperations(context: CommandContext): Promise<Graph
     );
   }
   return (discoveryResult.raw as { operations: GraphQLOperation[] }).operations;
+}
+
+/** Detect the AbortController timeout signature from plugin.discover. INV-UX-1. */
+function isIntrospectionTimeout(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // Node's AbortController rejects with DOMException name 'AbortError' OR an Error whose
+  // message includes 'aborted due to timeout' (timings differ by runtime version).
+  // Prettier (prettier/prettier eslint rule, --max-warnings 0) removes parens around
+  // `a === x || b === y` compound booleans as unnecessary. HC #16 / Gate 14's
+  // "parenthesize boolean sub-expressions" rule targets mixed-precedence cases
+  // (e.g. `a && b || c`); a simple `||` over two `===` checks is unambiguous.
+  // Defer to Prettier. See Maciver 2026-04-16 LOW unparenthesizedTimeoutPredicate.
+  return err.name === 'AbortError' || err.message.includes('aborted due to timeout');
+}
+
+/** Build the actionable CliError for a timeout. INV-UX-2, INV-UX-3. */
+function buildIntrospectionTimeoutError(
+  endpoint: string,
+  timeoutMs: number,
+  cause: unknown,
+): CliError {
+  const message = `Introspection timed out after ${timeoutMs}ms.\nEndpoint: ${endpoint}`;
+  const hint = [
+    'Common causes:',
+    '  • Endpoint does not support GraphQL introspection at this path',
+    `  • Path suffix missing — try ${endpoint.replace(/\/?$/, '/graphql')}`,
+    '  • Authentication required but not configured (run: dino init)',
+    '  • Endpoint unreachable from this network',
+  ].join('\n');
+  return new CliError(message, 1, hint, cause);
 }
 
 /**

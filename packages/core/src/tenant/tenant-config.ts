@@ -39,15 +39,40 @@ export interface TenantConfig {
   [key: string]: unknown;
 }
 
-export interface ApiConfig {
-  /** API name used as key in environment endpoints */
+/**
+ * API configuration. Discriminated on `type`:
+ * - `'graphql'` — discovery via introspection; `specPath` forbidden.
+ * - `'rest'`    — discovery via OpenAPI; `specPath` required (URL or file path).
+ * - `'grpc'`    — discovery via proto; `specPath` required (file path).
+ *
+ * `specPath` is validated as a non-empty string at config load time. Full URL
+ * and file-path validation (SSRF for URLs, traversal for files) is performed
+ * by the consuming discovery plugin, because the rule depends on `source`.
+ */
+export type ApiConfig = GraphQLApiConfig | RestApiConfig | GrpcApiConfig;
+
+export interface GraphQLApiConfig {
   name: string;
-
-  /** API protocol type — GraphQL only for now */
   type: 'graphql';
-
-  /** How to discover the schema (e.g., 'introspection') */
   source: string;
+  /** Forbidden for GraphQL. Type guarantees absence; Zod rejects if present. */
+  specPath?: never;
+}
+
+export interface RestApiConfig {
+  name: string;
+  type: 'rest';
+  source: string;
+  /** OpenAPI spec URL or file path. Validated downstream (Spec 2). */
+  specPath: string;
+}
+
+export interface GrpcApiConfig {
+  name: string;
+  type: 'grpc';
+  source: string;
+  /** .proto file path. Validated downstream. */
+  specPath: string;
 }
 
 export interface EnvironmentConfig {

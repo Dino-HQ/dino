@@ -10,6 +10,9 @@ export type { UserConfigInput } from './config/resolve';
 export type {
   TenantConfig,
   ApiConfig,
+  GraphQLApiConfig,
+  RestApiConfig,
+  GrpcApiConfig,
   EnvironmentConfig,
   AuthConfig,
   RoleConfig,
