@@ -292,11 +292,53 @@ const EnvironmentConfigSchema = z.object({
   retries: z.number().int().min(0),
 });
 
-const ApiConfigSchema = z.object({
-  name: z.string().min(1),
-  type: z.literal('graphql'),
-  source: z.string().min(1),
-});
+// Zod schemas for each variant of ApiConfig. Discriminated on `type` so that
+// invalid shapes (e.g. rest without specPath, graphql with specPath) fail at
+// load time with a precise path, not at runtime inside a discovery plugin.
+//
+// specPath rejects whitespace-only and null-byte-containing strings so that a
+// semantically-empty path never reaches the discovery plugin (Spec 2+).
+// Full URL / filesystem validation (SSRF for URLs, traversal for files) is
+// still the discovery plugin's job — this schema only rejects unambiguously
+// broken content.
+const SpecPathSchema = z
+  .string()
+  .min(1)
+  .refine((s) => s.trim().length > 0 && !s.includes('\0'), {
+    message: 'specPath must be non-whitespace and must not contain null bytes',
+  });
+
+const GraphQLApiConfigSchema = z
+  .object({
+    name: z.string().min(1),
+    type: z.literal('graphql'),
+    source: z.string().min(1),
+  })
+  .strict();
+
+const RestApiConfigSchema = z
+  .object({
+    name: z.string().min(1),
+    type: z.literal('rest'),
+    source: z.string().min(1),
+    specPath: SpecPathSchema,
+  })
+  .strict();
+
+const GrpcApiConfigSchema = z
+  .object({
+    name: z.string().min(1),
+    type: z.literal('grpc'),
+    source: z.string().min(1),
+    specPath: SpecPathSchema,
+  })
+  .strict();
+
+const ApiConfigSchema = z.discriminatedUnion('type', [
+  GraphQLApiConfigSchema,
+  RestApiConfigSchema,
+  GrpcApiConfigSchema,
+]);
 
 const TenantConfigSchema = z.object({
   schemaVersion: z.number().int().positive(),
@@ -305,7 +347,12 @@ const TenantConfigSchema = z.object({
     .min(1)
     .regex(/^[a-z0-9-]+$/, 'id must be lowercase alphanumeric with hyphens'),
   name: z.string().min(1),
-  apis: z.array(ApiConfigSchema).min(1),
+  apis: z
+    .array(ApiConfigSchema)
+    .min(1)
+    .refine((apis) => new Set(apis.map((a) => a.name)).size === apis.length, {
+      message: 'apis[].name must be unique within a tenant config',
+    }),
   environments: z
     .record(z.string(), EnvironmentConfigSchema)
     .refine((envs) => Object.keys(envs).length > 0, {

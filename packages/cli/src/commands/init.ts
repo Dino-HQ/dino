@@ -55,10 +55,30 @@ export function buildConfigYaml(answers: {
   return lines.join('\n');
 }
 
-/** Prompt objects for dino init (extracted to keep runInit cognitive complexity low). */
-function initPromptQuestions(): Parameters<typeof prompts>[0] {
-  return [
-    {
+/** Case-insensitive check: URL path ends with /graphql (trailing slash + querystring tolerant). INV-UX-6. */
+export function urlPathEndsWithGraphQL(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    // Strip ALL trailing slashes (greedy), then compare lowercase. Greedy
+    // handles copy-paste artifacts like '/graphql//' that are functionally
+    // identical to '/graphql' (Maciver LOW urlMultiTrailingSlashEdge).
+    const path = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+    return path.endsWith('/graphql');
+  } catch {
+    // Invalid URL — the endpoint prompt's validate() already rejects these before this helper runs.
+    return false;
+  }
+}
+
+/**
+ * Prompt for endpoint with a soft /graphql-suffix warning (#1023).
+ * Loops the endpoint prompt if the user declines the warning. INV-UX-4, INV-UX-5.
+ *
+ * @returns the confirmed endpoint, or null on cancellation.
+ */
+export async function promptEndpointWithGraphQLWarning(): Promise<string | null> {
+  while (true) {
+    const { endpoint } = await prompts({
       type: 'text',
       name: 'endpoint',
       message: "What's your API endpoint URL?",
@@ -70,7 +90,27 @@ function initPromptQuestions(): Parameters<typeof prompts>[0] {
           return 'Please enter a valid URL (e.g., https://api.example.com/graphql)';
         }
       },
-    },
+    });
+    if (typeof endpoint !== 'string') return null;
+
+    if (urlPathEndsWithGraphQL(endpoint)) return endpoint;
+
+    const { confirm } = await prompts({
+      type: 'confirm',
+      name: 'confirm',
+      message:
+        'URL does not end with /graphql — GraphQL endpoints typically expose introspection at a /graphql path. Continue with this URL anyway?',
+      initial: false,
+    });
+    if (confirm === true) return endpoint;
+    if (typeof confirm !== 'boolean') return null;
+    // else: user answered 'no' — loop to re-prompt the endpoint
+  }
+}
+
+/** Prompt objects AFTER endpoint — protocol, auth, format, reasoning. */
+function remainingInitPromptQuestions(): Parameters<typeof prompts>[0] {
+  return [
     {
       type: 'select',
       name: 'protocol',
@@ -157,6 +197,51 @@ function printInitNextSteps(
   console.info('');
 }
 
+async function tryRenderInitInkSummary(params: {
+  ui: UiOptions;
+  quiet: boolean | undefined;
+  configPath: string;
+  endpoint: string;
+  protocol: string;
+  format: string;
+  nextStepAnswers: {
+    authEnabled: boolean;
+    reasoningEnabled: boolean;
+    authEnvVar?: string;
+    aiKeyVar?: string;
+  };
+}): Promise<boolean> {
+  if (!shouldRenderInkView(params.ui, { quiet: params.quiet })) {
+    return false;
+  }
+  try {
+    const React = await import('react');
+    const { renderViewSafe } = await import('../ink/render');
+    const { InitView } = await import('../views/InitView');
+    const lines: string[] = [
+      `Config: ${params.configPath}`,
+      `Endpoint: ${params.endpoint}`,
+      `Protocol: ${params.protocol}`,
+      `Format: ${params.format}`,
+      'Next steps:',
+      ...buildInitNextStepLines(params.nextStepAnswers),
+    ];
+    return renderViewSafe(
+      React.createElement(InitView, {
+        version: CLI_VERSION,
+        lines,
+        colored: params.ui.colored,
+      }),
+    );
+  } catch (error_) {
+    console.warn(
+      '[dino] Ink init view failed:',
+      error_ instanceof Error ? error_.message : String(error_),
+    );
+    return false;
+  }
+}
+
 /** Validate endpoint reachability (INV-5: 5s timeout). Returns true if reachable. */
 export async function checkEndpoint(url: string): Promise<boolean> {
   const controller = new AbortController();
@@ -199,7 +284,13 @@ export async function runInit(flags: InitFlags): Promise<number> {
     console.info("Let's set up your project.\n");
   }
 
-  const answers = await prompts(initPromptQuestions(), {
+  const endpoint = await promptEndpointWithGraphQLWarning();
+  if (endpoint === null) {
+    console.info('\nAborted. No config written.');
+    return 0;
+  }
+
+  const answers = await prompts(remainingInitPromptQuestions(), {
     onCancel: () => {
       console.info('\nAborted. No config written.');
     },
@@ -210,7 +301,6 @@ export async function runInit(flags: InitFlags): Promise<number> {
     return 0;
   }
 
-  const endpoint = answers.endpoint as string;
   const protocol = answers.protocol as string;
   const format = answers.format;
   const authEnabled = answers.authEnabled === true;
@@ -253,35 +343,15 @@ export async function runInit(flags: InitFlags): Promise<number> {
     aiKeyVar: answers.aiKeyVar as string | undefined,
   };
 
-  let inkSummary = false;
-  if (shouldRenderInkView(ui, { quiet: flags.quiet })) {
-    try {
-      const React = await import('react');
-      const { renderViewSafe } = await import('../ink/render');
-      const { InitView } = await import('../views/InitView');
-      const lines: string[] = [
-        `Config: ${configPath}`,
-        `Endpoint: ${endpoint}`,
-        `Protocol: ${protocol}`,
-        `Format: ${format}`,
-        'Next steps:',
-        ...buildInitNextStepLines(nextStepAnswers),
-      ];
-      inkSummary = renderViewSafe(
-        React.createElement(InitView, {
-          version: CLI_VERSION,
-          lines,
-          colored: ui.colored,
-        }),
-      );
-    } catch (inkErr) {
-      console.warn(
-        '[dino] Ink init view failed:',
-        inkErr instanceof Error ? inkErr.message : String(inkErr),
-      );
-      inkSummary = false;
-    }
-  }
+  const inkSummary = await tryRenderInitInkSummary({
+    ui,
+    quiet: flags.quiet,
+    configPath,
+    endpoint,
+    protocol,
+    format,
+    nextStepAnswers,
+  });
 
   if (!inkSummary) {
     printInitNextSteps(nextStepAnswers, ui);
