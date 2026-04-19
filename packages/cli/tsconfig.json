@@ -14,6 +14,7 @@
       "@pipeline/*": ["src/pipeline/*"],
       "@config/*": ["src/config/*"],
       "@utils/*": ["src/utils/*"],
+      "@shared/*": ["src/shared/*"],
       "@dino/core": ["packages/core/src/index.ts"],
       "@dino/core/*": ["packages/core/src/*"],
       "@dino/plugins": ["packages/plugins/src/index.ts"],

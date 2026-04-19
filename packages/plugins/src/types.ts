@@ -7,13 +7,20 @@
  */
 
 import type { Operation } from '@dino/core';
+import type { DiscoveryWarning } from './openapi/warnings';
 
 /**
  * Options passed into a discovery plugin. All inputs are injected; no global config.
  */
 export interface DiscoveryOptions {
-  /** API endpoint URL (e.g. GraphQL endpoint). */
+  /** API endpoint URL (e.g. GraphQL endpoint, REST base URL). */
   endpoint: string;
+
+  /**
+   * Spec file location (URL or file path). Required for spec-driven discovery
+   * (OpenAPI, protobuf). Ignored by introspection-driven plugins (GraphQL).
+   */
+  specPath?: string;
 
   /** Request timeout in milliseconds. */
   timeout?: number;
@@ -40,6 +47,9 @@ export interface DiscoveryLogger {
 export interface DiscoveryResult {
   /** Discovered operations in core shape (name, type, description?, deprecated?, etc.). */
   operations: Operation[];
+
+  /** Non-fatal issues found during discovery. Always an array (empty when clean). */
+  warnings: DiscoveryWarning[];
 
   /** Optional plugin-specific payload (e.g. full introspection for tools that need inputTypes/enumTypes). */
   raw?: unknown;

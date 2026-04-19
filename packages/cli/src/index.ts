@@ -117,6 +117,9 @@ Common options:
   --help, -h          Show this help message
   --version, -v       Show version number
 
+Scan options:
+  --fail-on-high          Exit 1 if HIGH or CRITICAL findings exist
+
 Lint options:
   --fail-on-undocumented  Exit 1 if new undocumented operations are found
 

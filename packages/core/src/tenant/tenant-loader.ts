@@ -80,21 +80,32 @@ function parseIPv6First16(ipv6: string): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+/** Order matches prior sequential `if` ladder (first match wins). #850, #851, #858. */
+const IPV4_PRIVATE_OR_RESERVED_PREDICATES: ReadonlyArray<
+  (a: number, b: number, c: number) => boolean
+> = [
+  (a, b) => a === 169 && b === 254,
+  (a) => a === 127,
+  (a) => a === 10,
+  (a, b) => a === 172 && b >= 16 && b <= 31,
+  (a, b) => a === 192 && b === 168,
+  (a, b) => a === 100 && b >= 64 && b <= 127,
+  (a, b, c) => a === 192 && b === 0 && c === 2,
+  (a, b, c) => a === 198 && b === 51 && c === 100,
+  (a, b, c) => a === 203 && b === 0 && c === 113,
+  (a, b) => a === 198 && (b === 18 || b === 19),
+];
+
+/** Private, loopback, CGNAT, documentation, and benchmark IPv4 ranges (#850, #851, #858). */
+function isIpv4PrivateOrReservedRange(a: number, b: number, c: number): boolean {
+  return IPV4_PRIVATE_OR_RESERVED_PREDICATES.some((predicate) => predicate(a, b, c));
+}
+
 function isBlockedIPv4(octets: number[]): boolean {
   const [a, b, c] = octets;
-  if (a === 0) return true; // 0.0.0.0/8 — entire zero block (#851)
-  if (a === 169 && b === 254) return true;
-  if (a === 127) return true;
-  if (a === 10) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT (#850)
-  // OWASP-recommended IETF-reserved ranges (#858)
-  if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 TEST-NET-1
-  if (a === 198 && b === 51 && c === 100) return true; // 198.51.100.0/24 TEST-NET-2
-  if (a === 203 && b === 0 && c === 113) return true; // 203.0.113.0/24 TEST-NET-3
-  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmark
-  if (a >= 240) return true; // 240.0.0.0/4 Class E reserved
+  if (a === 0) return true;
+  if (isIpv4PrivateOrReservedRange(a, b, c)) return true;
+  if (a >= 240) return true;
   return false;
 }
 
@@ -215,6 +226,50 @@ async function withDnsTimeout<T>(promise: Promise<T>, timeoutMs: number): Promis
   }
 }
 
+function normalizeHostnameForDnsLookup(parsed: URL): string {
+  let hostname = parsed.hostname;
+  while (hostname.endsWith('.')) hostname = hostname.slice(0, -1);
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    hostname = hostname.slice(1, -1);
+  }
+  return hostname;
+}
+
+async function resolveHostnameViaDns(hostname: string, resolve: DNSResolver): Promise<string[]> {
+  const DNS_TIMEOUT_MS = 5_000;
+  let ips: string[] = [];
+  try {
+    ips = await withDnsTimeout(resolve.resolve4(hostname), DNS_TIMEOUT_MS);
+  } catch (_ipv4Err) {
+    // IPv4 failed — try IPv6 below when available.
+    void _ipv4Err;
+  }
+  if (ips.length === 0 && resolve.resolve6) {
+    try {
+      ips = await withDnsTimeout(resolve.resolve6(hostname), DNS_TIMEOUT_MS);
+    } catch (_ipv6Err) {
+      // IPv6 resolution failed after IPv4 failure or empty IPv4 result.
+      void _ipv6Err;
+    }
+  }
+  return ips;
+}
+
+function validateDnsResolvedIpList(ips: string[]): DNSValidationResult {
+  for (const ip of ips) {
+    if (isBlockedIPv6(ip)) return { allowed: false, reason: 'blocked_ipv6' };
+    const resolved = resolveToIPv4(ip);
+    if (resolved === null) return { allowed: false, reason: 'unparseable_mapped_ip' };
+    if (isIPv4(resolved)) {
+      const octets = parseIPv4Octets(resolved);
+      if (octets && isBlockedIPv4(octets)) {
+        return { allowed: false, reason: 'blocked_ipv4' };
+      }
+    }
+  }
+  return { allowed: true, resolvedIP: ips[0] };
+}
+
 /**
  * Runtime DNS validation to prevent DNS rebinding SSRF bypasses (#870).
  * Should be called immediately before making outbound HTTP requests.
@@ -227,11 +282,7 @@ export async function resolveAndValidateDNS(
   if (!staticCheck.allowed) return staticCheck;
 
   const parsed = new URL(url);
-  let hostname = parsed.hostname;
-  while (hostname.endsWith('.')) hostname = hostname.slice(0, -1);
-  if (hostname.startsWith('[') && hostname.endsWith(']')) {
-    hostname = hostname.slice(1, -1);
-  }
+  const hostname = normalizeHostnameForDnsLookup(parsed);
 
   if (hostname.includes(':')) {
     return { allowed: true, resolvedIP: hostname };
@@ -241,43 +292,13 @@ export async function resolveAndValidateDNS(
   }
 
   const resolve = resolver ?? dns;
-  const DNS_TIMEOUT_MS = 5_000;
-  let ips: string[] = [];
-
-  let lastDnsError: unknown;
-  try {
-    ips = await withDnsTimeout(resolve.resolve4(hostname), DNS_TIMEOUT_MS);
-  } catch (err: unknown) {
-    lastDnsError = err; // Preserved for diagnostics — IPv4 failed, try IPv6.
-  }
-
-  if (ips.length === 0 && resolve.resolve6) {
-    try {
-      ips = await withDnsTimeout(resolve.resolve6(hostname), DNS_TIMEOUT_MS);
-      lastDnsError = undefined; // IPv6 succeeded — clear error.
-    } catch (err: unknown) {
-      lastDnsError = err; // Both resolution attempts failed.
-    }
-  }
+  const ips = await resolveHostnameViaDns(hostname, resolve);
 
   if (ips.length === 0) {
-    void lastDnsError; // Available in debugger — no logger in this module.
     return { allowed: false, reason: 'dns_resolution_failed' };
   }
 
-  for (const ip of ips) {
-    if (isBlockedIPv6(ip)) return { allowed: false, reason: 'blocked_ipv6' };
-    const resolved = resolveToIPv4(ip);
-    if (resolved === null) return { allowed: false, reason: 'unparseable_mapped_ip' };
-    if (isIPv4(resolved)) {
-      const octets = parseIPv4Octets(resolved);
-      if (octets && isBlockedIPv4(octets)) {
-        return { allowed: false, reason: 'blocked_ipv4' };
-      }
-    }
-  }
-
-  return { allowed: true, resolvedIP: ips[0] };
+  return validateDnsResolvedIpList(ips);
 }
 
 const EndpointUrlSchema = z.string().superRefine((url, ctx) => {

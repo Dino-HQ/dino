@@ -46,7 +46,7 @@ async function discoverOperations(
   const operations: Operation[] = result.operations.map(toOperation);
   log(`Discovery complete: ${operations.length} operations`);
 
-  return { operations, raw: result };
+  return { operations, warnings: [], raw: result };
 }
 
 /**

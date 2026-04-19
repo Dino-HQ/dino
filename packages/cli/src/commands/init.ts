@@ -256,6 +256,57 @@ export async function checkEndpoint(url: string): Promise<boolean> {
   }
 }
 
+async function promptOverwriteWhenConfigExists(
+  configPath: string,
+  flags: InitFlags,
+): Promise<'aborted' | 'proceed'> {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is always cwd/.dino.yml
+  if (flags.force || !existsSync(configPath)) return 'proceed';
+  const { overwrite } = await prompts({
+    type: 'confirm',
+    name: 'overwrite',
+    message: '.dino.yml already exists. Overwrite?',
+    initial: false,
+  });
+  if (overwrite !== true) {
+    console.info('Aborted. Existing config preserved.');
+    return 'aborted';
+  }
+  return 'proceed';
+}
+
+function printInitWelcomeIfNotQuiet(flags: InitFlags, ui: UiOptions): void {
+  if (flags.quiet) return;
+  console.info(colorize('\nWelcome to Dino — API Intelligence\n', 'bold', ui));
+  console.info("Let's set up your project.\n");
+}
+
+async function maybeWarnUnreachableInitEndpoint(endpoint: string, quiet: boolean): Promise<void> {
+  if (quiet) return;
+  const reachable = await checkEndpoint(endpoint);
+  if (!reachable) {
+    console.warn(`[warn] Could not reach ${endpoint} — continuing anyway.`);
+  }
+}
+
+function printYamlPreviewIfNotQuiet(yaml: string, quiet: boolean): void {
+  if (quiet) return;
+  console.info('\n--- .dino.yml ---');
+  console.info(yaml);
+  console.info('-----------------\n');
+}
+
+function writeInitConfigOrReturnError(configPath: string, yaml: string): number {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is always cwd/.dino.yml
+    writeFileSync(configPath, yaml, 'utf-8');
+    return 0;
+  } catch (err) {
+    console.error(`Failed to write .dino.yml: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+}
+
 /**
  * dino init [--force]
  *
@@ -266,23 +317,10 @@ export async function runInit(flags: InitFlags): Promise<number> {
   const configPath = resolve(process.cwd(), '.dino.yml');
   const ui = detectUi({ quiet: flags.quiet });
 
-  if (!flags.force && existsSync(configPath)) {
-    const { overwrite } = await prompts({
-      type: 'confirm',
-      name: 'overwrite',
-      message: '.dino.yml already exists. Overwrite?',
-      initial: false,
-    });
-    if (overwrite !== true) {
-      console.info('Aborted. Existing config preserved.');
-      return 0;
-    }
-  }
+  const overwriteOutcome = await promptOverwriteWhenConfigExists(configPath, flags);
+  if (overwriteOutcome === 'aborted') return 0;
 
-  if (!flags.quiet) {
-    console.info(colorize('\nWelcome to Dino — API Intelligence\n', 'bold', ui));
-    console.info("Let's set up your project.\n");
-  }
+  printInitWelcomeIfNotQuiet(flags, ui);
 
   const endpoint = await promptEndpointWithGraphQLWarning();
   if (endpoint === null) {
@@ -306,12 +344,7 @@ export async function runInit(flags: InitFlags): Promise<number> {
   const authEnabled = answers.authEnabled === true;
   const reasoningEnabled = answers.reasoningEnabled === true;
 
-  if (!flags.quiet) {
-    const reachable = await checkEndpoint(endpoint);
-    if (!reachable) {
-      console.warn(`[warn] Could not reach ${endpoint} — continuing anyway.`);
-    }
-  }
+  await maybeWarnUnreachableInitEndpoint(endpoint, flags.quiet === true);
 
   const yaml = buildConfigYaml({
     endpoint,
@@ -321,18 +354,10 @@ export async function runInit(flags: InitFlags): Promise<number> {
     reasoningEnabled,
   });
 
-  if (!flags.quiet) {
-    console.info('\n--- .dino.yml ---');
-    console.info(yaml);
-    console.info('-----------------\n');
-  }
+  printYamlPreviewIfNotQuiet(yaml, flags.quiet === true);
 
-  try {
-    writeFileSync(configPath, yaml, 'utf-8');
-  } catch (err) {
-    console.error(`Failed to write .dino.yml: ${err instanceof Error ? err.message : String(err)}`);
-    return 1;
-  }
+  const writeCode = writeInitConfigOrReturnError(configPath, yaml);
+  if (writeCode !== 0) return writeCode;
 
   console.info(colorize('✔ Created .dino.yml\n', 'green', ui));
 
