@@ -4,7 +4,7 @@
  */
 
 import type { CommandContext, CommonFlags } from '../shared/base-command';
-import { getEndpoint, discoverOperations, withTracking } from '../shared/base-command';
+import { getEndpoint, discoverOperationsDetailed, withTracking } from '../shared/base-command';
 import { CliError } from '../shared/errors';
 import {
   loadOperationRegistry,
@@ -44,7 +44,8 @@ import { CLI_VERSION } from '../version';
 import { createTokenFactory } from '@shared/auth/token-factory';
 import { createAuthAdapter } from '@shared/auth/adapter-factory';
 import { resolveConfig } from '@dino/core';
-import type { ResolvedScanConfig, GraphQLOperation } from '@dino/core';
+import type { ResolvedScanConfig, GraphQLOperation, Operation, ResultEnvelope } from '@dino/core';
+import { createRestExecutor } from '@dino/agents';
 
 export interface ScanFlags extends CommonFlags {
   modules?: string[];
@@ -57,6 +58,7 @@ export interface ScanFlags extends CommonFlags {
   verbose?: boolean;
   endpoint?: string;
   protocol?: 'graphql';
+  failOnHigh?: boolean;
 }
 
 /**
@@ -229,7 +231,21 @@ function readRbacRolesFromContext(context: CommandContext): string[] | undefined
   return (context.tenantConfig as { rbac?: { roles?: string[] } }).rbac?.roles;
 }
 
-async function runPipelineCatalogSnapshotAndPrint(options: {
+type ScanPipelineRunResult = Awaited<ReturnType<typeof runPipeline>>;
+
+function shouldFallBackToAdHocRegistry(context: CommandContext): boolean {
+  return context.tenantId === 'adhoc' || !hasOperationsFile(context.tenantId);
+}
+
+function logAdHocRegistryHintIfNeeded(context: CommandContext, useAdHocFallback: boolean): void {
+  if (useAdHocFallback && context.tenantId !== 'adhoc') {
+    console.info(
+      `No operations file found for "${context.tenantId}" — auto-generating from introspection.`,
+    );
+  }
+}
+
+async function runScanPipelinePhase(params: {
   context: CommandContext;
   flags: ScanFlags;
   resolvedConfig: ResolvedScanConfig;
@@ -239,7 +255,12 @@ async function runPipelineCatalogSnapshotAndPrint(options: {
   effectiveTools: ToolName[] | undefined;
   validatedModules: string[] | undefined;
   rbacRoles: string[] | undefined;
-}): Promise<number> {
+  useAdHocFallback: boolean;
+  restExecutor: ReturnType<typeof createRestExecutor> | undefined;
+  restBaseUrl: string | undefined;
+  openApiSpec: unknown;
+  restOperations: Operation[] | undefined;
+}): Promise<ScanPipelineRunResult> {
   const {
     context,
     flags,
@@ -250,19 +271,13 @@ async function runPipelineCatalogSnapshotAndPrint(options: {
     effectiveTools,
     validatedModules,
     rbacRoles,
-  } = options;
-
-  // #994: Fall back to auto-generated registry when no operations file exists.
-  // This enables zero-config scans for new tenants and demos.
-  const useAdHocFallback = context.tenantId === 'adhoc' || !hasOperationsFile(context.tenantId);
-
-  if (useAdHocFallback && context.tenantId !== 'adhoc') {
-    console.info(
-      `No operations file found for "${context.tenantId}" — auto-generating from introspection.`,
-    );
-  }
-
-  const result = await runPipeline({
+    useAdHocFallback,
+    restExecutor,
+    restBaseUrl,
+    openApiSpec,
+    restOperations,
+  } = params;
+  return runPipeline({
     tenantId: context.tenantId,
     environment: context.environment,
     trigger: 'manual',
@@ -279,15 +294,30 @@ async function runPipelineCatalogSnapshotAndPrint(options: {
       : { ...DEFAULT_REASONING_OPTS, enabled: false, apiKey: null },
     tracker: context.tracker,
     timeoutMs: resolvedConfig.timeoutMs,
+    restExecutor,
+    restBaseUrl,
+    openApiSpec,
+    restOperations,
   });
+}
 
+function warnIfScanReportDegraded(result: ScanPipelineRunResult): void {
   if ('degraded' in result.report && result.report.degraded) {
     console.warn(
       'WARNING: Pipeline ran in degraded mode — all tools failed. Report contains no test data.',
     );
   }
+}
 
-  const catalog = buildCatalog({
+function buildScanCatalogFromResult(params: {
+  result: ScanPipelineRunResult;
+  graphqlOps: GraphQLOperation[];
+  context: CommandContext;
+  useAdHocFallback: boolean;
+  restOperations?: Operation[];
+}) {
+  const { result, graphqlOps, context, useAdHocFallback, restOperations } = params;
+  return buildCatalog({
     introspection: graphqlOps,
     report: {
       ...result.report,
@@ -297,8 +327,16 @@ async function runPipelineCatalogSnapshotAndPrint(options: {
       ? buildAdHocOperationMappings(graphqlOps, context.tenantId)
       : getAllOperations(context.tenantId),
     timestamp: new Date().toISOString(), // determinism:allowed
+    restOperations,
   });
+}
 
+async function persistScanSnapshot(params: {
+  resolvedConfig: ResolvedScanConfig;
+  graphqlOps: GraphQLOperation[];
+  context: CommandContext;
+}): Promise<void> {
+  const { resolvedConfig, graphqlOps, context } = params;
   const snapshotDir = safePath(resolvedConfig.snapshotDir);
   const snapshot = buildSnapshot(graphqlOps, context.tenantId, context.environment);
   await saveSnapshot(snapshot, {
@@ -306,60 +344,165 @@ async function runPipelineCatalogSnapshotAndPrint(options: {
     tenantId: context.tenantId,
     environment: context.environment,
   });
+}
 
-  const output =
-    resolvedConfig.format === 'json'
-      ? JSON.stringify(renderCatalogJson(catalog), null, 2)
-      : renderCatalogMarkdown(catalog);
+function formatScanCatalogForOutput(
+  catalog: ReturnType<typeof buildCatalog>,
+  format: ResolvedScanConfig['format'],
+): string {
+  if (format === 'json') {
+    return JSON.stringify(renderCatalogJson(catalog), null, 2);
+  }
+  return renderCatalogMarkdown(catalog);
+}
+
+async function tryRenderScanInkSummary(params: {
+  flags: ScanFlags;
+  resolvedConfig: ResolvedScanConfig;
+  context: CommandContext;
+  graphqlOps: GraphQLOperation[];
+  result: ScanPipelineRunResult;
+}): Promise<boolean> {
+  const { flags, resolvedConfig, context, graphqlOps, result } = params;
+  const uiSummary = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
+  if (!shouldRenderInkView(uiSummary, { format: resolvedConfig.format, quiet: flags.quiet })) {
+    return false;
+  }
+  try {
+    const React = await import('react');
+    const { renderViewSafe } = await import('../ink/render');
+    const { ScanView } = await import('../views/ScanView');
+    const findingCount = result.condensed.envelopes.flatMap((e) => e.findings).length;
+    const healthScore = computeGlobalHealthScore(result.condensed);
+    return renderViewSafe(
+      React.createElement(ScanView, {
+        version: CLI_VERSION,
+        tenant: context.tenantId,
+        environment: context.environment,
+        operationCount: graphqlOps.length,
+        healthScore,
+        findingCount,
+        toolsRun: result.metadata.toolsRun.length,
+        breakingChanges: 0,
+        durationMs: result.durationMs,
+        degraded: Boolean(result.report.degraded),
+        colored: uiSummary.colored,
+      }),
+    );
+  } catch (inkErr) {
+    console.warn(
+      '[dino] Ink scan view failed:',
+      inkErr instanceof Error ? inkErr.message : String(inkErr),
+    );
+    return false;
+  }
+}
+
+function printScanConsoleFooterIfNeeded(params: {
+  flags: ScanFlags;
+  resolvedConfig: ResolvedScanConfig;
+  graphqlOps: GraphQLOperation[];
+  result: ScanPipelineRunResult;
+  inkSummaryShown: boolean;
+}): void {
+  const { flags, resolvedConfig, graphqlOps, result, inkSummaryShown } = params;
+  if (flags.quiet || resolvedConfig.format === 'json' || inkSummaryShown) return;
+  const uiSummary = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
+  const findingCount = result.condensed.envelopes.flatMap((e) => e.findings).length;
+  const healthScore = computeGlobalHealthScore(result.condensed);
+  const summary = [
+    `${graphqlOps.length} operations tested`,
+    `${findingCount} findings`,
+    `health ${healthLabel(healthScore, uiSummary)}`,
+  ].join(' · ');
+  console.info(colorize(summary, 'dim', uiSummary));
+}
+
+async function runPipelineCatalogSnapshotAndPrint(options: {
+  context: CommandContext;
+  flags: ScanFlags;
+  resolvedConfig: ResolvedScanConfig;
+  graphqlOps: GraphQLOperation[];
+  executor: PipelineExecutor;
+  tokenResolver: TokenResolver | undefined;
+  effectiveTools: ToolName[] | undefined;
+  validatedModules: string[] | undefined;
+  rbacRoles: string[] | undefined;
+  restExecutor: ReturnType<typeof createRestExecutor> | undefined;
+  restBaseUrl: string | undefined;
+  openApiSpec: unknown;
+  restOperations: Operation[] | undefined;
+}): Promise<number> {
+  const {
+    context,
+    flags,
+    resolvedConfig,
+    graphqlOps,
+    executor,
+    tokenResolver,
+    effectiveTools,
+    validatedModules,
+    rbacRoles,
+    restExecutor,
+    restBaseUrl,
+    openApiSpec,
+    restOperations,
+  } = options;
+
+  const useAdHocFallback = shouldFallBackToAdHocRegistry(context);
+  logAdHocRegistryHintIfNeeded(context, useAdHocFallback);
+
+  const result = await runScanPipelinePhase({
+    context,
+    flags,
+    resolvedConfig,
+    graphqlOps,
+    executor,
+    tokenResolver,
+    effectiveTools,
+    validatedModules,
+    rbacRoles,
+    useAdHocFallback,
+    restExecutor,
+    restBaseUrl,
+    openApiSpec,
+    restOperations,
+  });
+
+  warnIfScanReportDegraded(result);
+
+  const catalog = buildScanCatalogFromResult({
+    result,
+    graphqlOps,
+    context,
+    useAdHocFallback,
+    restOperations,
+  });
+
+  await persistScanSnapshot({ resolvedConfig, graphqlOps, context });
+
+  const output = formatScanCatalogForOutput(catalog, resolvedConfig.format);
   if (!flags.quiet) {
     console.info(output);
   }
 
-  const uiSummary = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
-  let inkSummaryShown = false;
-  if (shouldRenderInkView(uiSummary, { format: resolvedConfig.format, quiet: flags.quiet })) {
-    try {
-      const React = await import('react');
-      const { renderViewSafe } = await import('../ink/render');
-      const { ScanView } = await import('../views/ScanView');
-      const findingCount = result.condensed.envelopes.flatMap((e) => e.findings).length;
-      const healthScore = computeGlobalHealthScore(result.condensed);
-      inkSummaryShown = renderViewSafe(
-        React.createElement(ScanView, {
-          version: CLI_VERSION,
-          tenant: context.tenantId,
-          environment: context.environment,
-          operationCount: graphqlOps.length,
-          healthScore,
-          findingCount,
-          toolsRun: result.metadata.toolsRun.length,
-          breakingChanges: 0,
-          durationMs: result.durationMs,
-          degraded: Boolean(result.report.degraded),
-          colored: uiSummary.colored,
-        }),
-      );
-    } catch (inkErr) {
-      console.warn(
-        '[dino] Ink scan view failed:',
-        inkErr instanceof Error ? inkErr.message : String(inkErr),
-      );
-      inkSummaryShown = false;
-    }
-  }
+  const inkSummaryShown = await tryRenderScanInkSummary({
+    flags,
+    resolvedConfig,
+    context,
+    graphqlOps,
+    result,
+  });
 
-  if (!flags.quiet && resolvedConfig.format !== 'json' && !inkSummaryShown) {
-    const findingCount = result.condensed.envelopes.flatMap((e) => e.findings).length;
-    const healthScore = computeGlobalHealthScore(result.condensed);
-    const summary = [
-      `${graphqlOps.length} operations tested`,
-      `${findingCount} findings`,
-      `health ${healthLabel(healthScore, uiSummary)}`,
-    ].join(' · ');
-    console.info(colorize(summary, 'dim', uiSummary));
-  }
+  printScanConsoleFooterIfNeeded({
+    flags,
+    resolvedConfig,
+    graphqlOps,
+    result,
+    inkSummaryShown,
+  });
 
-  return getScanExitCode(result);
+  return getScanExitCode(result, flags.failOnHigh);
 }
 
 /**
@@ -407,9 +550,13 @@ export async function runScan(context: CommandContext, flags: ScanFlags): Promis
       const discoverSpinner = createSpinner('Scanning operations…', ui);
       discoverSpinner.start();
       let graphqlOps;
+      let discoveryMeta: Awaited<ReturnType<typeof discoverOperationsDetailed>>;
       try {
-        graphqlOps = await discoverOperations(context);
-        discoverSpinner.succeed(`Discovered ${graphqlOps.length} operations`);
+        discoveryMeta = await discoverOperationsDetailed(context);
+        graphqlOps = discoveryMeta.graphqlOperations;
+        const discoveredCount =
+          graphqlOps.length > 0 ? graphqlOps.length : discoveryMeta.discoveredOperations.length;
+        discoverSpinner.succeed(`Discovered ${discoveredCount} operations`);
       } catch (err) {
         discoverSpinner.fail('Scan failed');
         throw err;
@@ -419,6 +566,14 @@ export async function runScan(context: CommandContext, flags: ScanFlags): Promis
       logRbacRolesHintWhenMissing(context, rbacRoles);
       const { executor, tokenResolver } = buildScanExecutor(context, flags, endpoint);
       validateRbacIfConfigured(context, rbacRoles);
+
+      const restOps = discoveryMeta.discoveredOperations.filter((op) => op.type === 'rest');
+      const hasRest = restOps.length > 0;
+      const restExecutor = hasRest
+        ? createRestExecutor({ fetch: globalThis.fetch.bind(globalThis) })
+        : undefined;
+      const restBaseUrl = hasRest ? endpoint : undefined;
+      const openApiSpec = hasRest ? discoveryMeta.discoveryRaw : undefined;
 
       return runPipelineCatalogSnapshotAndPrint({
         context,
@@ -430,12 +585,26 @@ export async function runScan(context: CommandContext, flags: ScanFlags): Promis
         effectiveTools,
         validatedModules,
         rbacRoles,
+        restExecutor,
+        restBaseUrl,
+        openApiSpec,
+        restOperations: hasRest ? restOps : undefined,
       });
     },
   );
 }
 
-/** Exit code from pipeline result (#572). Exported for regression tests. */
-export function getScanExitCode(result: { report: { degraded?: boolean } }): number {
-  return result.report.degraded ? 1 : 0;
+/** Exit code from pipeline result (#572, #1012). Exported for regression tests. */
+export function getScanExitCode(
+  result: { report: { degraded?: boolean; envelopes?: ResultEnvelope[] } },
+  failOnHigh: boolean = false,
+): number {
+  if (result.report.degraded) return 1;
+  if (failOnHigh && hasHighOrCriticalFindings(result.report.envelopes)) return 1;
+  return 0;
+}
+
+function hasHighOrCriticalFindings(envelopes?: ResultEnvelope[]): boolean {
+  if (!envelopes) return false;
+  return envelopes.some((e) => e.severity.level === 'CRITICAL' || e.severity.level === 'HIGH');
 }

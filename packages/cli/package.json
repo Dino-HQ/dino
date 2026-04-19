@@ -1,8 +1,8 @@
 {
   "name": "@dino-hq/cli",
-  "version": "0.3.1",
+  "version": "0.4.5",
   "type": "module",
-  "description": "Dino CLI — autonomous API quality scanner. Scan, document, diff, lint, and monitor your APIs.",
+  "description": "API quality intelligence for every deploy. Security, correctness, documentation, and lifecycle for GraphQL and REST.",
   "license": "MIT",
   "bin": {
     "dino": "dist/bin.js"
@@ -34,14 +34,20 @@
   "keywords": [
     "api",
     "graphql",
+    "rest",
+    "openapi",
     "testing",
     "documentation",
     "cli",
     "dino",
     "api-testing",
+    "api-security",
+    "fuzzing",
     "schema-validation",
     "api-quality",
-    "autonomous-qa"
+    "autonomous-qa",
+    "cors",
+    "rbac"
   ],
   "repository": {
     "type": "git",
@@ -50,7 +56,7 @@
   },
   "homepage": "https://usedino.dev",
   "bugs": {
-    "url": "https://github.com/Dino-HQ/dino/issues"
+    "url": "https://github.com/Dino-HQ/project-dino/issues"
   },
   "devDependencies": {
     "@dino/agents": "*",
@@ -61,7 +67,7 @@
     "cosmiconfig": "^9.0.0",
     "esbuild": "^0.28.0",
     "ink": "^7.0.0",
-    "ora": "^9.3.0",
+    "ora": "^8.2.0",
     "prompts": "^2.4.2",
     "react": "^19.2.5"
   },

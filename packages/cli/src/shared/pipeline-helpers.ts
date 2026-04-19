@@ -34,6 +34,7 @@ export const VALID_TOOL_NAMES: ReadonlySet<string> = new Set<ToolName>([
   'rate-limit-validator',
   'error-code-validator',
   'deprecation-tracker',
+  'rest-fuzzer',
 ]);
 
 export const DEFAULT_REASONING_OPTS = {

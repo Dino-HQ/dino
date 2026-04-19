@@ -4,7 +4,7 @@
  */
 
 import { loadTenantById, recordGet, recordSet } from '@dino/core';
-import type { TenantConfig, GraphQLOperation } from '@dino/core';
+import type { TenantConfig, GraphQLOperation, Operation } from '@dino/core';
 import {
   createTracker,
   createConsoleAdapter,
@@ -71,23 +71,29 @@ export function getEndpoint(context: CommandContext): string {
   return endpoint;
 }
 
-/**
- * Run introspection discovery and return validated GraphQL operations.
- * Shared by scan, docs, and diff commands.
- */
-export async function discoverOperations(context: CommandContext): Promise<GraphQLOperation[]> {
+/** Full discovery slice for scan (GraphQL catalog + REST pipeline wiring, Spec 8). */
+export interface DiscoverOperationsResult {
+  graphqlOperations: GraphQLOperation[];
+  discoveredOperations: Operation[];
+  discoveryRaw: unknown;
+}
+
+async function runPluginDiscovery(context: CommandContext) {
   const endpoint = getEndpoint(context);
-  // getEndpoint() already validated environments + environment key — envConfig is guaranteed non-null
   const envConfig = recordGet(context.tenantConfig.environments, context.environment)!;
   const plugin = createDiscoveryBridge({
     tenant: context.tenantConfig,
     environment: context.environment,
   });
 
-  let discoveryResult;
+  // REST APIs need specPath from tenant config for OpenAPI discovery
+  const api = context.tenantConfig.apis[0];
+  const specPath = api && 'specPath' in api ? (api as { specPath?: string }).specPath : undefined;
+
   try {
-    discoveryResult = await plugin.discover({
+    return await plugin.discover({
       endpoint,
+      specPath,
       timeout: envConfig.timeout,
     });
   } catch (err: unknown) {
@@ -96,18 +102,52 @@ export async function discoverOperations(context: CommandContext): Promise<Graph
     }
     throw err;
   }
+}
 
-  if (
-    !discoveryResult.raw ||
-    !Array.isArray((discoveryResult.raw as { operations?: unknown }).operations)
-  ) {
+/**
+ * Discovery with GraphQL operations (for catalog) plus universal `Operation[]` (REST/OpenAPI).
+ * @internal Exported for `dino scan` REST wiring; other commands use {@link discoverOperations}.
+ */
+export async function discoverOperationsDetailed(
+  context: CommandContext,
+): Promise<DiscoverOperationsResult> {
+  const discoveryResult = await runPluginDiscovery(context);
+
+  if (!discoveryResult.operations || discoveryResult.operations.length === 0) {
     throw new CliError(
       'Discovery returned no operations',
       1,
-      'Confirm the endpoint supports GraphQL introspection.',
+      'Confirm the endpoint supports GraphQL introspection or a valid OpenAPI spec for REST.',
     );
   }
-  return (discoveryResult.raw as { operations: GraphQLOperation[] }).operations;
+
+  const raw = discoveryResult.raw;
+  const rawOps = (() => {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const candidate = (raw as { operations?: unknown }).operations;
+    return Array.isArray(candidate) ? (candidate as GraphQLOperation[]) : undefined;
+  })();
+
+  const graphqlOperations =
+    rawOps && rawOps.length > 0 && typeof rawOps[0]?.name === 'string' && 'args' in rawOps[0]
+      ? rawOps
+      : [];
+
+  return {
+    graphqlOperations,
+    discoveredOperations: discoveryResult.operations,
+    discoveryRaw: raw,
+  };
+}
+
+/**
+ * Run introspection discovery and return validated GraphQL operations.
+ * Shared by scan, docs, and diff commands.
+ * For REST-only tenants returns an empty array (catalog has no GraphQL operations).
+ */
+export async function discoverOperations(context: CommandContext): Promise<GraphQLOperation[]> {
+  const d = await discoverOperationsDetailed(context);
+  return d.graphqlOperations;
 }
 
 /** Detect the AbortController timeout signature from plugin.discover. INV-UX-1. */

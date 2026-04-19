@@ -11,7 +11,8 @@
     "lint": "echo \"No lint yet\""
   },
   "dependencies": {
-    "@dino/core": "*"
+    "@dino/core": "*",
+    "@readme/openapi-parser": "^6.0.1"
   },
   "devDependencies": {}
 }

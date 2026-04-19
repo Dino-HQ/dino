@@ -8,3 +8,14 @@ export type {
   GraphQLIntrospectOptions,
   GraphQLIntrospectionSource,
 } from './graphql';
+
+export { createOpenAPIDiscoveryPlugin } from './openapi';
+export type {
+  OpenAPIDiscoveryPluginDeps,
+  OpenAPIDocumentSource,
+  OpenAPIPathItemSource,
+  OpenAPIOperationSource,
+  OpenAPIParseOptions,
+} from './openapi';
+export type { DiscoveryWarning, DiscoveryWarningCode } from './openapi';
+export { nameCollisionWarning, parsePartialWarning } from './openapi';
