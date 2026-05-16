@@ -113,7 +113,7 @@ Add Dino to your GitHub Actions workflow:
 | `format` | No | `markdown` | Output format (`markdown` or `json`) |
 | `cli-version` | No | `latest` | Version of `@dino-hq/cli` to install |
 
-The scan report is uploaded as a GitHub Actions artifact (`dino-scan-report`). See [examples/dino-scan.yml](./examples/dino-scan.yml) for a complete workflow you can copy into your repo.
+The scan report is uploaded as a GitHub Actions artifact (`dino-scan-report`). See [dino-scan.yml](./examples/dino-scan.yml) for a complete workflow you can copy into your repo.
 
 ---
 
@@ -134,7 +134,7 @@ The scan report is uploaded as a GitHub Actions artifact (`dino-scan-report`). S
 Five layers. Each depends only on the layer below it.
 
 ```
-AI Reasoning              Optional analysis and strategies
+xd4rAI Reasoning              Optional analysis and strategies
 Aggregation               Orchestration, reporting, scoring
 Agent Tools               Deterministic QA engine (6 tools)
 Intelligence Layer        Schema snapshots, catalog, docs, diffs
