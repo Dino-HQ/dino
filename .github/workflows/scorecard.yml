@@ -1,0 +1,48 @@
+# OpenSSF Scorecard — automated supply-chain security scoring.
+# Publishes a public score + badge (scorecard.dev) for this repo, so the
+# security posture is third-party-verifiable. Runs weekly, on pushes to the
+# default branch, and when branch-protection rules change.
+# Docs: https://github.com/ossf/scorecard-action
+name: Scorecard supply-chain security
+
+on:
+  schedule:
+    - cron: "24 6 * * 1" # weekly, keeps the score fresh without pushes
+  push:
+    branches: ["main"]
+  branch_protection_rule: # re-score when protection rules change (a Scorecard input)
+
+# Least privilege at the top; the job grants exactly what it needs.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload results to the code-scanning dashboard
+      id-token: write # OIDC, required to publish the public score/badge
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard analysis
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true # → public score + README/website badge
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        with:
+          sarif_file: results.sarif
