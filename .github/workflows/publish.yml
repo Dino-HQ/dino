@@ -33,8 +33,9 @@ jobs:
     name: 'Publish with provenance'
     runs-on: ubuntu-latest # MUST be GitHub-hosted for OIDC
     permissions:
-      contents: read
-      id-token: write # Required for OIDC token generation
+      contents: write # create the signed GitHub Release (Scorecard Signed-Releases)
+      id-token: write # OIDC: npm provenance + build attestation
+      attestations: write # generate the Sigstore build-provenance attestation
     steps:
       # Node 24 LTS ships npm 11.11+ which supports OIDC trusted publishing.
       # Node 22 ships npm 10.9.7 which: (a) doesn't support OIDC, (b) the toolcache
@@ -102,3 +103,32 @@ jobs:
             npm publish "$tgz" --provenance --access public
             echo "✅ Published ${PKG_NAME} with provenance"
           done
+
+      # --- Signed GitHub Release (Scorecard Signed-Releases check) -------------
+      # npm provenance already attests the package; this also produces a Sigstore
+      # build-provenance bundle and attaches it to a GitHub Release so the release
+      # artifacts are independently verifiable. Both steps are non-fatal: the npm
+      # publish above has already succeeded, so a release hiccup never blocks it.
+      - name: Attest build provenance for tarballs
+        id: attest
+        continue-on-error: true
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: "/tmp/tarballs/*.tgz"
+
+      - name: Create signed GitHub Release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+        run: |
+          cd /tmp/tarballs
+          # Attach the Sigstore attestation bundle as a verifiable release asset.
+          if [ -n "${{ steps.attest.outputs.bundle-path }}" ] && [ -f "${{ steps.attest.outputs.bundle-path }}" ]; then
+            cp "${{ steps.attest.outputs.bundle-path }}" "dino-${VERSION}.sigstore.json"
+          fi
+          gh release create "v${VERSION}" ./*.tgz ./*.sigstore.json \
+            --repo "${{ github.repository }}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+          || gh release upload "v${VERSION}" ./*.tgz ./*.sigstore.json --clobber --repo "${{ github.repository }}"
