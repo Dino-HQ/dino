@@ -1,5 +1,7 @@
 # Dino
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Dino-HQ/dino/badge)](https://scorecard.dev/viewer/?uri=github.com/Dino-HQ/dino)
+
 **The autonomous quality layer for APIs.**
 
 Dino scans your API, builds a health report, auto-documents undocumented operations, detects security vulnerabilities, tracks schema changes, and generates a Developer Portal — all from one command.
