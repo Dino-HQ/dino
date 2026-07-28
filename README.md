@@ -2,7 +2,7 @@
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Dino-HQ/dino/badge)](https://scorecard.dev/viewer/?uri=github.com/Dino-HQ/dino)
 
-**An autonomous QA engineer for your APIs — in your terminal and CI.**
+**An autonomous QA engineer for your APIs in your terminal and CI.**
 
 Point Dino at an API and it does what a QA engineer does: tests every operation for security, correctness, and breaking changes, checks that the docs match reality, and remembers your API between runs to catch drift before it ships. Autonomously, deterministically, in seconds — no test scripts to write or maintain.
 
@@ -16,9 +16,9 @@ printf 'endpoint: https://your-api.com/graphql\nprotocol: graphql\n' > .dino.yml
 dino scan
 ```
 
-That's the whole quickstart — no account, no setup. Dino introspects the schema, discovers every operation, runs its full test suite, and scores the health of each endpoint. Add `--fail-on-high` and it gates CI (exits 1 on HIGH/CRITICAL).
+That's the whole quickstart — no account, no setup. Dino introspects the schema, discovers every operation, runs its full test suite, and scores the health of each endpoint. Add `--fail-on-high`, and it gates CI (exits 1 on HIGH/CRITICAL).
 
-> Ad-hoc mode is GraphQL, unauthenticated. For REST/OpenAPI, authenticated scans, RBAC role matrices, and per-operation coverage, run `dino init` to onboard your API fully.
+> Ad-hoc mode is GraphQL, unauthenticated. For REST/OpenAPI, authenticated scans, RBAC role matrices, and per-operation coverage, run `dino init` to fully onboard your API.
 
 ---
 
@@ -26,22 +26,22 @@ That's the whole quickstart — no account, no setup. Dino introspects the schem
 
 | | Every run |
 |---|---|
-| **Security** | Auth-bypass detection, RBAC matrix (every operation × every role), header injection, CORS probing, JWT none-algorithm, IP spoofing, injection payloads |
+| **Security** | Auth-bypass detection, RBAC matrix (every operation × every role), header injection, CORS probing, JWT non-algorithm, IP spoofing, injection payloads |
 | **Correctness** | Live responses validated against the schema, type checking, required-field enforcement, error-code consistency, rate-limit detection |
-| **Documentation** | Discovers the real API from introspection or OpenAPI, builds an operation catalog, flags undocumented endpoints |
+| **Documentation** | Discovers the real API from introspection or OpenAPI, builds an operation catalogue, flags undocumented endpoints |
 | **Lifecycle** | Remembers your schema between runs — catches breaking changes, drift, and deprecations, and tracks health over time |
 
 One scan covers what would take a team weeks to test manually.
 
 ---
 
-## Why a QA engineer, not a scanner
+##  QA engineer
 
 **It verifies, deterministically.** As AI writes more of your code, *generating* changes gets cheap — *proving* they're safe is the scarce part. Dino's verdict is deterministic machinery: same input, same finding, every run. No flaky scripts.
 
 **It has memory.** Most tools run a scan and forget. Dino snapshots your schema and remembers it, so each run knows what changed — that's how it catches a breaking change or silent drift *before* you ship.
 
-**It covers the whole job.** Other tools do one slice — Schemathesis fuzzes, Checkly monitors, Pact checks contracts, StackHawk runs OWASP checks. Dino does security, correctness, documentation, and lifecycle from one place, across GraphQL and REST.
+**It covers the whole job.** Other tools do one slice — Schemathesis fuzzes, Checkly monitors, Pact checks contracts, StackHawk runs OWASP checks. Dino handles security, correctness, documentation, and lifecycle from a single place across GraphQL and REST.
 
 ---
 
@@ -115,18 +115,6 @@ Platform Core             Config, discovery, multi-protocol routing
 
 The bottom four layers have zero AI dependencies. If AI is disabled or unavailable, the full deterministic report still ships.
 
----
-
-## Packages
-
-| Package | Description |
-| --- | --- |
-| `@dino-hq/cli` | Command-line interface |
-| `@dino-hq/core` | Types, config, severity model, tenant isolation |
-| `@dino-hq/agents` | Agent tools — fuzzer, RBAC, rate limits, error codes, deprecation, response validation |
-| `@dino-hq/plugins` | Protocol plugins — GraphQL discovery (REST coming soon) |
-| `@dino-hq/analytics` | Event tracking adapter |
-| `@dino-hq/reasoning` | AI reasoning layer (optional) |
 
 ---
 
