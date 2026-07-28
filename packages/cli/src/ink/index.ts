@@ -18,4 +18,4 @@ export { FindingsTable } from './FindingsTable';
 export type { FindingRow } from './FindingsTable';
 export { DiffBadge } from './DiffBadge';
 export type { DiffBadgeType } from './DiffBadge';
-export { renderView, renderViewAsync, renderViewSafe, shouldRenderInkView } from './render';
+export { renderView, renderViewAsync, renderViewSafe, shouldRenderInkView } from './InkRender';

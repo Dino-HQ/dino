@@ -3,22 +3,25 @@
  * Spec: docs/CLI_SPEC.md
  */
 
+import { sanitizeEventError } from '@dino/analytics';
+import { recordGet } from '@dino/core';
+import { runChangelog } from './commands/changelog';
+import { runConfigFromArgv } from './commands/config';
+import { runDiff } from './commands/diff';
+import { runDocs } from './commands/docs';
+import { runInit } from './commands/init';
+import { runLint } from './commands/lint';
+import { runRunnerFromFlags } from './commands/runner';
+import { runScan } from './commands/scan';
+import { runValidate } from './commands/validate';
+import { runVerify } from './commands/verify';
+import { runWatch } from './commands/watch';
+import { loadCliConfig } from './config/loader';
 import { parseArgs, buildContext } from './shared/base-command';
 import { CliError } from './shared/errors';
 import { printError, detectUi } from './shared/ui';
-import type { CommandContext } from './shared/base-command';
-import { sanitizeEventError } from '@dino/analytics';
-import { recordGet } from '@dino/core';
-import { loadCliConfig } from './config/loader';
-import { runScan } from './commands/scan';
-import { runDocs } from './commands/docs';
-import { runDiff } from './commands/diff';
-import { runWatch } from './commands/watch';
-import { runLint } from './commands/lint';
-import { runChangelog } from './commands/changelog';
-import { runValidate } from './commands/validate';
-import { runInit } from './commands/init';
 import { CLI_VERSION } from './version';
+import type { CommandContext, MergedFlags } from './shared/base-command';
 
 export { runScan } from './commands/scan';
 export type { ScanFlags } from './commands/scan';
@@ -37,10 +40,11 @@ export type { WatchHistoryEntry } from './shared/history';
 export { loadCliConfig } from './config/loader';
 export { runValidate } from './commands/validate';
 export type { ValidateFlags } from './commands/validate';
+export { runVerify } from './commands/verify';
 export { runInit, buildConfigYaml, checkEndpoint } from './commands/init';
 export type { InitFlags } from './commands/init';
 export type { DinoCliConfig } from './config/loader';
-export type { CommonFlags, CommandContext } from './shared/base-command';
+export type { CommonFlags, CommandContext, MergedFlags } from './shared/base-command';
 export {
   parseArgs,
   buildContext,
@@ -79,7 +83,7 @@ export { FindingsTable } from './ink/FindingsTable';
 export type { FindingRow } from './ink/FindingsTable';
 export { DiffBadge } from './ink/DiffBadge';
 export type { DiffBadgeType } from './ink/DiffBadge';
-export { renderViewSafe, shouldRenderInkView } from './ink/render';
+export { renderViewSafe, shouldRenderInkView } from './ink/InkRender';
 
 /** Split comma-separated --tools and --modules into arrays (#573). Used by main() and tests. */
 export function normalizeToolsAndModules(flags: Record<string, unknown>): void {
@@ -98,11 +102,14 @@ Usage: dino <command> [options]
 
 Commands:
   scan   Run the full test pipeline (fuzzing, validation, RBAC, rate limits, error codes, deprecation)
+  config Configure CLI preferences (e.g. telemetry)
   watch  Run scheduled scans with Shadow Mode (observe or enforce)
   docs   Generate API documentation from live introspection
   diff   Compare current schema against a saved snapshot
   lint   Check schema descriptions (fails on new undocumented ops)
   changelog  Generate a changelog from schema snapshot diffs
+  runner     Cloud runner: \`dino runner register\` then \`dino runner start\`
+  verify     Verify a scan DCG against its Sigstore attestation (requires --cloud-endpoint and --token)
   validate   Validate .dino.yml config (with helpful error messages)
   init       Set up your project — generates .dino.yml interactively
 
@@ -172,13 +179,28 @@ function validateFormat(raw: string | undefined): 'markdown' | 'json' | undefine
   return raw as 'markdown' | 'json' | undefined;
 }
 
-function handleCommandError(
-  err: unknown,
-  context: CommandContext,
-  command: string,
-  startMs: number,
-  flags: Record<string, unknown>,
-): number {
+/** Coerced booleans + tenant/format slice merged last into pipeline handlers. */
+type TenantCliCommonFlags = {
+  tenant: string;
+  env: string | undefined;
+  format: ReturnType<typeof validateFormat>;
+  quiet: boolean;
+  verbose: boolean;
+  debug: boolean;
+  noColor: boolean;
+};
+
+/** Options for handleCommandError. */
+interface HandleCommandErrorOptions {
+  err: unknown;
+  context: CommandContext;
+  command: string;
+  startMs: number;
+  flags: Record<string, unknown>;
+}
+
+function handleCommandError(opts: HandleCommandErrorOptions): number {
+  const { err, context, command, startMs, flags } = opts;
   const durationMs = Date.now() - startMs; // determinism:allowed
   // B15 (#588): Read CliError.exitCode instead of hardcoding 1
   const exitCode = err instanceof CliError ? err.exitCode : 1;
@@ -190,6 +212,7 @@ function handleCommandError(
       command: command || 'unknown',
       durationMs,
       error: sanitizeEventError(err instanceof Error ? err.message : String(err)),
+      errorClass: err instanceof Error ? err.name : 'Unknown',
     },
   });
   const ui = detectUi({
@@ -200,8 +223,14 @@ function handleCommandError(
   return exitCode;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dispatch map avoids 6 if-chains (CC reduction)
-const COMMAND_HANDLERS: Record<string, (ctx: CommandContext, f: any) => Promise<number>> = {
+/**
+ * Merged flags type at the dispatch boundary — CommonFlags from CLI parsing
+ * plus extra keys from parseArgs and loaded config. Each handler structurally
+ * accepts this because its XFlags extends CommonFlags.
+ */
+type CommandHandler = (ctx: CommandContext, f: MergedFlags) => Promise<number>;
+
+const COMMAND_HANDLERS: Record<string, CommandHandler> = {
   scan: runScan,
   docs: runDocs,
   diff: runDiff,
@@ -211,15 +240,59 @@ const COMMAND_HANDLERS: Record<string, (ctx: CommandContext, f: any) => Promise<
 };
 
 /**
- * Main CLI entry point. Parses argv, routes to command handler.
- * Returns process exit code.
+ * Runner + verify bypass tenant YAML, tracker, and merged flag coercion (#1154 verify).
  */
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
-  const { command, flags } = parseArgs(argv);
+async function runWithoutTenantContext(
+  command: string,
+  flags: Record<string, unknown>,
+): Promise<number | null> {
+  if (command === 'runner') {
+    return runRunnerFromFlags(flags);
+  }
+  if (command === 'verify') {
+    try {
+      return await runVerify(flags);
+    } catch (err) {
+      const ui = detectUi({ quiet: false, noColor: flags.noColor === true });
+      printError(err instanceof Error ? err : new Error(String(err)), ui, flags.debug === true);
+      return err instanceof CliError ? err.exitCode : 1;
+    }
+  }
+  return null;
+}
 
-  const earlyExit = handleEarlyExit(command, flags);
-  if (earlyExit !== null) return earlyExit;
+interface InvokeTrackedPipelineOptions {
+  context: CommandContext;
+  command: string;
+  handler: CommandHandler;
+  config: Awaited<ReturnType<typeof loadCliConfig>>;
+  flags: Record<string, unknown>;
+  commonFlags: TenantCliCommonFlags;
+}
 
+async function invokeTrackedPipelineCommand(opts: InvokeTrackedPipelineOptions): Promise<number> {
+  const { context, command, handler, config, flags, commonFlags } = opts;
+  const commandStartMs = Date.now(); // determinism:allowed
+  try {
+    // commonFlags spread LAST — coerced booleans (quiet, verbose, debug, noColor)
+    // must not be overridden by raw string values from parseArgs (e.g., --quiet false → 'false' is truthy).
+    // Command-specific flags from config and parseArgs come first.
+    const mergedFlags = { ...config, ...flags, ...commonFlags } as MergedFlags;
+    normalizeToolsAndModules(mergedFlags);
+    return await handler(context, mergedFlags);
+  } catch (err) {
+    return handleCommandError({ err, context, command, startMs: commandStartMs, flags });
+  } finally {
+    await context.tracker.shutdown();
+  }
+}
+
+/** Tenant-backed commands: config load, format coercion, tracker lifecycle. */
+async function runTenantBackedCommand(
+  argv: string[],
+  command: string,
+  flags: Record<string, unknown>,
+): Promise<number> {
   const config = await loadCliConfig({
     tenantId: typeof flags.tenant === 'string' ? flags.tenant : undefined,
   });
@@ -250,6 +323,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return runInit({ quiet: commonFlags.quiet, force: flags.force === true });
   }
 
+  if (command === 'config') {
+    return runConfigFromArgv(argv);
+  }
+
   const handler = recordGet(COMMAND_HANDLERS, command);
   if (!handler) {
     console.error(`Unknown command: ${command}`);
@@ -266,14 +343,28 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return err instanceof CliError ? err.exitCode : 1;
   }
 
-  const commandStartMs = Date.now(); // determinism:allowed
-  try {
-    const mergedFlags = { ...config, ...commonFlags, ...flags };
-    normalizeToolsAndModules(mergedFlags);
-    return await handler(context, mergedFlags);
-  } catch (err) {
-    return handleCommandError(err, context, command, commandStartMs, flags);
-  } finally {
-    await context.tracker.shutdown();
-  }
+  return invokeTrackedPipelineCommand({
+    context,
+    command,
+    handler,
+    config,
+    flags,
+    commonFlags,
+  });
+}
+
+/**
+ * Main CLI entry point. Parses argv, routes to command handler.
+ * Returns process exit code.
+ */
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+  const { command, flags } = parseArgs(argv);
+
+  const earlyExit = handleEarlyExit(command, flags);
+  if (earlyExit !== null) return earlyExit;
+
+  const noTenant = await runWithoutTenantContext(command, flags);
+  if (noTenant !== null) return noTenant;
+
+  return runTenantBackedCommand(argv, command, flags);
 }

@@ -5,9 +5,9 @@
  * The introspect function is injected (DI); no direct imports of app config or Circo.
  */
 
-import type { Operation } from '@dino/core';
 import type { DiscoveryPlugin, DiscoveryOptions, DiscoveryResult } from '../types';
 import type { GraphQLIntrospectOptions, GraphQLIntrospectionSource } from './types';
+import type { Operation } from '@dino/core';
 
 /**
  * Dependencies for the GraphQL discovery plugin. All injected; no globals.

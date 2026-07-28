@@ -1,12 +1,12 @@
-import React from 'react';
 import { Box, Text } from 'ink';
+import React from 'react';
 import { DINO_THEME } from './theme';
 
 export interface ErrorPanelProps {
   error: Error;
-  hint?: string;
-  debug?: boolean;
-  colored?: boolean;
+  hint?: string | undefined;
+  debug?: boolean | undefined;
+  colored?: boolean | undefined;
 }
 
 export function ErrorPanel({
@@ -20,13 +20,13 @@ export function ErrorPanel({
     <Box
       flexDirection="column"
       borderStyle="single"
-      borderLeftColor={colored ? DINO_THEME.error : undefined}
+      {...(colored ? { borderLeftColor: DINO_THEME.error } : {})}
       paddingX={1}
       paddingY={1}
       gap={1}
     >
       <Box flexDirection="row" gap={1}>
-        <Text color={colored ? DINO_THEME.error : undefined}>✗</Text>
+        <Text {...(colored ? { color: DINO_THEME.error } : {})}>✗</Text>
         {colored ? <Text color={DINO_THEME.error}>{msg}</Text> : <Text>{msg}</Text>}
       </Box>
       {hint ? (

@@ -1,5 +1,5 @@
-import React from 'react';
 import { Box, Text } from 'ink';
+import React from 'react';
 import { DinoHeader } from '../ink/DinoHeader';
 import { Divider } from '../ink/Divider';
 

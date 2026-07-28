@@ -1,9 +1,9 @@
-import React from 'react';
 import { Box, Text } from 'ink';
+import React from 'react';
 import { DinoHeader } from '../ink/DinoHeader';
 import { Divider } from '../ink/Divider';
-import { SummaryCard } from '../ink/SummaryCard';
 import { NextStep } from '../ink/NextStep';
+import { SummaryCard } from '../ink/SummaryCard';
 import { DINO_THEME } from '../ink/theme';
 
 export interface WatchIterationViewProps {
@@ -19,8 +19,8 @@ export interface WatchIterationViewProps {
   breakingChanges: number;
   durationMs: number;
   degraded: boolean;
-  nextScanInSec?: number;
-  colored?: boolean;
+  nextScanInSec?: number | undefined;
+  colored?: boolean | undefined;
 }
 
 function formatDuration(ms: number): string {
@@ -42,6 +42,49 @@ function formatCountdown(sec: number): string {
   return m > 0 ? `${String(m)}m ${String(s)}s` : `${String(s)}s`;
 }
 
+function buildIterationStats(props: {
+  operationCount: number;
+  toolsRun: number;
+  toolsCompleted: number;
+  toolsFailed: number;
+  breakingChanges: number;
+  durationMs: number;
+  colored: boolean;
+}) {
+  return [
+    { label: 'OPERATIONS', value: props.operationCount },
+    { label: 'TOOLS RUN', value: props.toolsRun },
+    { label: 'COMPLETED', value: props.toolsCompleted },
+    {
+      label: 'FAILED',
+      value: props.toolsFailed,
+      color: props.colored && props.toolsFailed > 0 ? DINO_THEME.error : undefined,
+    },
+    {
+      label: 'BREAKING',
+      value: props.breakingChanges,
+      color: props.colored && props.breakingChanges > 0 ? DINO_THEME.error : undefined,
+    },
+    { label: 'DURATION', value: formatDuration(props.durationMs) },
+  ];
+}
+
+function NextScanCountdown({
+  nextScanInSec,
+  colored,
+}: Readonly<{
+  nextScanInSec: number | undefined;
+  colored: boolean;
+}>): React.ReactElement | null {
+  if (nextScanInSec === undefined) return null;
+  const label = `Next scan in ${formatCountdown(nextScanInSec)} \u2014 Ctrl+C to stop`;
+  return (
+    <Box marginTop={1} borderStyle="round" paddingX={1}>
+      {colored ? <Text dimColor>{label}</Text> : <Text>{label}</Text>}
+    </Box>
+  );
+}
+
 export function WatchIterationView({
   version,
   tenant,
@@ -58,23 +101,16 @@ export function WatchIterationView({
   nextScanInSec,
   colored = true,
 }: WatchIterationViewProps): React.ReactElement {
-  const title = `ITERATION ${String(iteration)} — ${environment.toUpperCase()}`;
-  const stats = [
-    { label: 'OPERATIONS', value: operationCount },
-    { label: 'TOOLS RUN', value: toolsRun },
-    { label: 'COMPLETED', value: toolsCompleted },
-    {
-      label: 'FAILED',
-      value: toolsFailed,
-      color: colored && toolsFailed > 0 ? DINO_THEME.error : undefined,
-    },
-    {
-      label: 'BREAKING',
-      value: breakingChanges,
-      color: colored && breakingChanges > 0 ? DINO_THEME.error : undefined,
-    },
-    { label: 'DURATION', value: formatDuration(durationMs) },
-  ];
+  const title = `ITERATION ${String(iteration)} \u2014 ${environment.toUpperCase()}`;
+  const stats = buildIterationStats({
+    operationCount,
+    toolsRun,
+    toolsCompleted,
+    toolsFailed,
+    breakingChanges,
+    durationMs,
+    colored,
+  });
 
   return (
     <Box flexDirection="column">
@@ -92,22 +128,14 @@ export function WatchIterationView({
         stats={stats}
         colored={colored}
       />
-      {degraded ? (
+      {degraded && (
         <Box marginTop={1}>
-          <Text color={colored ? DINO_THEME.warning : undefined}>
-            {'\u26A0'} Degraded — all tools failed. Health score unavailable.
+          <Text {...(colored ? { color: DINO_THEME.warning } : {})}>
+            {'\u26A0'} Degraded \u2014 all tools failed. Health score unavailable.
           </Text>
         </Box>
-      ) : null}
-      {nextScanInSec !== undefined ? (
-        <Box marginTop={1} borderStyle="round" paddingX={1}>
-          {colored ? (
-            <Text dimColor>Next scan in {formatCountdown(nextScanInSec)} — Ctrl+C to stop</Text>
-          ) : (
-            <Text>Next scan in {formatCountdown(nextScanInSec)} — Ctrl+C to stop</Text>
-          )}
-        </Box>
-      ) : null}
+      )}
+      <NextScanCountdown nextScanInSec={nextScanInSec} colored={colored} />
       <NextStep text="Next:" command="dino scan" colored={colored} />
     </Box>
   );

@@ -1,10 +1,10 @@
-import React from 'react';
 import { Box, Text } from 'ink';
+import React from 'react';
 import { DinoHeader } from '../ink/DinoHeader';
 import { DinoSpinner } from '../ink/DinoSpinner';
-import { SummaryCard } from '../ink/SummaryCard';
 import { NextStep } from '../ink/NextStep';
 import { ProgressBar } from '../ink/ProgressBar';
+import { SummaryCard } from '../ink/SummaryCard';
 import { DINO_THEME } from '../ink/theme';
 
 export interface ScanViewProps {
@@ -79,13 +79,13 @@ export function ScanView({
         stats={stats}
         colored={colored}
       />
-      {degraded ? (
+      {degraded && (
         <Box marginTop={1}>
-          <Text color={colored ? DINO_THEME.warning : undefined}>
+          <Text {...(colored ? { color: DINO_THEME.warning } : {})}>
             {'\u26A0'} Degraded — all tools failed. Health score unavailable.
           </Text>
         </Box>
-      ) : null}
+      )}
       <NextStep text="Next:" command="dino watch --once" colored={colored} />
     </Box>
   );

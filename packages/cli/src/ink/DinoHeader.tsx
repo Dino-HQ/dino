@@ -1,5 +1,5 @@
-import React from 'react';
 import { Box, Text } from 'ink';
+import React from 'react';
 import { DINO_THEME } from './theme';
 
 const DINO_ASCII = ['  ▟██▙ ▄', '  █ ●██▀', '  ▜██▛▀ '];
@@ -7,10 +7,58 @@ const DINO_ASCII = ['  ▟██▙ ▄', '  █ ●██▀', '  ▜██▛�
 export interface DinoHeaderProps {
   version: string;
   command: string;
-  tenant?: string;
-  environment?: string;
-  extra?: Record<string, string>;
-  colored?: boolean;
+  tenant?: string | undefined;
+  environment?: string | undefined;
+  extra?: Record<string, string> | undefined;
+  colored?: boolean | undefined;
+}
+
+function HeaderLabel({
+  label,
+  value,
+  colored,
+}: Readonly<{
+  label: string;
+  value: string;
+  colored: boolean;
+}>): React.ReactElement {
+  if (colored) {
+    return (
+      <Text dimColor color={DINO_THEME.dim}>
+        {label}: <Text color={DINO_THEME.muted}>{value}</Text>
+      </Text>
+    );
+  }
+  return (
+    <Text>
+      {label}: {value}
+    </Text>
+  );
+}
+
+function HeaderMeta({
+  tenant,
+  environment,
+  extra,
+  colored,
+}: Readonly<{
+  tenant?: string | undefined;
+  environment?: string | undefined;
+  extra?: Record<string, string> | undefined;
+  colored: boolean;
+}>): React.ReactElement | null {
+  if (tenant === undefined && environment === undefined && !extra) return null;
+  return (
+    <Box gap={2} marginTop={1} flexDirection="row" flexWrap="wrap">
+      {tenant ? <HeaderLabel label="tenant" value={tenant} colored={colored} /> : null}
+      {environment ? <HeaderLabel label="env" value={environment} colored={colored} /> : null}
+      {extra
+        ? Object.entries(extra).map(([k, v]) => (
+            <HeaderLabel key={k} label={k} value={v} colored={colored} />
+          ))
+        : null}
+    </Box>
+  );
 }
 
 export function DinoHeader({
@@ -25,15 +73,15 @@ export function DinoHeader({
   return (
     <Box flexDirection="row" gap={2} paddingBottom={1}>
       <Box flexDirection="column">
-        {DINO_ASCII.map((line, i) => (
-          <Text key={i} color={colored ? DINO_THEME.brand : undefined}>
+        {DINO_ASCII.map((line) => (
+          <Text key={line} {...(colored ? { color: DINO_THEME.brand } : {})}>
             {line}
           </Text>
         ))}
       </Box>
       <Box flexDirection="column">
         <Box gap={1} flexDirection="row">
-          <Text bold={colored} color={colored ? DINO_THEME.brand : undefined}>
+          <Text bold={colored} {...(colored ? { color: DINO_THEME.brand } : {})}>
             DINO
           </Text>
           {colored ? (
@@ -51,41 +99,7 @@ export function DinoHeader({
         ) : (
           <Text>API Intelligence Layer</Text>
         )}
-        {(tenant !== undefined || environment !== undefined || extra) && (
-          <Box gap={2} marginTop={1} flexDirection="row" flexWrap="wrap">
-            {tenant !== undefined ? (
-              colored ? (
-                <Text dimColor color={DINO_THEME.dim}>
-                  tenant: <Text color={DINO_THEME.muted}>{tenant}</Text>
-                </Text>
-              ) : (
-                <Text>tenant: {tenant}</Text>
-              )
-            ) : null}
-            {environment !== undefined ? (
-              colored ? (
-                <Text dimColor color={DINO_THEME.dim}>
-                  env: <Text color={DINO_THEME.muted}>{environment}</Text>
-                </Text>
-              ) : (
-                <Text>env: {environment}</Text>
-              )
-            ) : null}
-            {extra
-              ? Object.entries(extra).map(([k, v]) =>
-                  colored ? (
-                    <Text key={k} dimColor color={DINO_THEME.dim}>
-                      {k}: <Text color={DINO_THEME.muted}>{v}</Text>
-                    </Text>
-                  ) : (
-                    <Text key={k}>
-                      {k}: {v}
-                    </Text>
-                  ),
-                )
-              : null}
-          </Box>
-        )}
+        <HeaderMeta tenant={tenant} environment={environment} extra={extra} colored={colored} />
       </Box>
       <Box flexGrow={1} />
       {colored ? <Text color={DINO_THEME.info}>dino {command}</Text> : <Text>dino {command}</Text>}

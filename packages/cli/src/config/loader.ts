@@ -7,65 +7,69 @@ import { cosmiconfig } from 'cosmiconfig';
 import { z } from 'zod';
 
 // B99 (#668): Zod schema for .dino.yml validation
-const DinoCliConfigSchema = z
-  .object({
-    tenant: z.string().optional(),
-    environment: z.string().optional(),
-    format: z.enum(['markdown', 'json']).optional(),
-    snapshotDir: z.string().optional(),
-    aiKey: z.string().optional(),
-    autonomy: z.object({ level: z.enum(['observe', 'enforce']) }).optional(),
-    auth: z
-      .object({
-        enabled: z.boolean(),
-        role: z.string().min(1).optional(),
-      })
-      .optional(),
-    rateLimit: z
-      .object({
-        burst: z.number().int().min(1).max(500).optional(),
-      })
-      .optional(),
-    // #560: Ad-hoc scan support — endpoint + protocol in .dino.yml
-    endpoint: z.string().url().optional(),
-    protocol: z.enum(['graphql']).optional(),
-  })
-  .passthrough();
+const DinoCliConfigSchema = z.looseObject({
+  tenant: z.string().optional(),
+  environment: z.string().optional(),
+  format: z.enum(['markdown', 'json']).optional(),
+  snapshotDir: z.string().optional(),
+  aiKey: z.string().optional(),
+  autonomy: z.object({ level: z.enum(['observe', 'enforce']) }).optional(),
+  auth: z
+    .object({
+      enabled: z.boolean(),
+      role: z.string().min(1).optional(),
+    })
+    .optional(),
+  rateLimit: z
+    .object({
+      burst: z.number().int().min(1).max(500).optional(),
+    })
+    .optional(),
+  // #560: Ad-hoc scan support — endpoint + protocol in .dino.yml
+  endpoint: z.url().optional(),
+  protocol: z.enum(['graphql']).optional(),
+});
 
 export interface LoadCliConfigOptions {
   /** When set, config.tenant must match or be unset (Batch 10+11, #413). */
-  tenantId?: string;
+  tenantId?: string | undefined;
 }
 
 export interface DinoCliConfig {
   /** Default tenant ID */
-  tenant?: string;
+  tenant?: string | undefined;
   /** Default environment */
-  environment?: string;
+  environment?: string | undefined;
   /** Default output format */
-  format?: 'markdown' | 'json';
+  format?: ('markdown' | 'json') | undefined;
   /** Snapshot directory override */
-  snapshotDir?: string;
+  snapshotDir?: string | undefined;
   /** AI API key for reasoning (Pro tier). Also reads DINO_AI_KEY env var. */
-  aiKey?: string;
+  aiKey?: string | undefined;
   /** Shadow Mode autonomy config */
-  autonomy?: {
-    level: 'observe' | 'enforce';
-  };
+  autonomy?:
+    | {
+        level: 'observe' | 'enforce';
+      }
+    | undefined;
   /** Auth configuration — enables authenticated scans */
-  auth?: {
-    enabled: boolean;
-    role?: string;
-  };
+  auth?:
+    | {
+        enabled: boolean;
+        role?: string | undefined;
+      }
+    | undefined;
   /** Rate limit validation configuration */
-  rateLimit?: {
-    /** Burst size override (Free: 10, Pro: 50, Team: 100). Max: 500. */
-    burst?: number;
-  };
+  rateLimit?:
+    | {
+        /** Burst size override (Free: 10, Pro: 50, Team: 100). Max: 500. */
+        burst?: number | undefined;
+      }
+    | undefined;
   /** Direct API endpoint URL for ad-hoc scans (#560) */
-  endpoint?: string;
+  endpoint?: string | undefined;
   /** API protocol — only graphql supported (#560) */
-  protocol?: 'graphql';
+  protocol?: 'graphql' | undefined;
 }
 
 /**

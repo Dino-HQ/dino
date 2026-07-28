@@ -3,31 +3,79 @@
  * Spec: docs/CLI_SPEC.md §2–4
  */
 
-import { loadTenantById, recordGet, recordSet } from '@dino/core';
-import type { TenantConfig, GraphQLOperation, Operation } from '@dino/core';
 import {
   createTracker,
-  createConsoleAdapter,
+  createNoopAdapter,
+  createPostHogAdapter,
   sanitizeEventError,
   sanitizeCliFlags,
 } from '@dino/analytics';
-import type { Tracker } from '@dino/analytics';
-import { createDiscoveryBridge } from '@introspection/create-discovery-bridge';
-import type { DinoCliConfig } from '../config/loader';
+import { loadTenantById, recordGet, recordSet } from '@dino/core';
+import { createDiscoveryBridge } from '@dino/engine';
 import { CliError } from './errors';
-import { CLI_VERSION } from '../version';
 import { printError, detectUi } from './ui';
+import { getEffectiveTelemetryLevel, readGlobalDinoConfigSync } from '../config/global-dino-config';
+import { CLI_VERSION } from '../version';
+import type { DinoCliConfig } from '../config/loader';
+import type { AnalyticsAdapter, Tracker } from '@dino/analytics';
+import type { TenantConfig, GraphQLOperation, Operation } from '@dino/core';
 
-/** Parsed CLI flags common to all commands */
-export interface CommonFlags {
-  tenant: string;
-  env?: string;
-  format?: 'markdown' | 'json';
-  quiet?: boolean;
-  verbose?: boolean;
-  debug?: boolean;
-  noColor?: boolean;
+/** Events sent at 'crash' level (errors/failures only). */
+const CRASH_LEVEL_EVENTS = new Set([
+  'cli.command.failed',
+  'pipeline.tool.failed',
+  'pipeline.run.failed',
+]);
+
+function createCliAnalyticsAdapter(): AnalyticsAdapter {
+  const g = readGlobalDinoConfigSync();
+  const level = getEffectiveTelemetryLevel(g);
+  if (level === 'off') {
+    return createNoopAdapter();
+  }
+  const key =
+    typeof process.env.POSTHOG_API_KEY === 'string' ? process.env.POSTHOG_API_KEY.trim() : '';
+  if (!key) {
+    return createNoopAdapter();
+  }
+  const distinctId =
+    typeof g.anonymousId === 'string' && g.anonymousId.length > 0 ? g.anonymousId : '';
+  if (!distinctId) {
+    return createNoopAdapter();
+  }
+  const inner = createPostHogAdapter({ apiKey: key, distinctId });
+
+  // 'all' sends everything; 'crash' filters to error events only
+  if (level === 'all') {
+    return inner;
+  }
+  return {
+    name: `${inner.name}[crash]`,
+    track(event) {
+      if (CRASH_LEVEL_EVENTS.has(event.type)) {
+        inner.track(event);
+      }
+    },
+    shutdown: inner.shutdown?.bind(inner),
+  };
 }
+
+/** Parsed CLI flags common to all commands.
+ * Index signature: flags come from CLI arg parsing and may include arbitrary keys
+ * from loaded config or command-specific extensions. */
+export interface CommonFlags {
+  [key: string]: unknown;
+  tenant: string;
+  env?: string | undefined;
+  format?: ('markdown' | 'json') | undefined;
+  quiet?: boolean | undefined;
+  verbose?: boolean | undefined;
+  debug?: boolean | undefined;
+  noColor?: boolean | undefined;
+}
+
+/** Parsed + merged flags at command dispatch (config + argv + common). */
+export type MergedFlags = CommonFlags & Record<string, unknown>;
 
 /** Context assembled before command execution */
 export interface CommandContext {
@@ -80,7 +128,10 @@ export interface DiscoverOperationsResult {
 
 async function runPluginDiscovery(context: CommandContext) {
   const endpoint = getEndpoint(context);
-  const envConfig = recordGet(context.tenantConfig.environments, context.environment)!;
+  const envConfig = recordGet(context.tenantConfig.environments, context.environment);
+  if (!envConfig) {
+    throw new Error(`Environment '${context.environment}' not found in tenant config`);
+  }
   const plugin = createDiscoveryBridge({
     tenant: context.tenantConfig,
     environment: context.environment,
@@ -180,17 +231,21 @@ function buildIntrospectionTimeoutError(
   return new CliError(message, 1, hint, cause);
 }
 
+/** Options for withTracking. */
+export interface WithTrackingOptions {
+  context: CommandContext;
+  command: string;
+  flagsPayload: Record<string, unknown>;
+  quiet: boolean | undefined;
+  body: () => Promise<number>;
+}
+
 /**
  * Wrap a command body with analytics tracking (invoked/completed/failed).
  * Returns the exit code from the body, or 1 on error.
  */
-export async function withTracking(
-  context: CommandContext,
-  command: string,
-  flagsPayload: Record<string, unknown>,
-  quiet: boolean | undefined,
-  body: () => Promise<number>,
-): Promise<number> {
+export async function withTracking(opts: WithTrackingOptions): Promise<number> {
+  const { context, command, flagsPayload, quiet, body } = opts;
   const startMs = Date.now(); // determinism:allowed
   context.tracker.track({
     type: 'cli.command.invoked',
@@ -221,6 +276,7 @@ export async function withTracking(
         command,
         durationMs,
         error: sanitizeEventError(err instanceof Error ? err.message : String(err)),
+        errorClass: err instanceof Error ? err.name : 'Unknown',
       },
     });
     if (!quiet) {
@@ -244,7 +300,8 @@ function camelCase(flag: string): string {
 
 /** Parse a --flag arg, returning the number of consumed tokens. */
 function parseFlag(argv: string[], i: number, flags: Record<string, unknown>): number {
-  const arg = argv.at(i)!;
+  const arg = argv.at(i);
+  if (!arg) throw new Error(`parseFlag: argv index ${i} out of bounds (length ${argv.length})`);
   const eq = arg.indexOf('=');
   if (eq > 0) {
     recordSet(flags, camelCase(arg.slice(2, eq)), arg.slice(eq + 1));
@@ -252,8 +309,9 @@ function parseFlag(argv: string[], i: number, flags: Record<string, unknown>): n
   }
   const key = camelCase(arg.slice(2));
   // B27 (#607): Check for single-dash flags (-v, -h) — don't consume them as values
-  if (i + 1 < argv.length && !argv.at(i + 1)!.startsWith('-')) {
-    recordSet(flags, key, argv.at(i + 1)!);
+  const nextArg = i + 1 < argv.length ? argv.at(i + 1) : undefined;
+  if (nextArg !== undefined && !nextArg.startsWith('-')) {
+    recordSet(flags, key, nextArg);
     return 2;
   }
   recordSet(flags, key, true);
@@ -270,7 +328,8 @@ export function parseArgs(argv: string[]): { command: string; flags: Record<stri
   let i = 0;
 
   while (i < argv.length) {
-    const arg = argv.at(i)!;
+    const arg = argv.at(i);
+    if (!arg) throw new Error(`parseArgs: argv index ${i} out of bounds (length ${argv.length})`);
     if (arg === '--') {
       i++;
       break;
@@ -288,7 +347,13 @@ export function parseArgs(argv: string[]): { command: string; flags: Record<stri
   }
 
   while (i < argv.length) {
-    recordSet(flags, `_${String(i)}`, argv.at(i)!);
+    const positional = argv.at(i);
+    if (positional === undefined) {
+      throw new Error(
+        `Expected positional argument at index ${i} but argv.at(${i}) returned undefined`,
+      );
+    }
+    recordSet(flags, `_${String(i)}`, positional);
     i++;
   }
 
@@ -337,7 +402,7 @@ export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): 
       30_000, // DEFAULT_SCAN_CONFIG.requestTimeoutMs — hardcoded to avoid circular dep
     );
     const tracker = createTracker({
-      adapter: createConsoleAdapter(),
+      adapter: createCliAnalyticsAdapter(),
       tenantId: 'adhoc',
     });
     return { tenantConfig, tenantId: 'adhoc', environment: 'default', tracker };
@@ -354,7 +419,7 @@ export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): 
   const tenantConfig = loadTenantById(tenantId);
   const environment = flags.env ?? config?.environment ?? tenantConfig.defaultEnvironment;
   const tracker = createTracker({
-    adapter: createConsoleAdapter(),
+    adapter: createCliAnalyticsAdapter(),
     tenantId,
   });
   return {

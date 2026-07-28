@@ -12,10 +12,10 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import prompts from 'prompts';
+import { shouldRenderInkView } from '../ink/InkRender';
 import { detectUi, colorize } from '../shared/ui';
-import type { UiOptions } from '../shared/ui';
-import { shouldRenderInkView } from '../ink/render';
 import { CLI_VERSION } from '../version';
+import type { UiOptions } from '../shared/ui';
 
 export interface InitFlags {
   quiet?: boolean;
@@ -62,7 +62,9 @@ export function urlPathEndsWithGraphQL(url: string): boolean {
     // Strip ALL trailing slashes (greedy), then compare lowercase. Greedy
     // handles copy-paste artifacts like '/graphql//' that are functionally
     // identical to '/graphql' (Maciver LOW urlMultiTrailingSlashEdge).
-    const path = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+    let path = parsed.pathname;
+    while (path.endsWith('/')) path = path.slice(0, -1);
+    path = path.toLowerCase();
     return path.endsWith('/graphql');
   } catch {
     // Invalid URL — the endpoint prompt's validate() already rejects these before this helper runs.
@@ -159,8 +161,8 @@ function remainingInitPromptQuestions(): Parameters<typeof prompts>[0] {
 function buildInitNextStepLines(answers: {
   authEnabled: boolean;
   reasoningEnabled: boolean;
-  authEnvVar?: string;
-  aiKeyVar?: string;
+  authEnvVar?: string | undefined;
+  aiKeyVar?: string | undefined;
 }): string[] {
   const lines: string[] = [];
   if (
@@ -185,8 +187,8 @@ function printInitNextSteps(
   answers: {
     authEnabled: boolean;
     reasoningEnabled: boolean;
-    authEnvVar?: string;
-    aiKeyVar?: string;
+    authEnvVar?: string | undefined;
+    aiKeyVar?: string | undefined;
   },
   ui: UiOptions,
 ): void {
@@ -207,8 +209,8 @@ async function tryRenderInitInkSummary(params: {
   nextStepAnswers: {
     authEnabled: boolean;
     reasoningEnabled: boolean;
-    authEnvVar?: string;
-    aiKeyVar?: string;
+    authEnvVar?: string | undefined;
+    aiKeyVar?: string | undefined;
   };
 }): Promise<boolean> {
   if (!shouldRenderInkView(params.ui, { quiet: params.quiet })) {
@@ -216,7 +218,7 @@ async function tryRenderInitInkSummary(params: {
   }
   try {
     const React = await import('react');
-    const { renderViewSafe } = await import('../ink/render');
+    const { renderViewSafe } = await import('../ink/InkRender');
     const { InitView } = await import('../views/InitView');
     const lines: string[] = [
       `Config: ${params.configPath}`,
@@ -247,7 +249,7 @@ export async function checkEndpoint(url: string): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000); // determinism:allowed
   try {
-    await fetch(url, { method: 'HEAD', signal: controller.signal });
+    await fetch(url, { method: 'HEAD', signal: controller.signal }); // determinism:allowed
     return true;
   } catch {
     return false;

@@ -1,8 +1,8 @@
-import React from 'react';
 import { Box, Text } from 'ink';
+import React from 'react';
 import { DinoHeader } from '../ink/DinoHeader';
-import { StatusIcon } from '../ink/StatusIcon';
 import { NextStep } from '../ink/NextStep';
+import { StatusIcon } from '../ink/StatusIcon';
 
 export interface ValidateViewProps {
   version: string;

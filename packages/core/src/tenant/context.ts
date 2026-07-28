@@ -6,9 +6,9 @@
  * everything an agent needs to run against a specific tenant.
  */
 
+import { recordGet } from '../utils/safe-record';
 import type { TenantConfig, EnvironmentConfig } from './tenant-config';
 import type { Operation } from '../types/operation';
-import { recordGet } from '../utils/safe-record';
 
 /**
  * The runtime context passed to every agent.

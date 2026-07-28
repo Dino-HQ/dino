@@ -3,16 +3,18 @@
  * Extracted to prevent SonarCloud duplication between scan.ts and watch.ts.
  */
 
-import type { PipelineExecutor, TokenResolver, ToolName } from '@pipeline/runner.types';
-import type { TokenFactory } from '@shared/auth/token-factory';
-import type { AccountRole } from '@shared/auth/types';
+import { applyInjections, type TemplateResolver } from '@dino/auth';
 import { resolveAndValidateDNS } from '@dino/core';
-import { safeEndpointUrl } from '../../../../src/introspection/introspect';
-import { getModuleSlugs } from '@reporters/operation-mapper';
-import { logger } from '../../../../src/utils/logger';
-import { calculateNumericScore } from '@orchestration/severity-scorer';
-import type { CondensedReport } from '@orchestration';
+import { calculateNumericScore, getModuleSlugs, logger, safeEndpointUrl } from '@dino/engine';
 import { CliError } from './errors';
+import type {
+  AccountRole,
+  CondensedReport,
+  PipelineExecutor,
+  TokenFactory,
+  TokenResolver,
+  ToolName,
+} from '@dino/engine';
 
 /** Wraps createExecutor with automatic token injection — reuses existing auth logic */
 export function withAuth(
@@ -140,7 +142,53 @@ export function validateConfigConsistency(
   }
 }
 
-export function createExecutor(endpoint: string): PipelineExecutor {
+/** #1981 — injection values are pre-resolved by the auth context; apply them verbatim (mirrors graphql-client). */
+const IDENTITY_RESOLVER: TemplateResolver = { resolve: (template) => template };
+
+/**
+ * #1981 — build the outgoing headers + URL for one executor call, applying the caller's headers,
+ * bearer token, and generic credential injections (header/cookie/query). Mirrors `graphql-client`'s
+ * ClientOptions path: previously only `authToken` was honored (and `options.headers` was dropped
+ * outright), so api_key / basic_auth / cookie-session profiles scanned unauthenticated and the run
+ * completed false-CLEAN.
+ */
+// @internal — exported for the auth-method×protocol boundary sweep
+// (tests/contract/cli/auth-application.boundary.test.ts). This is the pure request-assembly seam
+// where #1981 lived (non-bearer creds dropped on the GraphQL path); testing it directly asserts the
+// final outgoing HTTP without a live endpoint / DNS round-trip.
+export function buildExecutorRequest(
+  endpoint: string,
+  options: Parameters<PipelineExecutor>[2],
+): { headers: Record<string, string>; url: string } {
+  let headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...options?.headers,
+    ...(options?.authToken ? { Authorization: `Bearer ${options.authToken}` } : {}),
+  };
+  let url = endpoint;
+  if (options?.injections && options.injections.length > 0) {
+    const injected = applyInjections({ headers, url }, options.injections, IDENTITY_RESOLVER);
+    headers = injected.headers;
+    url = injected.url;
+    if (injected.cookieHeader !== undefined) {
+      headers.Cookie = injected.cookieHeader;
+    }
+  }
+  if (options?.cookieHeader !== undefined && options.cookieHeader !== '') {
+    headers.Cookie = options.cookieHeader;
+  }
+  return { headers, url };
+}
+
+/**
+ * #1850 — `fetchImpl` defaults to the global `fetch` (mockable in tests); production callers that hit
+ * customer-controlled targets on a POOL RUNNER pass `createPinnedFetch()` to pin the connection to the
+ * validated IP (closing the DNS-rebinding TOCTOU). resolveAndValidateDNS is kept for the early CliError.
+ */
+export function createExecutor(
+  endpoint: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): PipelineExecutor {
   return async (document, variables, options) => {
     const dnsCheck = await resolveAndValidateDNS(endpoint);
     if (!dnsCheck.allowed) {
@@ -151,12 +199,12 @@ export function createExecutor(endpoint: string): PipelineExecutor {
       );
     }
 
-    const res = await fetch(endpoint, {
+    const { headers, url } = buildExecutorRequest(endpoint, options);
+
+    const res = await fetchImpl(url, {
+      // determinism:allowed
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options?.authToken ? { Authorization: `Bearer ${options.authToken}` } : {}),
-      },
+      headers,
       body: JSON.stringify({ query: document, variables: variables ?? null }),
     });
 
@@ -212,4 +260,14 @@ export function computeGlobalHealthScore(condensed: CondensedReport): number {
   // so healthLabel shows "Critical (0)" rather than a misleading value.
   if (!Number.isFinite(score)) return 0;
   return Math.max(0, score);
+}
+
+/**
+ * PER_OP_FINDINGS feature flag (Spec 1, task #13) — single env read for ALL
+ * runPipeline construction sites (scan-pipeline, runner, watch). The engine never
+ * reads env for this flag; a conformance test asserts every site calls this helper
+ * so no entry point can silently stay on the legacy finding shape.
+ */
+export function perOpFindingsFromEnv(): boolean {
+  return process.env.PER_OP_FINDINGS === 'true';
 }

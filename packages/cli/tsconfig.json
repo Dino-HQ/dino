@@ -4,37 +4,120 @@
     "composite": true,
     "jsx": "react-jsx",
     "outDir": "./dist",
-    "rootDir": "../..",
-    "baseUrl": "../..",
+    "rootDir": "src",
     "paths": {
-      "@introspection/*": ["src/introspection/*"],
-      "@reporters/*": ["src/reporters/*"],
-      "@intelligence": ["src/intelligence/index.ts"],
-      "@intelligence/*": ["src/intelligence/*"],
-      "@pipeline/*": ["src/pipeline/*"],
-      "@config/*": ["src/config/*"],
-      "@utils/*": ["src/utils/*"],
-      "@shared/*": ["src/shared/*"],
-      "@dino/core": ["packages/core/src/index.ts"],
-      "@dino/core/*": ["packages/core/src/*"],
-      "@dino/plugins": ["packages/plugins/src/index.ts"],
-      "@dino/plugins/*": ["packages/plugins/src/*"],
-      "@dino/agents": ["packages/agents/src/index.ts"],
-      "@dino/agents/*": ["packages/agents/src/*"],
-      "@dino/analytics": ["packages/analytics/src/index.ts"],
-      "@dino/analytics/*": ["packages/analytics/src/*"],
-      "@dino/reasoning": ["packages/reasoning/src/index.ts"],
-      "@dino/reasoning/*": ["packages/reasoning/src/*"],
-      "@dino/cli": ["packages/cli/src/index.ts"],
-      "@dino/cli/*": ["packages/cli/src/*"]
+      "@dino/engine": [
+        "../engine/src/index.ts"
+      ],
+      "@dino/engine/*": [
+        "../engine/src/*"
+      ],
+      "@introspection/*": [
+        "../engine/src/introspection/*"
+      ],
+      "@reporters/*": [
+        "../engine/src/reporters/*"
+      ],
+      "@intelligence": [
+        "../engine/src/intelligence/index.ts"
+      ],
+      "@intelligence/*": [
+        "../engine/src/intelligence/*"
+      ],
+      "@pipeline/*": [
+        "../engine/src/pipeline/*"
+      ],
+      "@config/*": [
+        "../engine/src/config/*"
+      ],
+      "@utils/*": [
+        "../engine/src/utils/*"
+      ],
+      "@shared/*": [
+        "../engine/src/shared/*"
+      ],
+      "@orchestration": [
+        "../engine/src/orchestration/index.ts"
+      ],
+      "@orchestration/*": [
+        "../engine/src/orchestration/*"
+      ],
+      "@coverage/*": [
+        "../engine/src/coverage/*"
+      ],
+      "@dino/core": [
+        "../core/src/index.ts"
+      ],
+      "@dino/core/*": [
+        "../core/src/*"
+      ],
+      "@dino/plugins": [
+        "../plugins/src/index.ts"
+      ],
+      "@dino/plugins/*": [
+        "../plugins/src/*"
+      ],
+      "@dino/agents": [
+        "../agents/src/index.ts"
+      ],
+      "@dino/agents/*": [
+        "../agents/src/*"
+      ],
+      "@dino/analytics": [
+        "../analytics/src/index.ts"
+      ],
+      "@dino/analytics/*": [
+        "../analytics/src/*"
+      ],
+      "@dino/reasoning": [
+        "../reasoning/src/index.ts"
+      ],
+      "@dino/reasoning/*": [
+        "../reasoning/src/*"
+      ],
+      "@dino/cli": [
+        "./src/index.ts"
+      ],
+      "@dino/cli/*": [
+        "./src/*"
+      ],
+      "@dino/auth": [
+        "../auth/src/index.ts"
+      ],
+      "@dino/auth/*": [
+        "../auth/src/*"
+      ]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "../../src/**/*.ts"],
-  "exclude": ["node_modules", "dist"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ],
   "references": [
-    { "path": "../core" },
-    { "path": "../plugins" },
-    { "path": "../agents" },
-    { "path": "../analytics" }
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../plugins"
+    },
+    {
+      "path": "../agents"
+    },
+    {
+      "path": "../analytics"
+    },
+    {
+      "path": "../engine"
+    },
+    {
+      "path": "../reasoning"
+    },
+    {
+      "path": "../auth"
+    }
   ]
 }

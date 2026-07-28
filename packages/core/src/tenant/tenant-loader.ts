@@ -5,13 +5,22 @@
  * Uses yaml v2 for parsing and zod v4 for schema validation.
  */
 
-import { promises as dns } from 'node:dns';
-import { isIPv4 } from 'node:net';
 import * as path from 'node:path';
-import { safeExistsSync, safeReadFileSync } from '../utils/safe-fs';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import {
+  checkEndpointUrl,
+  isAllowedEndpointUrl,
+  isBlockedIPv4,
+  resolveAndValidateDNS,
+  ENDPOINT_REJECT_MESSAGES,
+} from './endpoint-validator';
+import { safeExistsSync, safeReadFileSync } from '../utils/safe-fs';
 import type { TenantConfig } from './tenant-config';
+
+// Re-export for barrel consumers and tests
+export { resolveAndValidateDNS } from './endpoint-validator';
+export type { DNSValidationResult } from './endpoint-validator';
 
 // --- Zod schemas ---
 
@@ -31,6 +40,7 @@ const AgentActivationSchema = z.object({
 const RbacConfigSchema = z.object({
   roles: z.array(z.string().min(1)).min(1, 'At least one RBAC role is required'),
   defaults: z.record(z.string(), z.string()).optional(),
+  expectations: z.record(z.string(), z.record(z.string(), z.string())).optional(),
 });
 
 const RoleConfigSchema = z.object({
@@ -55,252 +65,6 @@ const AuthConfigSchema = z
     path: ['roles'],
   });
 
-const BLOCKED_METADATA_HOSTS = new Set([
-  'metadata.google.internal',
-  'metadata.google.internal.',
-  'fd00:ec2::254',
-]);
-
-function parseIPv4Octets(ip: string): number[] | null {
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  const octets = parts.map((p) => {
-    const n = Number(p);
-    return Number.isInteger(n) && n >= 0 && n <= 255 ? n : Number.NaN;
-  });
-  if (octets.some(Number.isNaN)) return null;
-  return octets;
-}
-
-/** Parse the first 16-bit group of an IPv6 address for CIDR range checks. */
-function parseIPv6First16(ipv6: string): number | null {
-  const first = ipv6.toLowerCase().split(':')[0];
-  if (!first) return null;
-  const n = Number.parseInt(first, 16);
-  return Number.isNaN(n) ? null : n;
-}
-
-/** Order matches prior sequential `if` ladder (first match wins). #850, #851, #858. */
-const IPV4_PRIVATE_OR_RESERVED_PREDICATES: ReadonlyArray<
-  (a: number, b: number, c: number) => boolean
-> = [
-  (a, b) => a === 169 && b === 254,
-  (a) => a === 127,
-  (a) => a === 10,
-  (a, b) => a === 172 && b >= 16 && b <= 31,
-  (a, b) => a === 192 && b === 168,
-  (a, b) => a === 100 && b >= 64 && b <= 127,
-  (a, b, c) => a === 192 && b === 0 && c === 2,
-  (a, b, c) => a === 198 && b === 51 && c === 100,
-  (a, b, c) => a === 203 && b === 0 && c === 113,
-  (a, b) => a === 198 && (b === 18 || b === 19),
-];
-
-/** Private, loopback, CGNAT, documentation, and benchmark IPv4 ranges (#850, #851, #858). */
-function isIpv4PrivateOrReservedRange(a: number, b: number, c: number): boolean {
-  return IPV4_PRIVATE_OR_RESERVED_PREDICATES.some((predicate) => predicate(a, b, c));
-}
-
-function isBlockedIPv4(octets: number[]): boolean {
-  const [a, b, c] = octets;
-  if (a === 0) return true;
-  if (isIpv4PrivateOrReservedRange(a, b, c)) return true;
-  if (a >= 240) return true;
-  return false;
-}
-
-/** Convert IPv6 hex-pair suffix (e.g. "a9fe:a9fe") to dotted IPv4 ("169.254.169.254"). */
-function hexPairsToIPv4(hex: string): string | null {
-  const parts = hex.split(':');
-  if (parts.length !== 2) return null;
-  const hi = Number.parseInt(parts[0], 16);
-  const lo = Number.parseInt(parts[1], 16);
-  if (Number.isNaN(hi) || Number.isNaN(lo)) return null;
-  return [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff].join('.');
-}
-
-/** Block IPv6 loopback, unspecified, link-local, and unique-local addresses (#575). */
-function isBlockedIPv6(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  if (normalized === '::1' || normalized === '::') return true;
-  const first16 = parseIPv6First16(normalized);
-  if (first16 === null) return false;
-  if ((first16 & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
-  if ((first16 & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
-  return false;
-}
-
-const V4_MAPPED_RE = /^::ffff:(.+)$/i;
-
-/** Resolve IPv4-mapped IPv6 or hex-encoded hostnames to plain IPv4. */
-function resolveToIPv4(hostname: string): string | null {
-  const v4Mapped = V4_MAPPED_RE.exec(hostname);
-  if (v4Mapped) {
-    const mapped = v4Mapped[1];
-    if (isIPv4(mapped)) return mapped;
-    const decoded = hexPairsToIPv4(mapped);
-    if (!decoded) return null;
-    return decoded;
-  }
-  return hostname;
-}
-
-type EndpointRejectReason =
-  | 'malformed_url'
-  | 'wrong_protocol'
-  | 'blocked_ipv6'
-  | 'metadata_host'
-  | 'blocked_ipv4'
-  | 'unparseable_mapped_ip';
-
-type EndpointCheckResult = { allowed: true } | { allowed: false; reason: EndpointRejectReason };
-
-export type DNSValidationResult =
-  | { allowed: true; resolvedIP: string }
-  | { allowed: false; reason: EndpointRejectReason | 'dns_resolution_failed' };
-
-const ENDPOINT_REJECT_MESSAGES: Record<EndpointRejectReason | 'dns_resolution_failed', string> = {
-  malformed_url: 'Endpoint URL is malformed',
-  wrong_protocol: 'Endpoint URL must use http:// or https://',
-  blocked_ipv6:
-    'Endpoint URL points to a blocked IPv6 address (loopback, link-local, or unique-local)',
-  metadata_host: 'Endpoint URL points to a cloud metadata service',
-  blocked_ipv4: 'Endpoint URL points to a private, reserved, or loopback IPv4 address',
-  unparseable_mapped_ip: 'Endpoint URL contains an unparseable IPv4-mapped IPv6 address',
-  dns_resolution_failed: 'Endpoint hostname could not be resolved via DNS',
-};
-
-function checkEndpointUrl(url: string): EndpointCheckResult {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      return { allowed: false, reason: 'wrong_protocol' };
-    }
-
-    let hostname = parsed.hostname;
-    while (hostname.endsWith('.')) hostname = hostname.slice(0, -1);
-
-    if (hostname.startsWith('[') && hostname.endsWith(']')) {
-      hostname = hostname.slice(1, -1);
-    }
-
-    if (isBlockedIPv6(hostname)) return { allowed: false, reason: 'blocked_ipv6' };
-
-    if (BLOCKED_METADATA_HOSTS.has(hostname) || BLOCKED_METADATA_HOSTS.has(`${hostname}.`)) {
-      return { allowed: false, reason: 'metadata_host' };
-    }
-
-    const resolved = resolveToIPv4(hostname);
-    if (resolved === null) return { allowed: false, reason: 'unparseable_mapped_ip' };
-
-    if (isIPv4(resolved)) {
-      const octets = parseIPv4Octets(resolved);
-      if (octets && isBlockedIPv4(octets)) return { allowed: false, reason: 'blocked_ipv4' };
-    }
-
-    return { allowed: true };
-  } catch {
-    return { allowed: false, reason: 'malformed_url' };
-  }
-}
-
-/** Validate endpoint URL is http(s) and not a cloud metadata or private-range endpoint. */
-function isAllowedEndpointUrl(url: string): boolean {
-  return checkEndpointUrl(url).allowed;
-}
-
-type DNSResolver = {
-  resolve4: (hostname: string) => Promise<string[]>;
-  resolve6?: (hostname: string) => Promise<string[]>;
-};
-
-async function withDnsTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutError = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('DNS resolution timeout')), timeoutMs); // determinism:seam
-  });
-  try {
-    return await Promise.race([promise, timeoutError]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function normalizeHostnameForDnsLookup(parsed: URL): string {
-  let hostname = parsed.hostname;
-  while (hostname.endsWith('.')) hostname = hostname.slice(0, -1);
-  if (hostname.startsWith('[') && hostname.endsWith(']')) {
-    hostname = hostname.slice(1, -1);
-  }
-  return hostname;
-}
-
-async function resolveHostnameViaDns(hostname: string, resolve: DNSResolver): Promise<string[]> {
-  const DNS_TIMEOUT_MS = 5_000;
-  let ips: string[] = [];
-  try {
-    ips = await withDnsTimeout(resolve.resolve4(hostname), DNS_TIMEOUT_MS);
-  } catch (_ipv4Err) {
-    // IPv4 failed — try IPv6 below when available.
-    void _ipv4Err;
-  }
-  if (ips.length === 0 && resolve.resolve6) {
-    try {
-      ips = await withDnsTimeout(resolve.resolve6(hostname), DNS_TIMEOUT_MS);
-    } catch (_ipv6Err) {
-      // IPv6 resolution failed after IPv4 failure or empty IPv4 result.
-      void _ipv6Err;
-    }
-  }
-  return ips;
-}
-
-function validateDnsResolvedIpList(ips: string[]): DNSValidationResult {
-  for (const ip of ips) {
-    if (isBlockedIPv6(ip)) return { allowed: false, reason: 'blocked_ipv6' };
-    const resolved = resolveToIPv4(ip);
-    if (resolved === null) return { allowed: false, reason: 'unparseable_mapped_ip' };
-    if (isIPv4(resolved)) {
-      const octets = parseIPv4Octets(resolved);
-      if (octets && isBlockedIPv4(octets)) {
-        return { allowed: false, reason: 'blocked_ipv4' };
-      }
-    }
-  }
-  return { allowed: true, resolvedIP: ips[0] };
-}
-
-/**
- * Runtime DNS validation to prevent DNS rebinding SSRF bypasses (#870).
- * Should be called immediately before making outbound HTTP requests.
- */
-export async function resolveAndValidateDNS(
-  url: string,
-  resolver?: DNSResolver,
-): Promise<DNSValidationResult> {
-  const staticCheck = checkEndpointUrl(url);
-  if (!staticCheck.allowed) return staticCheck;
-
-  const parsed = new URL(url);
-  const hostname = normalizeHostnameForDnsLookup(parsed);
-
-  if (hostname.includes(':')) {
-    return { allowed: true, resolvedIP: hostname };
-  }
-  if (isIPv4(hostname)) {
-    return { allowed: true, resolvedIP: hostname };
-  }
-
-  const resolve = resolver ?? dns;
-  const ips = await resolveHostnameViaDns(hostname, resolve);
-
-  if (ips.length === 0) {
-    return { allowed: false, reason: 'dns_resolution_failed' };
-  }
-
-  return validateDnsResolvedIpList(ips);
-}
-
 const EndpointUrlSchema = z.string().superRefine((url, ctx) => {
   const result = checkEndpointUrl(url);
   if (result.allowed) return;
@@ -313,15 +77,6 @@ const EnvironmentConfigSchema = z.object({
   retries: z.number().int().min(0),
 });
 
-// Zod schemas for each variant of ApiConfig. Discriminated on `type` so that
-// invalid shapes (e.g. rest without specPath, graphql with specPath) fail at
-// load time with a precise path, not at runtime inside a discovery plugin.
-//
-// specPath rejects whitespace-only and null-byte-containing strings so that a
-// semantically-empty path never reaches the discovery plugin (Spec 2+).
-// Full URL / filesystem validation (SSRF for URLs, traversal for files) is
-// still the discovery plugin's job — this schema only rejects unambiguously
-// broken content.
 const SpecPathSchema = z
   .string()
   .min(1)
@@ -378,9 +133,19 @@ const TenantConfigSchema = z.object({
     .record(z.string(), EnvironmentConfigSchema)
     .refine((envs) => Object.keys(envs).length > 0, {
       message: 'At least one environment is required',
+    })
+    .refine((envs) => Object.keys(envs).every((k) => /^[a-z0-9-]+$/.test(k)), {
+      message:
+        'Environment names must be lowercase alphanumeric with hyphens (same rules as tenant id)',
     }),
-  defaultEnvironment: z.string().min(1),
-  auth: AuthConfigSchema,
+  defaultEnvironment: z
+    .string()
+    .min(1)
+    .regex(
+      /^[a-z0-9-]+$/,
+      'defaultEnvironment must be lowercase alphanumeric with hyphens (same rules as tenant id)',
+    ),
+  auth: AuthConfigSchema.optional(),
   agents: z.array(AgentActivationSchema),
   rbac: RbacConfigSchema.optional(),
 });
@@ -479,10 +244,10 @@ export function validateTenantConfig(raw: unknown): TenantConfig {
     apis: config.apis,
     environments: config.environments,
     defaultEnvironment: config.defaultEnvironment,
-    auth: config.auth,
+    ...(config.auth ? { auth: config.auth } : {}),
     agents: config.agents,
     rbac: config.rbac,
-  } as TenantConfig;
+  };
 }
 
 /**
@@ -500,8 +265,6 @@ function findProjectRoot(startDir: string): string {
     current = path.dirname(current);
   }
 
-  // Fallback: no turbo.json found (global install or standalone CLI)
-  // No console.debug — tenant-loader has no logger import and project rules forbid console in production
   return startDir;
 }
 

@@ -1,0 +1,85 @@
+{
+  "dcg": "1-0-1",
+  "info": {
+    "confidence": 0.9,
+    "generated": "2026-05-15T12:00:00.000Z",
+    "generator": "dino/0.5.0",
+    "title": "Schema-Rich Fixture API",
+    "version": "2026-05-15"
+  },
+  "operations": {
+    "GET /items": {
+      "parameters": [
+        {
+          "in": "query",
+          "name": "limit",
+          "provenance": "declared",
+          "schema": { "maximum": 100, "minimum": 1, "type": "integer" }
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "provenance": "declared",
+          "schema": { "type": "string" }
+        }
+      ],
+      "response_schemas": {
+        "200": {
+          "content_type": "application/json",
+          "description": "Paginated item list",
+          "provenance": "declared",
+          "schema": {
+            "properties": {
+              "items": { "items": { "type": "object" }, "type": "array" },
+              "next_cursor": { "type": "string" }
+            },
+            "type": "object"
+          }
+        }
+      }
+    },
+    "POST /items": {
+      "parameters": [
+        {
+          "in": "header",
+          "name": "Idempotency-Key",
+          "provenance": "declared",
+          "required": false,
+          "schema": { "type": "string" }
+        }
+      ],
+      "request_body": {
+        "content_type": "application/json",
+        "description": "Item to create",
+        "provenance": "declared",
+        "required": true,
+        "schema": {
+          "properties": {
+            "name": { "minLength": 1, "type": "string" },
+            "tags": { "items": { "type": "string" }, "type": "array" }
+          },
+          "required": ["name"],
+          "type": "object"
+        }
+      },
+      "response_schemas": {
+        "201": {
+          "content_type": "application/json",
+          "description": "Created item",
+          "provenance": "declared",
+          "schema": {
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" }
+            },
+            "type": "object"
+          }
+        },
+        "400": {
+          "description": "Validation error",
+          "provenance": "declared"
+        }
+      }
+    }
+  }
+}

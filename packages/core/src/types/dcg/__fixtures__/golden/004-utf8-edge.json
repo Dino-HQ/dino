@@ -1,0 +1,28 @@
+{
+  "dcg": "1-0-0",
+  "info": {
+    "confidence": 1,
+    "generated": "2026-04-23T08:00:00.000Z",
+    "generator": "dino/0.4.5",
+    "title": "UTF-8 测试 — مرحبا — emoji 🦕 — ZWJ 👨‍👩‍👧",
+    "version": "2026-04-23"
+  },
+  "intelligence": {
+    "recommendations": [
+      {
+        "id": "rtl-and-cjk",
+        "message": "خطأ في التحقق — エラー — mixed RTL/LTR and CJK in one string.",
+        "severity": "info"
+      }
+    ]
+  },
+  "operations": {
+    "POST /notes": {
+      "errors": {
+        "422": {
+          "meaning": "Validation failed: field «résumé» must be ≤500 chars — 履歴書."
+        }
+      }
+    }
+  }
+}

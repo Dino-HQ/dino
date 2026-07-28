@@ -1,0 +1,135 @@
+{
+  "behaviors": {
+    "authentication": {
+      "schemes": [
+        {
+          "flow": "authorization_code",
+          "header_format": "Bearer {token}",
+          "token_endpoint": "https://auth.example.com/oauth/token",
+          "type": "oauth2"
+        }
+      ]
+    },
+    "error_convention": {
+      "format": "problem+json",
+      "retry_strategy": {
+        "backoff": "exponential",
+        "max_retries": 3,
+        "non_retryable_codes": [400, 401, 403, 404],
+        "retryable_codes": [408, 429, 500, 502, 503]
+      },
+      "structure": {
+        "detail": "Human-readable explanation",
+        "status": "HTTP status code as string"
+      }
+    },
+    "versioning": {
+      "current": "v2",
+      "deprecated": ["v1"],
+      "strategy": "url-prefix",
+      "sunset_date": "2027-01-01"
+    }
+  },
+  "dcg": "1-0-0",
+  "entities": {
+    "User": {
+      "identifiers": {
+        "primary": {
+          "appearances": [
+            {
+              "location": "response.body.id",
+              "operation": "GET /users/{id}",
+              "provenance": "observed"
+            }
+          ],
+          "type": "uuid_v4"
+        }
+      },
+      "lifecycle": ["POST /users", "GET /users/{id}", "DELETE /users/{id}"]
+    }
+  },
+  "flows": [
+    {
+      "description": "Create a user and fetch the created record.",
+      "id": "create-then-fetch",
+      "steps": [
+        {
+          "id": "create",
+          "inputs": { "body": "UserCreate" },
+          "operation": "POST /users",
+          "outputs": { "id": "response.body.id" }
+        },
+        {
+          "id": "fetch",
+          "inputs": { "id": "steps.create.outputs.id" },
+          "operation": "GET /users/{id}",
+          "requires": ["create"]
+        }
+      ]
+    }
+  ],
+  "info": {
+    "confidence": 0.65,
+    "generated": "2026-04-22T15:45:00.000Z",
+    "generator": "dino/0.4.5",
+    "title": "Full-Shape Fixture API",
+    "version": "2026-04-22"
+  },
+  "intelligence": {
+    "health_score": 72.5,
+    "recommendations": [
+      {
+        "id": "rec-paginate",
+        "message": "Add explicit pagination to list endpoints with large result sets.",
+        "related_operations": ["GET /users"],
+        "severity": "medium"
+      }
+    ]
+  },
+  "operations": {
+    "GET /users/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "provenance": "declared",
+          "required": true,
+          "schema": {
+            "format": "uuid",
+            "type": "string"
+          }
+        }
+      ],
+      "performance": {
+        "p50_ms": 18,
+        "p95_ms": 55
+      },
+      "response_schemas": {
+        "200": {
+          "content_type": "application/json",
+          "description": "User found",
+          "provenance": "declared",
+          "schema": {
+            "properties": {
+              "email": { "type": "string" },
+              "id": { "type": "string" }
+            },
+            "type": "object"
+          }
+        },
+        "404": {
+          "description": "User not found",
+          "provenance": "declared"
+        }
+      },
+      "source": "#/paths/~1users~1{id}/get"
+    }
+  },
+  "sources": [
+    {
+      "id": "primary-openapi",
+      "type": "openapi",
+      "url": "./openapi.json"
+    }
+  ]
+}

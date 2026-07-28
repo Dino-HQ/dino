@@ -17,25 +17,55 @@ export interface Operation {
   type: 'query' | 'mutation' | 'subscription' | 'rest' | 'grpc';
 
   /** Module this operation belongs to (e.g., 'auth', 'payment'). */
-  module?: string;
+  module?: string | undefined;
 
   /** Whether authentication is required. */
-  auth?: OperationAuth;
+  auth?: OperationAuth | undefined;
 
   /** Whether this operation is deprecated. */
-  deprecated?: boolean;
+  deprecated?: boolean | undefined;
 
   /** Human-readable description. */
-  description?: string;
+  description?: string | undefined;
 
   /** REST only: HTTP method. Populated by the OpenAPI plugin in Spec 2. */
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
+  method?: ('GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS') | undefined;
 
   /** REST only: URL path template (e.g. '/users/{id}'). Populated in Spec 2. */
-  path?: string;
+  path?: string | undefined;
+
+  /** OpenAPI declared parameters (path, query, header, cookie). */
+  parameters?: OperationParameter[] | undefined;
+
+  /** OpenAPI declared request body schema. */
+  requestBody?: OperationRequestBody | undefined;
+
+  /** OpenAPI declared response schemas keyed by status code. */
+  responseSchemas?: Record<string, OperationResponseSchema> | undefined;
 
   /** gRPC only: streaming mode. Reserved for Spec 2+ gRPC work. */
-  rpcMode?: 'unary' | 'server-stream' | 'client-stream' | 'bidi-stream';
+  rpcMode?: ('unary' | 'server-stream' | 'client-stream' | 'bidi-stream') | undefined;
+}
+
+export interface OperationParameter {
+  name: string;
+  in: 'path' | 'query' | 'header' | 'cookie';
+  required?: boolean;
+  description?: string;
+  schema?: Record<string, unknown>;
+}
+
+export interface OperationRequestBody {
+  contentType: string;
+  schema?: Record<string, unknown>;
+  required?: boolean;
+  description?: string;
+}
+
+export interface OperationResponseSchema {
+  description?: string;
+  contentType?: string;
+  schema?: Record<string, unknown>;
 }
 
 export interface OperationAuth {
@@ -43,5 +73,5 @@ export interface OperationAuth {
   required: boolean;
 
   /** Which roles can access this operation. */
-  roles?: string[];
+  roles?: string[] | undefined;
 }

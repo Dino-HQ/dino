@@ -4,13 +4,46 @@
  */
 
 import { loadCliConfig } from '../config/loader';
+import { shouldRenderInkView } from '../ink/InkRender';
 import { detectUi, colorize, createSpinner } from '../shared/ui';
-import { shouldRenderInkView } from '../ink/render';
 import { CLI_VERSION } from '../version';
+import type { UiOptions } from '../shared/ui';
 
 export interface ValidateFlags {
   quiet?: boolean;
   noColor?: boolean;
+}
+
+async function showValidateResult(
+  message: string,
+  ui: UiOptions,
+  flags: ValidateFlags,
+): Promise<void> {
+  if (flags.quiet) return;
+  let inkShown = false;
+  if (shouldRenderInkView(ui, { quiet: flags.quiet })) {
+    try {
+      const React = await import('react');
+      const { renderViewSafe } = await import('../ink/InkRender');
+      const { ValidateView } = await import('../views/ValidateView');
+      inkShown = renderViewSafe(
+        React.createElement(ValidateView, {
+          version: CLI_VERSION,
+          success: true,
+          message,
+          colored: ui.colored,
+        }),
+      );
+    } catch (error_) {
+      console.warn(
+        '[dino] Ink validate view failed:',
+        error_ instanceof Error ? error_.message : String(error_),
+      );
+    }
+  }
+  if (!inkShown) {
+    console.info(colorize('Next: run dino scan to check your API.', 'dim', ui));
+  }
 }
 
 /**
@@ -31,63 +64,11 @@ export async function runValidate(_context: unknown, flags: ValidateFlags): Prom
     const config = await loadCliConfig();
     if (!config) {
       spinner.succeed('No .dino.yml found — using smart defaults. Config is valid.');
-      if (!flags.quiet) {
-        let inkShown = false;
-        if (shouldRenderInkView(ui, { quiet: flags.quiet })) {
-          try {
-            const React = await import('react');
-            const { renderViewSafe } = await import('../ink/render');
-            const { ValidateView } = await import('../views/ValidateView');
-            inkShown = renderViewSafe(
-              React.createElement(ValidateView, {
-                version: CLI_VERSION,
-                success: true,
-                message: 'No .dino.yml — smart defaults. Config is valid.',
-                colored: ui.colored,
-              }),
-            );
-          } catch (inkErr) {
-            console.warn(
-              '[dino] Ink validate view failed:',
-              inkErr instanceof Error ? inkErr.message : String(inkErr),
-            );
-            inkShown = false;
-          }
-        }
-        if (!inkShown) {
-          console.info(colorize('Next: run dino scan to check your API.', 'dim', ui));
-        }
-      }
+      await showValidateResult('No .dino.yml — smart defaults. Config is valid.', ui, flags);
       return 0;
     }
     spinner.succeed('.dino.yml is valid');
-    if (!flags.quiet) {
-      let inkShown = false;
-      if (shouldRenderInkView(ui, { quiet: flags.quiet })) {
-        try {
-          const React = await import('react');
-          const { renderViewSafe } = await import('../ink/render');
-          const { ValidateView } = await import('../views/ValidateView');
-          inkShown = renderViewSafe(
-            React.createElement(ValidateView, {
-              version: CLI_VERSION,
-              success: true,
-              message: '.dino.yml is valid',
-              colored: ui.colored,
-            }),
-          );
-        } catch (inkErr) {
-          console.warn(
-            '[dino] Ink validate error view failed:',
-            inkErr instanceof Error ? inkErr.message : String(inkErr),
-          );
-          inkShown = false;
-        }
-      }
-      if (!inkShown) {
-        console.info(colorize('Next: run dino scan to check your API.', 'dim', ui));
-      }
-    }
+    await showValidateResult('.dino.yml is valid', ui, flags);
     return 0;
   } catch (err) {
     spinner.fail('Config invalid');

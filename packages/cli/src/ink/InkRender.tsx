@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react';
 import { render } from 'ink';
 import type { UiOptions } from '../shared/ui';
+import type { ReactNode } from 'react';
 
 /**
  * True when Ink summary views may render (TTY, not quiet, not JSON format).
@@ -8,7 +8,7 @@ import type { UiOptions } from '../shared/ui';
  */
 export function shouldRenderInkView(
   ui: UiOptions,
-  options: { format?: string; quiet?: boolean },
+  options: { format?: string | undefined; quiet?: boolean | undefined },
 ): boolean {
   if (options.quiet) {
     return false;

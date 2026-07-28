@@ -5,7 +5,8 @@
  * The parse function is injected (DI); no direct imports of @readme/openapi-parser.
  */
 
-import type { Operation } from '@dino/core';
+import { recordSet } from '@dino/core';
+import { nameCollisionWarning, parsePartialWarning } from './warnings';
 import type { DiscoveryPlugin, DiscoveryOptions, DiscoveryResult } from '../types';
 import type {
   OpenAPIDocumentSource,
@@ -14,7 +15,12 @@ import type {
   OpenAPIParseOptions,
 } from './types';
 import type { DiscoveryWarning } from './warnings';
-import { nameCollisionWarning, parsePartialWarning } from './warnings';
+import type {
+  Operation,
+  OperationParameter,
+  OperationRequestBody,
+  OperationResponseSchema,
+} from '@dino/core';
 
 /**
  * Dependencies for the OpenAPI discovery plugin. All injected; no globals.
@@ -89,10 +95,125 @@ function operationForMethod(
   }
 }
 
+const VALID_PARAM_IN = new Set(['path', 'query', 'header', 'cookie']);
+const HTTP_STATUS_CODE = /^[1-5]\d{2}$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function extractParameters(op: OpenAPIOperationSource): OperationParameter[] | undefined {
+  if (!Array.isArray(op.parameters) || op.parameters.length === 0) return undefined;
+  const out: OperationParameter[] = [];
+  for (const raw of op.parameters) {
+    if (!isRecord(raw)) continue;
+    const name = raw.name;
+    const inVal = raw.in;
+    if (typeof name !== 'string' || name.trim() === '') continue;
+    if (typeof inVal !== 'string' || !VALID_PARAM_IN.has(inVal)) continue;
+    const param: OperationParameter = {
+      name,
+      in: inVal as OperationParameter['in'],
+    };
+    if (raw.required === true) param.required = true;
+    if (typeof raw.description === 'string') param.description = raw.description;
+    if (isRecord(raw.schema)) param.schema = raw.schema;
+    out.push(param);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function buildRequestBodyFromJson(
+  rb: Record<string, unknown>,
+  jsonContent: Record<string, unknown>,
+): OperationRequestBody {
+  if (jsonContent.schema !== undefined && !isRecord(jsonContent.schema)) {
+    throw new Error('malformed request body schema');
+  }
+  const result: OperationRequestBody = { contentType: 'application/json' };
+  if (rb.required === true) result.required = true;
+  if (typeof rb.description === 'string') result.description = rb.description;
+  if (isRecord(jsonContent.schema)) result.schema = jsonContent.schema;
+  return result;
+}
+
+function buildRequestBodyFromContent(
+  rb: Record<string, unknown>,
+  content: Record<string, unknown>,
+): OperationRequestBody | undefined {
+  const jsonContent = content['application/json'];
+  if (jsonContent !== undefined && isRecord(jsonContent)) {
+    return buildRequestBodyFromJson(rb, jsonContent);
+  }
+  const firstType = Object.keys(content)[0];
+  if (firstType === undefined) return undefined;
+  const result: OperationRequestBody = { contentType: firstType };
+  if (typeof rb.description === 'string') result.description = rb.description;
+  if (rb.required === true) result.required = true;
+  return result;
+}
+
+function extractRequestBody(op: OpenAPIOperationSource): OperationRequestBody | undefined {
+  const rb = op.requestBody;
+  if (!isRecord(rb)) return undefined;
+  const content = rb.content;
+  if (!isRecord(content)) return undefined;
+  try {
+    return buildRequestBodyFromContent(rb, content);
+  } catch (err) {
+    console.warn(
+      JSON.stringify({ message: 'openapi_request_body_extract_failed', error: String(err) }),
+    );
+    return undefined;
+  }
+}
+
+function parseResponseContent(
+  content: Record<string, unknown>,
+): Pick<OperationResponseSchema, 'contentType' | 'schema'> {
+  const jsonContent = content['application/json'];
+  if (jsonContent !== undefined && isRecord(jsonContent)) {
+    const entry: Pick<OperationResponseSchema, 'contentType' | 'schema'> = {
+      contentType: 'application/json',
+    };
+    if (isRecord(jsonContent.schema)) entry.schema = jsonContent.schema;
+    return entry;
+  }
+  const firstType = Object.keys(content)[0];
+  return firstType === undefined ? {} : { contentType: firstType };
+}
+
+function parseSingleResponse(resp: Record<string, unknown>): OperationResponseSchema | undefined {
+  const entry: OperationResponseSchema = {};
+  if (typeof resp.description === 'string') entry.description = resp.description;
+  const content = resp.content;
+  if (isRecord(content)) {
+    Object.assign(entry, parseResponseContent(content));
+  }
+  return Object.keys(entry).length > 0 ? entry : undefined;
+}
+
+function extractResponseSchemas(
+  op: OpenAPIOperationSource,
+): Record<string, OperationResponseSchema> | undefined {
+  const responses = op.responses;
+  if (!isRecord(responses)) return undefined;
+  const out: Record<string, OperationResponseSchema> = {};
+  for (const [code, resp] of Object.entries(responses)) {
+    if (!HTTP_STATUS_CODE.test(code) || !isRecord(resp)) continue;
+    const entry = parseSingleResponse(resp);
+    if (entry !== undefined) recordSet(out, code, entry);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function toOperation(method: HttpMethod, path: string, op: OpenAPIOperationSource): Operation {
   const rawId = op.operationId;
   const resolvedName =
     typeof rawId === 'string' && rawId.trim() !== '' ? rawId : generateOperationName(method, path);
+  const parameters = extractParameters(op);
+  const requestBody = extractRequestBody(op);
+  const responseSchemas = extractResponseSchemas(op);
   return {
     name: resolvedName,
     type: 'rest',
@@ -100,6 +221,9 @@ function toOperation(method: HttpMethod, path: string, op: OpenAPIOperationSourc
     path,
     description: pickDescription(op),
     deprecated: op.deprecated ?? false,
+    ...(parameters === undefined ? {} : { parameters }),
+    ...(requestBody === undefined ? {} : { requestBody }),
+    ...(responseSchemas === undefined ? {} : { responseSchemas }),
   };
 }
 

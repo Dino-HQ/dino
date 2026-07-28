@@ -5,15 +5,16 @@
  */
 
 import { DEFAULT_SCAN_CONFIG } from './defaults';
+import { DinoValidationError } from '../errors';
 import type { ScanDefaults, ResolvedScanConfig } from './defaults';
 
 /** Thrown when resolved config violates constraints. */
-export class ConfigValidationError extends Error {
+export class ConfigValidationError extends DinoValidationError {
   constructor(
     message: string,
     public readonly field: string,
   ) {
-    super(message);
+    super('CONFIG_INVALID', message, { field });
     this.name = 'ConfigValidationError';
   }
 }
@@ -24,17 +25,17 @@ export class ConfigValidationError extends Error {
  * Only the fields resolveConfig cares about — extra fields are ignored.
  */
 export interface UserConfigInput {
-  endpoint?: string;
-  protocol?: 'graphql';
-  tenant?: string;
-  environment?: string;
-  format?: 'json' | 'markdown';
-  snapshotDir?: string;
-  aiKey?: string;
-  autonomy?: { level: 'observe' | 'enforce' };
-  auth?: { enabled: boolean; role?: string };
-  timeout?: number;
-  verbose?: boolean;
+  endpoint?: string | undefined;
+  protocol?: 'graphql' | undefined;
+  tenant?: string | undefined;
+  environment?: string | undefined;
+  format?: ('json' | 'markdown') | undefined;
+  snapshotDir?: string | undefined;
+  aiKey?: string | undefined;
+  autonomy?: { level: 'observe' | 'enforce' } | undefined;
+  auth?: { enabled: boolean; role?: string | undefined } | undefined;
+  timeout?: number | undefined;
+  verbose?: boolean | undefined;
 }
 
 /**

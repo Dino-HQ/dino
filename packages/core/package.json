@@ -7,11 +7,13 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc --build",
+    "lint": "echo \"No lint yet\"",
     "test": "echo \"No tests yet\"",
-    "lint": "echo \"No lint yet\""
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "yaml": "^2.8.3",
-    "zod": "^4.3.6"
+    "@sinclair/typebox": "^0.34.52",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
   }
 }

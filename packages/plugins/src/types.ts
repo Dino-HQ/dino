@@ -6,8 +6,8 @@
  * All dependencies are passed via options (DI).
  */
 
-import type { Operation } from '@dino/core';
 import type { DiscoveryWarning } from './openapi/warnings';
+import type { Operation } from '@dino/core';
 
 /**
  * Options passed into a discovery plugin. All inputs are injected; no global config.
@@ -20,25 +20,25 @@ export interface DiscoveryOptions {
    * Spec file location (URL or file path). Required for spec-driven discovery
    * (OpenAPI, protobuf). Ignored by introspection-driven plugins (GraphQL).
    */
-  specPath?: string;
+  specPath?: string | undefined;
 
   /** Request timeout in milliseconds. */
-  timeout?: number;
+  timeout?: number | undefined;
 
   /** Optional headers (e.g. Authorization). */
-  headers?: Record<string, string>;
+  headers?: Record<string, string> | undefined;
 
   /** Optional logger; plugin may no-op if absent. */
-  logger?: DiscoveryLogger;
+  logger?: DiscoveryLogger | undefined;
 }
 
 /**
  * Minimal logger interface for plugin use. Caller can pass a no-op or real logger.
  */
 export interface DiscoveryLogger {
-  info?(msg: string): void;
-  warn?(msg: string): void;
-  error?(msg: string): void;
+  info?: (msg: string) => void;
+  warn?: (msg: string) => void;
+  error?: (msg: string) => void;
 }
 
 /**
