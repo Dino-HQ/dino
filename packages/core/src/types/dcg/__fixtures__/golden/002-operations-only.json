@@ -1,0 +1,49 @@
+{
+  "dcg": "1-0-0",
+  "info": {
+    "confidence": 0.92,
+    "generated": "2026-04-21T09:30:00.000Z",
+    "generator": "dino/0.4.5",
+    "title": "Ops Coverage API",
+    "version": "2026-04-21"
+  },
+  "operations": {
+    "GET /users": {
+      "cacheable": {
+        "ttl": "300s",
+        "varies_on": ["Accept-Encoding", "Authorization"]
+      },
+      "errors": {
+        "429": {
+          "meaning": "Rate limit exceeded for listing users.",
+          "resolution": "Retry after Retry-After header or slow down."
+        },
+        "503": {
+          "meaning": "Upstream dependency unavailable."
+        }
+      },
+      "idempotent": true,
+      "pagination": {
+        "cursor_field": "nextCursor",
+        "cursor_param": "cursor",
+        "max_page_size": 100,
+        "page_size_param": "limit",
+        "style": "cursor"
+      },
+      "performance": {
+        "observed_window": "2026-04-12/2026-04-19",
+        "p50_ms": 42,
+        "p95_ms": 120,
+        "p99_ms": 280
+      },
+      "rate_limit": {
+        "limit": 600,
+        "limit_header": "X-RateLimit-Limit",
+        "remaining_header": "X-RateLimit-Remaining",
+        "retry_after_header": "Retry-After",
+        "window": "60s"
+      },
+      "source": "#/paths/~1users/get"
+    }
+  }
+}

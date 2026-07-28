@@ -1,5 +1,5 @@
-import React from 'react';
 import { Box, Text } from 'ink';
+import React from 'react';
 import { DINO_THEME } from './theme';
 
 const BLOCKS = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];

@@ -5,8 +5,8 @@
  */
 
 import chalk from 'chalk';
-import type { DescriptionAuditResult, ChangelogResult } from '@intelligence';
 import type { UiOptions } from '../shared/ui';
+import type { DescriptionAuditResult, ChangelogResult } from '@dino/engine';
 
 /** Local type mirroring the shape from SnapshotDiff that formatters consume */
 export interface DiffSummary {

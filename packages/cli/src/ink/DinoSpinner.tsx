@@ -1,5 +1,5 @@
-import React from 'react';
 import { Box, Text, useAnimation } from 'ink';
+import React from 'react';
 import { DINO_THEME } from './theme';
 
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];

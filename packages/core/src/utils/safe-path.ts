@@ -19,7 +19,12 @@ import * as path from 'node:path';
 export function safePath(userPath: string, allowedRoot?: string): string {
   const root = allowedRoot ? path.resolve(allowedRoot) : process.cwd();
   const resolved = path.resolve(root, userPath);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+  // #1986 — the filesystem root already ends in a separator, so the naive `root + path.sep` produced
+  // '//' and NOTHING starts with that: every path under '/' wrongly threw. That aborted `dino scan`
+  // whenever tenantsDir()'s upward walk reached '/'. Traversal protection is unchanged — the guard
+  // still requires a true separator boundary, so '/srv/app-evil' never passes for root '/srv/app'.
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  if (resolved !== root && !resolved.startsWith(rootWithSep)) {
     throw new Error(`Path "${userPath}" resolves outside allowed directory "${root}"`);
   }
   return resolved;

@@ -9,8 +9,8 @@
 
 import chalk from 'chalk';
 import ora from 'ora';
-import type { Ora } from 'ora';
 import { CliError } from './errors';
+import type { Ora } from 'ora';
 
 export interface UiOptions {
   /** True when stdout is a TTY, not CI, and not --quiet — controls spinner animation */
@@ -24,7 +24,10 @@ export interface UiOptions {
 }
 
 /** Detect whether we're in an interactive terminal. */
-export function detectUi(flags: { quiet?: boolean; noColor?: boolean }): UiOptions {
+export function detectUi(flags: {
+  quiet?: boolean | undefined;
+  noColor?: boolean | undefined;
+}): UiOptions {
   const isTTY = process.stdout.isTTY === true;
   const isCI = Boolean(process.env.CI);
   const interactive = isTTY && !isCI && !flags.quiet;

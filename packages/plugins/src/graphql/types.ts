@@ -13,10 +13,10 @@ export interface GraphQLIntrospectOptions {
   endpoint: string;
 
   /** Request timeout in milliseconds. */
-  timeout?: number;
+  timeout?: number | undefined;
 
   /** Optional headers (e.g. Authorization: Bearer <token>). */
-  headers?: Record<string, string>;
+  headers?: Record<string, string> | undefined;
 }
 
 /**
@@ -27,8 +27,8 @@ export interface GraphQLIntrospectionSource {
   operations: Array<{
     name: string;
     type: 'query' | 'mutation' | 'subscription';
-    description?: string | null;
-    isDeprecated?: boolean;
-    deprecationReason?: string | null;
+    description?: (string | null) | undefined;
+    isDeprecated?: boolean | undefined;
+    deprecationReason?: (string | null) | undefined;
   }>;
 }

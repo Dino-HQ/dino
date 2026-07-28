@@ -1,19 +1,19 @@
-import React from 'react';
 import { Box, Text } from 'ink';
-import { DINO_THEME } from './theme';
+import React from 'react';
 import { HealthBadge } from './HealthBadge';
+import { DINO_THEME } from './theme';
 
 export interface SummaryStat {
   label: string;
   value: string | number;
-  color?: string;
+  color?: string | undefined;
 }
 
 export interface SummaryCardProps {
   title: string;
-  healthScore?: number;
+  healthScore?: number | undefined;
   stats: SummaryStat[];
-  colored?: boolean;
+  colored?: boolean | undefined;
 }
 
 export function SummaryCard({
@@ -26,7 +26,7 @@ export function SummaryCard({
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor={colored ? DINO_THEME.border : undefined}
+      {...(colored ? { borderColor: DINO_THEME.border } : {})}
       paddingX={2}
       paddingY={1}
     >

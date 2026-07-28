@@ -3,7 +3,7 @@
  */
 
 import type { DiffSummary } from './markdown';
-import type { DescriptionAuditResult, ChangelogResult } from '@intelligence';
+import type { DescriptionAuditResult, ChangelogResult } from '@dino/engine';
 
 /**
  * Render a diff summary as machine-readable JSON.

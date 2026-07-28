@@ -1,8 +1,8 @@
-import React from 'react';
 import { Box } from 'ink';
+import React from 'react';
 import { DinoHeader } from '../ink/DinoHeader';
-import { SummaryCard } from '../ink/SummaryCard';
 import { FindingsTable } from '../ink/FindingsTable';
+import { SummaryCard } from '../ink/SummaryCard';
 import type { FindingRow } from '../ink/FindingsTable';
 
 export interface LintViewProps {

@@ -1,9 +1,9 @@
-import React from 'react';
 import { Box, Text } from 'ink';
-import { DinoHeader } from '../ink/DinoHeader';
-import { SummaryCard } from '../ink/SummaryCard';
+import React from 'react';
 import { DiffBadge } from '../ink/DiffBadge';
+import { DinoHeader } from '../ink/DinoHeader';
 import { NextStep } from '../ink/NextStep';
+import { SummaryCard } from '../ink/SummaryCard';
 
 export interface DiffViewProps {
   version: string;

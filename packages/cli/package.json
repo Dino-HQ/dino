@@ -1,6 +1,6 @@
 {
   "name": "@dino-hq/cli",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "type": "module",
   "description": "API quality intelligence for every deploy. Security, correctness, documentation, and lifecycle for GraphQL and REST.",
   "license": "MIT",
@@ -15,11 +15,11 @@
     "schema.json"
   ],
   "scripts": {
-    "build": "tsc --build",
-    "bundle": "node build.mjs",
+    "build": "node build.mjs",
+    "lint": "echo \"No lint yet\"",
     "prepublishOnly": "cp ../../SECURITY.md . && node build.mjs",
     "test": "jest --passWithNoTests",
-    "lint": "echo \"No lint yet\""
+    "typecheck": "echo \"CLI typechecked via root tsconfig\""
   },
   "publishConfig": {
     "access": "public"
@@ -59,17 +59,20 @@
     "url": "https://github.com/Dino-HQ/project-dino/issues"
   },
   "devDependencies": {
+    "@dino/auth": "*",
     "@dino/agents": "*",
     "@dino/analytics": "*",
     "@dino/core": "*",
+    "@dino/engine": "*",
     "@dino/plugins": "*",
+    "@dino/reasoning": "*",
     "chalk": "^5.6.2",
-    "cosmiconfig": "^9.0.0",
-    "esbuild": "^0.28.0",
-    "ink": "^7.0.0",
-    "ora": "^9.4.0",
+    "cosmiconfig": "^9.0.2",
+    "esbuild": "^0.28.1",
+    "ink": "7.0.6",
+    "ora": "^8.2.0",
     "prompts": "^2.4.2",
-    "react": "^19.2.5"
+    "react": "^19.2.7"
   },
   "engines": {
     "node": ">=22"

@@ -1,8 +1,8 @@
-import React from 'react';
 import { Box, Text } from 'ink';
+import React from 'react';
+import { DiffBadge } from '../ink/DiffBadge';
 import { DinoHeader } from '../ink/DinoHeader';
 import { SummaryCard } from '../ink/SummaryCard';
-import { DiffBadge } from '../ink/DiffBadge';
 
 export interface ChangelogViewProps {
   version: string;

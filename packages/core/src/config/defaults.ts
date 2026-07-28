@@ -30,6 +30,10 @@ export const DEFAULT_SCAN_CONFIG: ScanDefaults = Object.freeze({
   toolTimeoutMs: 120_000,
   concurrency: 5,
   format: 'json',
+  /**
+   * Reserved for future report persistence. The scan engine does not write run reports here today;
+   * snapshots use `snapshotDir` instead.
+   */
   outputDir: '.dino/reports',
   snapshotDir: '.dino/snapshots',
   watchInterval: 60,
@@ -45,13 +49,13 @@ export const DEFAULT_SCAN_CONFIG: ScanDefaults = Object.freeze({
  */
 export interface ResolvedScanConfig {
   /** Direct endpoint URL (ad-hoc mode) or undefined (tenant mode) */
-  endpoint?: string;
+  endpoint?: string | undefined;
   /** API protocol */
   protocol: 'graphql';
   /** Tenant ID (undefined in ad-hoc mode) */
-  tenant?: string;
+  tenant?: string | undefined;
   /** Environment name */
-  environment?: string;
+  environment?: string | undefined;
   /** Overall pipeline timeout ms */
   timeoutMs: number;
   /** Per-tool timeout ms */
@@ -65,9 +69,9 @@ export interface ResolvedScanConfig {
   /** Snapshot directory */
   snapshotDir: string;
   /** Auth configuration (undefined = no auth = skip RBAC) */
-  auth?: { enabled: boolean; role?: string };
+  auth?: { enabled: boolean; role?: string | undefined } | undefined;
   /** AI API key for reasoning */
-  aiKey?: string;
+  aiKey?: string | undefined;
   /** Watch interval in seconds */
   watchInterval: number;
   /** Watch autonomy level */

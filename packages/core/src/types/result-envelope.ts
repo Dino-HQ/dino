@@ -37,6 +37,13 @@ export interface ResultEnvelope<T = unknown> {
   /** Quick numeric summary of pass/fail counts */
   summary: EnvelopeSummary;
 
+  /** Distinct, code-point-sorted operation keys this tool exercised this scan
+      (PER_OP_FINDINGS on). Same key namespace as SeverityFinding.operation.
+      Present (possibly []) iff the flag is on; absent on the legacy shape and on
+      crash envelopes. Survives stripRawResults — the cloud persists it to
+      scan_operation_coverage (Spec 3, task #13). */
+  operationsExercised?: string[];
+
   /** The raw, tool-specific result payload */
   rawResult: T;
 
@@ -46,7 +53,7 @@ export interface ResultEnvelope<T = unknown> {
    * Agent wrappers may include this field, but runTool scrubs it on the success
    * path — only values written by the runner catch block are trusted.
    */
-  readonly crashReason?: string;
+  readonly crashReason?: string | undefined;
 }
 
 export interface EnvelopeSummary {
@@ -58,6 +65,13 @@ export interface EnvelopeSummary {
 
   /** Number that failed */
   failed: number;
+
+  /** Items in scope but NOT exercised (partial/budget-cut scan). Additive/informational —
+      does NOT change total/passed/failed. Absent ⇒ 0 (complete scan).
+      UNIT IS TOOL-LOCAL and NOT comparable across tools: rest-fuzzer counts whole operations,
+      rbac-matrix counts op×role iterations. Treat it as a per-envelope "how incomplete" magnitude /
+      binary incompleteness flag, never as a cross-tool total. */
+  notTested?: number;
 
   /** Number of findings normalized as CRITICAL (derived from severity.findings) */
   critical: number;
@@ -81,6 +95,13 @@ export interface SeverityScore {
 export interface SeverityFinding {
   /** Original tool-specific classification (e.g., 'DATA_LEAK', 'SCHEMA_MISMATCH') */
   classification: string;
+
+  /** Operation key this finding was observed on (PER_OP_FINDINGS grouping).
+      REST: "{METHOD} {path}" · GraphQL: operation name · type-level: "{Type}.{field}".
+      Absent when grouping is per-classification (flag off), when the entry has no
+      derivable operation, and on TOOL_CRASH findings — absent means the finding is
+      never auto-resolved downstream (INV-C, fail-closed). */
+  operation?: string;
 
   /** Normalized severity level */
   normalizedLevel: SeverityLevel;

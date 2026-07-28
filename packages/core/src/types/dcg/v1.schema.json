@@ -1,0 +1,781 @@
+{
+  "$id": "https://dino-hq.com/schemas/dcg/v1-0-0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Machine-readable description of how an API actually behaves.",
+  "properties": {
+    "behaviors": {
+      "additionalProperties": false,
+      "properties": {
+        "authentication": {
+          "additionalProperties": false,
+          "properties": {
+            "schemes": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "flow": {
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  "header_format": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "token_endpoint": {
+                    "maxLength": 500,
+                    "type": "string"
+                  },
+                  "token_field": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "token_lifetime_field": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "type": {
+                    "anyOf": [
+                      {
+                        "const": "oauth2",
+                        "type": "string"
+                      },
+                      {
+                        "const": "bearer",
+                        "type": "string"
+                      },
+                      {
+                        "const": "api_key",
+                        "type": "string"
+                      },
+                      {
+                        "const": "basic",
+                        "type": "string"
+                      },
+                      {
+                        "const": "mtls",
+                        "type": "string"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "schemes"
+          ],
+          "type": "object"
+        },
+        "error_convention": {
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "anyOf": [
+                {
+                  "const": "json",
+                  "type": "string"
+                },
+                {
+                  "const": "problem+json",
+                  "type": "string"
+                },
+                {
+                  "const": "xml",
+                  "type": "string"
+                }
+              ]
+            },
+            "retry_strategy": {
+              "additionalProperties": false,
+              "properties": {
+                "backoff": {
+                  "anyOf": [
+                    {
+                      "const": "exponential",
+                      "type": "string"
+                    },
+                    {
+                      "const": "linear",
+                      "type": "string"
+                    },
+                    {
+                      "const": "constant",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "max_retries": {
+                  "maximum": 20,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "non_retryable_codes": {
+                  "items": {
+                    "maximum": 599,
+                    "minimum": 100,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "retryable_codes": {
+                  "items": {
+                    "maximum": 599,
+                    "minimum": 100,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "retryable_codes",
+                "non_retryable_codes",
+                "backoff",
+                "max_retries"
+              ],
+              "type": "object"
+            },
+            "structure": {
+              "patternProperties": {
+                "^(.*)$": {
+                  "maxLength": 200,
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "format"
+          ],
+          "type": "object"
+        },
+        "versioning": {
+          "additionalProperties": false,
+          "properties": {
+            "current": {
+              "maxLength": 50,
+              "minLength": 1,
+              "type": "string"
+            },
+            "deprecated": {
+              "items": {
+                "maxLength": 50,
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "strategy": {
+              "anyOf": [
+                {
+                  "const": "url-prefix",
+                  "type": "string"
+                },
+                {
+                  "const": "header",
+                  "type": "string"
+                },
+                {
+                  "const": "query",
+                  "type": "string"
+                },
+                {
+                  "const": "content-negotiation",
+                  "type": "string"
+                }
+              ]
+            },
+            "sunset_date": {
+              "format": "date",
+              "type": "string"
+            }
+          },
+          "required": [
+            "strategy",
+            "current"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "dcg": {
+      "description": "Schema version (SchemaVer: MODEL-REVISION-ADDITION).",
+      "oneOf": [
+        { "const": "1-0-0", "type": "string" },
+        { "const": "1-0-1", "type": "string" }
+      ],
+      "type": "string"
+    },
+    "entities": {
+      "patternProperties": {
+        "^(.*)$": {
+          "additionalProperties": false,
+          "properties": {
+            "identifiers": {
+              "patternProperties": {
+                "^(.*)$": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "appearances": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "location": {
+                            "description": "Where in the operation this entity ID appears, e.g. \"response.body.id\"",
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "operation": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "provenance": {
+                            "anyOf": [
+                              {
+                                "const": "observed",
+                                "type": "string"
+                              },
+                              {
+                                "const": "declared",
+                                "type": "string"
+                              },
+                              {
+                                "const": "inferred",
+                                "type": "string"
+                              }
+                            ],
+                            "description": "How this value was determined: observed from traffic, declared in an upstream spec, or inferred by analysis/AI."
+                          }
+                        },
+                        "required": [
+                          "operation",
+                          "location"
+                        ],
+                        "type": "object"
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "type": {
+                      "description": "Semantic type tag. v1.0 recognized: 'uuid_v4' | 'uuid_v7' | 'email' | 'iso8601_datetime' | 'url' | 'integer' | 'string' | 'unknown'. Producers may emit other values; consumers MUST treat unrecognized tags as 'unknown' and render a generic badge.",
+                      "maxLength": 50,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "appearances"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "lifecycle": {
+              "description": "Operations in canonical order describing the entity lifecycle.",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "identifiers"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "flows": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "pattern": "^[a-z0-9-]+$",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9-]+$",
+                  "type": "string"
+                },
+                "inputs": {
+                  "patternProperties": {
+                    "^(.*)$": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "operation": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "outputs": {
+                  "patternProperties": {
+                    "^(.*)$": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "requires": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "id",
+                "operation"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "description",
+          "steps"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "info": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "description": "Overall confidence score; derived from sample-count-weighted provenance.",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "generated": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "generator": {
+          "description": "Producer identifier, e.g. \"dino/0.4.5\"",
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "description": "Calendar version of the API being described (YYYY-MM-DD format via JSON Schema Draft 2020-12 `date` format), NOT of the DCG schema itself (see top-level `dcg` field).",
+          "format": "date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "version",
+        "generated",
+        "generator",
+        "confidence"
+      ],
+      "type": "object"
+    },
+    "intelligence": {
+      "additionalProperties": false,
+      "properties": {
+        "health_score": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "number"
+        },
+        "recommendations": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "message": {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "related_operations": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "severity": {
+                "anyOf": [
+                  {
+                    "const": "info",
+                    "type": "string"
+                  },
+                  {
+                    "const": "low",
+                    "type": "string"
+                  },
+                  {
+                    "const": "medium",
+                    "type": "string"
+                  },
+                  {
+                    "const": "high",
+                    "type": "string"
+                  },
+                  {
+                    "const": "critical",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "severity",
+              "message"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "operations": {
+      "patternProperties": {
+        "^(.*)$": {
+          "additionalProperties": false,
+          "properties": {
+            "cacheable": {
+              "additionalProperties": false,
+              "properties": {
+                "ttl": {
+                  "pattern": "^[0-9]+[smhd]$",
+                  "type": "string"
+                },
+                "varies_on": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "ttl"
+              ],
+              "type": "object"
+            },
+            "errors": {
+              "patternProperties": {
+                "^[1-5][0-9]{2}$": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "meaning": {
+                      "maxLength": 500,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "resolution": {
+                      "maxLength": 500,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "meaning"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "idempotent": {
+              "type": "boolean"
+            },
+            "pagination": {
+              "additionalProperties": false,
+              "properties": {
+                "cursor_field": {
+                  "type": "string"
+                },
+                "cursor_param": {
+                  "type": "string"
+                },
+                "max_page_size": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "page_size_param": {
+                  "type": "string"
+                },
+                "style": {
+                  "anyOf": [
+                    {
+                      "const": "cursor",
+                      "type": "string"
+                    },
+                    {
+                      "const": "offset",
+                      "type": "string"
+                    },
+                    {
+                      "const": "page",
+                      "type": "string"
+                    },
+                    {
+                      "const": "token",
+                      "type": "string"
+                    },
+                    {
+                      "const": "link-header",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "style"
+              ],
+              "type": "object"
+            },
+            "performance": {
+              "additionalProperties": false,
+              "properties": {
+                "observed_window": {
+                  "description": "ISO 8601 date interval, e.g. \"2026-04-12/2026-04-19\"",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}/\\d{4}-\\d{2}-\\d{2}$",
+                  "type": "string"
+                },
+                "p50_ms": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p95_ms": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p99_ms": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "rate_limit": {
+              "additionalProperties": false,
+              "properties": {
+                "limit": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "limit_header": {
+                  "type": "string"
+                },
+                "remaining_header": {
+                  "type": "string"
+                },
+                "retry_after_header": {
+                  "type": "string"
+                },
+                "window": {
+                  "description": "Duration literal: \"60s\", \"15m\", \"1h\", \"1d\"",
+                  "pattern": "^[0-9]+[smhd]$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "window",
+                "limit"
+              ],
+              "type": "object"
+            },
+            "parameters": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  "in": {
+                    "anyOf": [
+                      { "const": "path", "type": "string" },
+                      { "const": "query", "type": "string" },
+                      { "const": "header", "type": "string" },
+                      { "const": "cookie", "type": "string" }
+                    ]
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "provenance": {
+                    "anyOf": [
+                      { "const": "observed", "type": "string" },
+                      { "const": "declared", "type": "string" },
+                      { "const": "inferred", "type": "string" }
+                    ]
+                  },
+                  "required": {
+                    "type": "boolean"
+                  },
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                },
+                "required": ["in", "name"],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_body": {
+              "additionalProperties": false,
+              "properties": {
+                "content_type": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "description": {
+                  "maxLength": 1000,
+                  "type": "string"
+                },
+                "provenance": {
+                  "anyOf": [
+                    { "const": "observed", "type": "string" },
+                    { "const": "declared", "type": "string" },
+                    { "const": "inferred", "type": "string" }
+                  ]
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              },
+              "required": ["content_type"],
+              "type": "object"
+            },
+            "response_schemas": {
+              "patternProperties": {
+                "^[1-5][0-9]{2}$": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "content_type": {
+                      "maxLength": 200,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "description": {
+                      "maxLength": 1000,
+                      "type": "string"
+                    },
+                    "provenance": {
+                      "anyOf": [
+                        { "const": "observed", "type": "string" },
+                        { "const": "declared", "type": "string" },
+                        { "const": "inferred", "type": "string" }
+                      ]
+                    },
+                    "schema": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "source": {
+              "description": "$ref pointer into the upstream source document.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "sources": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 50,
+            "minLength": 1,
+            "pattern": "^[a-z0-9-]+$",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "const": "openapi",
+                "type": "string"
+              },
+              {
+                "const": "asyncapi",
+                "type": "string"
+              },
+              {
+                "const": "graphql",
+                "type": "string"
+              }
+            ]
+          },
+          "url": {
+            "description": "Relative or absolute URI reference to the source document (JSON Schema Draft 2020-12 uri-reference format).",
+            "format": "uri-reference",
+            "maxLength": 2000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "url"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "dcg",
+    "info"
+  ],
+  "title": "Dino Context Graph v1.0.0",
+  "type": "object"
+}

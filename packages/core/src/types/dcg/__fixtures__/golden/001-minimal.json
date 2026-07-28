@@ -1,0 +1,10 @@
+{
+  "dcg": "1-0-0",
+  "info": {
+    "confidence": 0.8,
+    "generated": "2026-04-20T12:00:00.000Z",
+    "generator": "dino/0.4.5",
+    "title": "Example API",
+    "version": "2026-04-20"
+  }
+}

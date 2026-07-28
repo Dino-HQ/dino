@@ -1,5 +1,5 @@
-import React from 'react';
 import { Text } from 'ink';
+import React from 'react';
 import { DINO_THEME } from './theme';
 
 export type StatusKind = 'success' | 'error' | 'warning' | 'info' | 'pending';

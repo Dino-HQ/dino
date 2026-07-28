@@ -7,12 +7,12 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc --build",
+    "lint": "echo \"No lint yet\"",
     "test": "echo \"No tests yet\"",
-    "lint": "echo \"No lint yet\""
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dino/core": "*",
-    "@readme/openapi-parser": "^6.0.1"
+    "@dino/core": "*"
   },
   "devDependencies": {}
 }

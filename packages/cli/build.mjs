@@ -12,15 +12,17 @@ const root = resolve(__dirname, '../..');
 // Path alias map matching root tsconfig.json paths.
 // Keys are bare prefixes; values are directories relative to monorepo root.
 const aliasMap = {
-  '@introspection': 'src/introspection',
-  '@orchestration': 'src/orchestration',
-  '@reporters': 'src/reporters',
-  '@intelligence': 'src/intelligence',
-  '@pipeline': 'src/pipeline',
-  '@config': 'src/config',
-  '@utils': 'src/utils',
-  '@shared': 'src/shared',
+  '@dino/engine': 'packages/engine/src',
+  '@introspection': 'packages/engine/src/introspection',
+  '@orchestration': 'packages/engine/src/orchestration',
+  '@reporters': 'packages/engine/src/reporters',
+  '@intelligence': 'packages/engine/src/intelligence',
+  '@pipeline': 'packages/engine/src/pipeline',
+  '@config': 'packages/engine/src/config',
+  '@utils': 'packages/engine/src/utils',
+  '@shared': 'packages/engine/src/shared',
   '@dino/core': 'packages/core/src',
+  '@dino/auth': 'packages/auth/src',
   '@dino/plugins': 'packages/plugins/src',
   '@dino/agents': 'packages/agents/src',
   '@dino/analytics': 'packages/analytics/src',
@@ -75,7 +77,10 @@ const result = await build({
     // ESM bundle: esbuild may emit nested `require()` for CJS shims — expose on globalThis (#1014).
     js: '#!/usr/bin/env node\nimport{createRequire}from"module";const require=createRequire(import.meta.url);globalThis.require=require;',
   },
-  define: { 'process.env.NODE_ENV': '"production"' },  // production React builds (684KB → 394KB savings)
+  define: {
+    'process.env.NODE_ENV': '"production"', // production React builds (684KB → 394KB savings)
+    'process.env.POSTHOG_API_KEY': JSON.stringify(process.env.POSTHOG_API_KEY ?? ''),
+  },
   alias: { 'react-devtools-core': join(__dirname, 'noop-devtools.js') },
   external: [
     ...Object.keys(pkg.peerDependencies ?? {}),

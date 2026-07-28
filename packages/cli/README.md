@@ -1,68 +1,83 @@
 # @dino-hq/cli
 
-**The quality layer for APIs.**
+**An autonomous QA engineer for your APIs — in your terminal and CI.**
 
-API quality intelligence for every deploy. Security, correctness, documentation, and lifecycle — one command, both protocols.
+Point Dino at an API and it does what a QA engineer does: tests every operation for security, correctness, and breaking changes, checks that the docs match reality, and remembers your API between runs to catch drift before it ships. Autonomously, deterministically, in seconds — no test scripts to write or maintain.
 
 ```bash
 npm install -g @dino-hq/cli
 ```
 
-## One command. Complete API intelligence.
+## Put your QA engineer to work in 20 seconds
+
+No test scripts, no account, no setup. Point it at an endpoint:
 
 ```bash
-dino scan --tenant my-api --fail-on-high
+# tell Dino which API to test
+printf 'endpoint: https://your-api.com/graphql\nprotocol: graphql\n' > .dino.yml
+
+# put it to work
+dino scan
 ```
 
-Dino discovers your API, tests every operation across 19 attack strategies, validates responses against your schema, maps auth boundaries, and produces a health score per endpoint. GraphQL and REST. Same pipeline, same report, same CI gate.
+Dino introspects the schema, discovers every operation, and runs its full test suite — fuzzing, schema validation, error-contract, and rate-limit checks — then scores the health of each endpoint. Add `--fail-on-high` and it gates your CI (exits 1 on HIGH/CRITICAL).
 
-## Four pillars, one platform
+> Ad-hoc mode is GraphQL, unauthenticated. For REST/OpenAPI, authenticated scans, RBAC role matrices, and per-operation coverage, run `dino init` to onboard your API fully (see [Full setup](#full-setup)).
 
-| | What Dino does |
+## What your QA engineer checks
+
+| | What Dino tests, every run |
 |---|---|
-| **Security** | Auth bypass detection, RBAC matrix (every operation x every role), header injection, CORS probing, JWT none-algorithm, IP spoofing, injection payloads |
-| **Correctness** | Response validation against schema, type checking, required field enforcement, error consistency, rate limit detection |
-| **Documentation** | API discovery from introspection or OpenAPI spec, operation catalog, undocumented endpoint detection |
-| **Lifecycle** | Schema drift detection, breaking change alerts, deprecation tracking, health scores, continuous monitoring via Shadow Mode |
+| **Security** | Auth-bypass detection, RBAC matrix (every operation × every role), header injection, CORS probing, JWT none-algorithm, IP spoofing, injection payloads |
+| **Correctness** | Live responses validated against the schema, type checking, required-field enforcement, error-code consistency, rate-limit detection |
+| **Documentation** | Discovers the real API from introspection or OpenAPI, builds an operation catalog, flags undocumented endpoints |
+| **Lifecycle** | Remembers your schema between runs — catches breaking changes, drift, and deprecations, and tracks health over time |
 
-## Why Dino
+## Why a QA engineer, not a scanner
 
-**Unified.** Other solutions do one slice — Schemathesis fuzzes, Checkly monitors, Pact checks contracts, StackHawk runs OWASP-style checks. Dino covers security, correctness, documentation, and lifecycle from one CLI. No stitching four workflows together.
+**It verifies, deterministically.** As AI writes more of your code, *generating* changes gets cheap — *proving* they're safe is the scarce part. Dino's verdict is deterministic machinery: same input, same finding, every run. No flaky scripts.
 
-**Schema-aware.** 19 fuzz strategies across 6 attack surfaces (body, path, query, method, content-type, headers) — each driven by your API schema, not random inputs. Findings are labeled, traceable, and actionable.
+**It has memory.** Most tools run a scan and forget. Dino snapshots your schema and remembers it, so each run knows what changed — that's how it catches a breaking change or silent drift *before* you ship.
 
-**Both protocols.** GraphQL introspection and OpenAPI 3.0/3.1. Same validators, same reporting, one CI gate for mixed API surfaces.
+**It covers the whole job.** Other tools do one slice — Schemathesis fuzzes, Checkly monitors, Pact checks contracts, StackHawk runs OWASP checks. Dino does security, correctness, documentation, and lifecycle from one place, across GraphQL and REST.
 
-**Zero config to start.** `dino init` generates your config. `dino scan` runs everything. `--fail-on-high` gates your CI. No test scripts to write.
+## Working with your QA engineer
 
-## Commands
+| Command | What it does |
+|---------|--------------|
+| `dino scan` | Runs the full test suite — fuzzing, validation, RBAC, rate limits, error codes, deprecation |
+| `dino diff` | Compares your API to the last known-good and flags breaking changes (`--fail-on-breaking` gates CI) |
+| `dino watch` | Keeps testing continuously in Shadow Mode |
+| `dino docs` | Generates documentation from how the API actually behaves |
+| `dino lint` | Flags undocumented operations |
+| `dino changelog` | Writes a changelog from schema diffs |
+| `dino init` | Onboards a new API (full tenant config) |
 
-| Command | Description |
-|---------|-------------|
-| `dino scan` | Full quality pipeline — fuzzing, validation, RBAC, rate limits, error codes, deprecation |
-| `dino watch` | Continuous monitoring with Shadow Mode |
-| `dino docs` | Generate API documentation |
-| `dino diff` | Detect breaking schema changes |
-| `dino lint` | Find undocumented operations |
-| `dino changelog` | Generate changelog from schema diffs |
-| `dino validate` | Validate config |
-| `dino init` | Interactive setup |
+## Catch breaking changes before they ship
 
-## CI gate
+```bash
+dino diff --fail-on-breaking
+```
+
+Dino remembers your schema, compares the next run against it, and exits 1 when an operation is removed or changed — so a breaking change fails the build before it reaches your users.
+
+## In your CI
 
 ```yaml
-- name: API Quality Gate
-  run: npx @dino-hq/cli scan --tenant my-api --fail-on-high
+# with .dino.yml (endpoint + protocol) committed
+- name: API QA Gate
+  run: npx @dino-hq/cli scan --fail-on-high
 ```
 
 Exits 1 on HIGH or CRITICAL findings. Zero findings = green build.
 
-## Get started
+## Full setup
+
+For REST/OpenAPI targets, authenticated scans, RBAC role matrices, and per-operation coverage:
 
 ```bash
-npm install -g @dino-hq/cli
-dino init
-dino scan --tenant my-api
+dino init                    # onboard your API interactively
+dino scan --tenant my-api    # full authenticated pipeline
 ```
 
 Requires Node.js 22+.

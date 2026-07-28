@@ -45,9 +45,9 @@ export interface TenantContextSnapshot {
   customRules: readonly TenantRule[];
   llmPreferences: {
     readonly preferredProvider: string;
-    readonly fallbackProvider?: string;
-    readonly maxCostPerRun?: number;
-    readonly allowedModels?: readonly string[];
+    readonly fallbackProvider?: string | undefined;
+    readonly maxCostPerRun?: number | undefined;
+    readonly allowedModels?: readonly string[] | undefined;
   };
 }
 
