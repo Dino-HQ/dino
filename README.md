@@ -2,78 +2,60 @@
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Dino-HQ/dino/badge)](https://scorecard.dev/viewer/?uri=github.com/Dino-HQ/dino)
 
-**The autonomous quality layer for APIs.**
+**An autonomous QA engineer for your APIs — in your terminal and CI.**
 
-Dino scans your API, builds a health report, auto-documents undocumented operations, detects security vulnerabilities, tracks schema changes, and generates a Developer Portal — all from one command.
+Point Dino at an API and it does what a QA engineer does: tests every operation for security, correctness, and breaking changes, checks that the docs match reality, and remembers your API between runs to catch drift before it ships. Autonomously, deterministically, in seconds — no test scripts to write or maintain.
 
 ```bash
 npm install -g @dino-hq/cli
-dino init
+
+# tell Dino which API to test
+printf 'endpoint: https://your-api.com/graphql\nprotocol: graphql\n' > .dino.yml
+
+# put it to work
 dino scan
 ```
 
+That's the whole quickstart — no account, no setup. Dino introspects the schema, discovers every operation, runs its full test suite, and scores the health of each endpoint. Add `--fail-on-high` and it gates CI (exits 1 on HIGH/CRITICAL).
+
+> Ad-hoc mode is GraphQL, unauthenticated. For REST/OpenAPI, authenticated scans, RBAC role matrices, and per-operation coverage, run `dino init` to onboard your API fully.
+
 ---
 
-## What Dino Does
+## What your QA engineer checks
 
-| Command | What It Does |
-| --- | --- |
-| `dino scan` | Full health scan — fuzzing, RBAC, rate limits, error codes, deprecation tracking |
-| `dino docs` | AI-powered documentation for undocumented operations |
-| `dino diff` | Schema change detection with breaking change alerts |
-| `dino changelog` | Auto-generated API changelog from schema diffs |
-| `dino lint` | Schema description audit and SDL lint enforcement |
-| `dino watch` | Continuous monitoring with Shadow Mode (observe/enforce) |
+| | Every run |
+|---|---|
+| **Security** | Auth-bypass detection, RBAC matrix (every operation × every role), header injection, CORS probing, JWT none-algorithm, IP spoofing, injection payloads |
+| **Correctness** | Live responses validated against the schema, type checking, required-field enforcement, error-code consistency, rate-limit detection |
+| **Documentation** | Discovers the real API from introspection or OpenAPI, builds an operation catalog, flags undocumented endpoints |
+| **Lifecycle** | Remembers your schema between runs — catches breaking changes, drift, and deprecations, and tracks health over time |
 
 One scan covers what would take a team weeks to test manually.
 
 ---
 
-## Quick Start
+## Why a QA engineer, not a scanner
 
-### 1. Install
+**It verifies, deterministically.** As AI writes more of your code, *generating* changes gets cheap — *proving* they're safe is the scarce part. Dino's verdict is deterministic machinery: same input, same finding, every run. No flaky scripts.
 
-```bash
-npm install -g @dino-hq/cli
-```
+**It has memory.** Most tools run a scan and forget. Dino snapshots your schema and remembers it, so each run knows what changed — that's how it catches a breaking change or silent drift *before* you ship.
 
-### 2. Configure
+**It covers the whole job.** Other tools do one slice — Schemathesis fuzzes, Checkly monitors, Pact checks contracts, StackHawk runs OWASP checks. Dino does security, correctness, documentation, and lifecycle from one place, across GraphQL and REST.
 
-```bash
-dino init
-```
+---
 
-Creates a `.dino.yml` in your project:
+## Commands
 
-```yaml
-tenant: my-api
-defaultEnvironment: production
-environments:
-  production:
-    endpoints:
-      graphql-api: https://api.example.com/graphql
-    timeout: 30000
-apis:
-  - name: graphql-api
-    type: graphql
-    source: introspection
-```
-
-### 3. Scan
-
-```bash
-dino scan
-```
-
-Dino introspects your API, runs 6 agent tools across every operation, and produces a structured health report with severity classifications.
-
-### 4. Watch
-
-```bash
-dino watch --autonomy observe
-```
-
-Shadow Mode watches your API continuously. Builds a baseline silently, then alerts on regressions.
+| Command | What it does |
+| --- | --- |
+| `dino scan` | Full health scan — fuzzing, RBAC, rate limits, error codes, deprecation tracking |
+| `dino diff` | Compares your API to the last known-good and flags breaking changes (`--fail-on-breaking` gates CI) |
+| `dino docs` | Generates documentation from how the API actually behaves |
+| `dino changelog` | Auto-generated API changelog from schema diffs |
+| `dino lint` | Schema description audit and SDL lint enforcement |
+| `dino watch` | Continuous monitoring in Shadow Mode (observe → enforce) |
+| `dino init` | Onboards a new API (full tenant config) |
 
 ---
 
@@ -119,26 +101,14 @@ The scan report is uploaded as a GitHub Actions artifact (`dino-scan-report`). S
 
 ---
 
-## What Dino Tests
-
-**Contract Intelligence** — Schema validation, permission boundaries, input fuzzing, response verification, test scaffolding.
-
-**Security & Risk** — Rate limit detection, error information leakage, RBAC matrix validation, deprecation lifecycle tracking.
-
-**Schema Intelligence** — Snapshot diffing, breaking change detection, changelog generation, documentation coverage audit.
-
-**AI Analysis** — Cross-domain correlation, prioritized findings, migration hints. Optional — the deterministic report always ships.
-
----
-
 ## Architecture
 
 Five layers. Each depends only on the layer below it.
 
 ```
-xd4rAI Reasoning              Optional analysis and strategies
+AI Reasoning              Optional analysis and strategies
 Aggregation               Orchestration, reporting, scoring
-Agent Tools               Deterministic QA engine (6 tools)
+Agent Tools               Deterministic QA engine
 Intelligence Layer        Schema snapshots, catalog, docs, diffs
 Platform Core             Config, discovery, multi-protocol routing
 ```
