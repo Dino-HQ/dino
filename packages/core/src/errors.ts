@@ -26,6 +26,8 @@ export type DinoErrorCode =
   | 'INVALID_JSON'
   | 'INVALID_REQUEST_BODY'
   | 'INVALID_FIELD'
+  | 'INVALID_SPEC_BODY'
+  | 'PROTOCOL_NOT_SUPPORTED'
   | 'CONFIG_INVALID'
   | 'API_CONTEXT_SNAPSHOT_INVALID_ID'
   | 'OIDC_ISSUER_MISMATCH'
@@ -50,11 +52,14 @@ export type DinoErrorCode =
   | 'MEMBER_NOT_FOUND'
   | 'API_CONTEXT_SNAPSHOT_NOT_FOUND'
   | 'API_CONTEXT_NO_COMPLETE_SNAPSHOT'
+  | 'NO_SNAPSHOT'
+  | 'INSUFFICIENT_SCANS'
   // Conflict (409)
   | 'ALREADY_EXISTS'
   | 'STATE_CONFLICT'
   | 'RETRY_LIMIT_EXCEEDED'
   | 'API_CONTEXT_SNAPSHOT_NOT_COMPLETE'
+  | 'SNAPSHOT_VERSION_UNSUPPORTED'
   // Rate limit (429)
   | 'RATE_LIMITED'
   // Service unavailable (503)
@@ -167,7 +172,10 @@ export class DinoError extends Error {
         error.resetDate = m.resetDate;
       }
       if (Array.isArray(m.allowedLevels)) {
-        error.allowedLevels = m.allowedLevels as readonly string[];
+        // Validate every element (not just Array.isArray) so a non-string array never
+        // leaks mistyped to the client — parity with the typed checks above. The old
+        // `as readonly string[]` cast let e.g. `[{ tenantId }]` through as `string[]`.
+        error.allowedLevels = m.allowedLevels.filter((x): x is string => typeof x === 'string');
       }
     }
     return { error };
@@ -184,6 +192,8 @@ export type ValidationErrorCode = Extract<
   | 'INVALID_JSON'
   | 'INVALID_REQUEST_BODY'
   | 'INVALID_FIELD'
+  | 'INVALID_SPEC_BODY'
+  | 'PROTOCOL_NOT_SUPPORTED'
   | 'CONFIG_INVALID'
   | 'API_CONTEXT_SNAPSHOT_INVALID_ID'
   | 'OIDC_ISSUER_MISMATCH'
@@ -213,12 +223,18 @@ export type NotFoundErrorCode = Extract<
   | 'MEMBER_NOT_FOUND'
   | 'API_CONTEXT_SNAPSHOT_NOT_FOUND'
   | 'API_CONTEXT_NO_COMPLETE_SNAPSHOT'
+  | 'NO_SNAPSHOT'
+  | 'INSUFFICIENT_SCANS'
 >;
 
 /** Codes valid for 409-class errors. */
 export type ConflictErrorCode = Extract<
   DinoErrorCode,
-  'ALREADY_EXISTS' | 'STATE_CONFLICT' | 'RETRY_LIMIT_EXCEEDED' | 'API_CONTEXT_SNAPSHOT_NOT_COMPLETE'
+  | 'ALREADY_EXISTS'
+  | 'STATE_CONFLICT'
+  | 'RETRY_LIMIT_EXCEEDED'
+  | 'API_CONTEXT_SNAPSHOT_NOT_COMPLETE'
+  | 'SNAPSHOT_VERSION_UNSUPPORTED'
 >;
 
 /** Codes valid for 502-class errors. */
@@ -230,6 +246,7 @@ export type UpstreamErrorCode = Extract<
   | 'INNGEST_ERROR'
   | 'OIDC_DISCOVERY_FAILED'
   | 'OAUTH2_EXCHANGE_FAILED'
+  | 'OAUTH2_RECONNECT_FAILED'
 >;
 
 // ── Subclasses ──────────────────────────────────────────────

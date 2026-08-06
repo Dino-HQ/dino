@@ -11,10 +11,10 @@ export interface Operation {
 
   /**
    * Operation type. For GraphQL, this is the query kind.
-   * For REST / gRPC, this is the protocol marker — semantic intent for REST
+   * For REST, this is the protocol marker — semantic intent for REST
    * is derived from `method` by consuming agents (Spec 5+).
    */
-  type: 'query' | 'mutation' | 'subscription' | 'rest' | 'grpc';
+  type: 'query' | 'mutation' | 'subscription' | 'rest';
 
   /** Module this operation belongs to (e.g., 'auth', 'payment'). */
   module?: string | undefined;

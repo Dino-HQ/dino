@@ -5,6 +5,7 @@
 
 import { sanitizeEventError } from '@dino/analytics';
 import { recordGet } from '@dino/core';
+import { runLogin, runLogout, runWhoami } from './commands/auth';
 import { runChangelog } from './commands/changelog';
 import { runConfigFromArgv } from './commands/config';
 import { runDiff } from './commands/diff';
@@ -41,6 +42,10 @@ export { loadCliConfig } from './config/loader';
 export { runValidate } from './commands/validate';
 export type { ValidateFlags } from './commands/validate';
 export { runVerify } from './commands/verify';
+export { runLogin, runLogout, runWhoami } from './commands/auth';
+export { getValidToken, readStoredToken } from './auth/token-store';
+export type { StoredToken } from './auth/token-store';
+export type { PkcePair, OAuthEnvConfig, OidcEndpoints } from './auth/oauth-core';
 export { runInit, buildConfigYaml, checkEndpoint } from './commands/init';
 export type { InitFlags } from './commands/init';
 export type { DinoCliConfig } from './config/loader';
@@ -110,6 +115,9 @@ Commands:
   changelog  Generate a changelog from schema snapshot diffs
   runner     Cloud runner: \`dino runner register\` then \`dino runner start\`
   verify     Verify a scan DCG against its Sigstore attestation (requires --cloud-endpoint and --token)
+  login      Authenticate via browser (Connected Apps + PKCE); stores token in ~/.dino/credentials.json
+  logout     Clear stored credentials (best-effort server revoke)
+  whoami     Show the active tenant for the current login
   validate   Validate .dino.yml config (with helpful error messages)
   init       Set up your project — generates .dino.yml interactively
 
@@ -240,8 +248,21 @@ const COMMAND_HANDLERS: Record<string, CommandHandler> = {
 };
 
 /**
- * Runner + verify bypass tenant YAML, tracker, and merged flag coercion (#1154 verify).
+ * Runner + verify + auth commands bypass tenant YAML, tracker, and merged flag coercion.
  */
+async function runBareCommand(
+  run: () => Promise<number>,
+  flags: Record<string, unknown>,
+): Promise<number> {
+  try {
+    return await run();
+  } catch (err) {
+    const ui = detectUi({ quiet: false, noColor: flags.noColor === true });
+    printError(err instanceof Error ? err : new Error(String(err)), ui, flags.debug === true);
+    return err instanceof CliError ? err.exitCode : 1;
+  }
+}
+
 async function runWithoutTenantContext(
   command: string,
   flags: Record<string, unknown>,
@@ -250,13 +271,16 @@ async function runWithoutTenantContext(
     return runRunnerFromFlags(flags);
   }
   if (command === 'verify') {
-    try {
-      return await runVerify(flags);
-    } catch (err) {
-      const ui = detectUi({ quiet: false, noColor: flags.noColor === true });
-      printError(err instanceof Error ? err : new Error(String(err)), ui, flags.debug === true);
-      return err instanceof CliError ? err.exitCode : 1;
-    }
+    return runBareCommand(() => runVerify(flags), flags);
+  }
+  if (command === 'login') {
+    return runBareCommand(() => runLogin(flags), flags);
+  }
+  if (command === 'logout') {
+    return runBareCommand(() => runLogout(flags), flags);
+  }
+  if (command === 'whoami') {
+    return runBareCommand(() => runWhoami(flags), flags);
   }
   return null;
 }

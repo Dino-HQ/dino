@@ -9,7 +9,7 @@
     "build": "tsc --build",
     "lint": "echo \"No lint yet\"",
     "test": "echo \"No tests yet\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --build --pretty false"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.52",

@@ -116,12 +116,19 @@ function runnerDefaultSleep(ms: number): Promise<void> {
   });
 }
 
-function buildRunnerTenantConfig(tenantId: string, targetUrl: string): TenantConfig {
+export function buildRunnerTenantConfig(
+  tenantId: string,
+  targetUrl: string,
+  rest?: { source: string; specPath: string },
+): TenantConfig {
   return {
     schemaVersion: 1,
     id: tenantId,
     name: 'Cloud runner',
-    apis: [{ name: 'default', type: 'graphql', source: 'introspection' }],
+    apis:
+      rest === undefined
+        ? [{ name: 'default', type: 'graphql', source: 'introspection' }]
+        : [{ name: 'default', type: 'rest', source: rest.source, specPath: rest.specPath }],
     environments: {
       cloud: {
         endpoints: { default: targetUrl },

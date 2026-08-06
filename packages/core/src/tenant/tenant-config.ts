@@ -46,13 +46,12 @@ export interface TenantConfig {
  * API configuration. Discriminated on `type`:
  * - `'graphql'` — discovery via introspection; `specPath` forbidden.
  * - `'rest'`    — discovery via OpenAPI; `specPath` required (URL or file path).
- * - `'grpc'`    — discovery via proto; `specPath` required (file path).
  *
  * `specPath` is validated as a non-empty string at config load time. Full URL
  * and file-path validation (SSRF for URLs, traversal for files) is performed
  * by the consuming discovery plugin, because the rule depends on `source`.
  */
-export type ApiConfig = GraphQLApiConfig | RestApiConfig | GrpcApiConfig;
+export type ApiConfig = GraphQLApiConfig | RestApiConfig;
 
 export interface GraphQLApiConfig {
   name: string;
@@ -67,14 +66,6 @@ export interface RestApiConfig {
   type: 'rest';
   source: string;
   /** OpenAPI spec URL or file path. Validated downstream (Spec 2). */
-  specPath: string;
-}
-
-export interface GrpcApiConfig {
-  name: string;
-  type: 'grpc';
-  source: string;
-  /** .proto file path. Validated downstream. */
   specPath: string;
 }
 
@@ -219,4 +210,22 @@ export interface AgentSchedule {
 
   /** Run in monthly audit */
   monthly: boolean;
+}
+
+/** The single user-facing message for an unsupported target-API protocol. */
+export const UNSUPPORTED_PROTOCOL_MESSAGE =
+  'gRPC is not supported yet. Dino currently tests REST and GraphQL APIs.';
+
+/** Protocols that are recognised but explicitly not supported (for friendly rejection). */
+export const UNSUPPORTED_PROTOCOLS = new Set(['grpc']);
+
+/**
+ * If `value` is a recognised-but-unsupported protocol, return the friendly message;
+ * otherwise return null (caller falls through to its generic validation).
+ * Pure — no side effects, no non-determinism.
+ */
+export function unsupportedProtocolMessage(value: unknown): string | null {
+  return typeof value === 'string' && UNSUPPORTED_PROTOCOLS.has(value)
+    ? UNSUPPORTED_PROTOCOL_MESSAGE
+    : null;
 }

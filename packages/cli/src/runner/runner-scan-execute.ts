@@ -6,6 +6,7 @@ import { createRestExecutor } from '@dino/agents';
 import { createTracker, createNoopAdapter } from '@dino/analytics';
 import {
   buildRunnerDcgPayload,
+  buildSnapshot,
   type ToolName,
   type PipelineOptions,
   type runPipeline,
@@ -13,6 +14,7 @@ import {
 } from '@dino/engine';
 import { startCancelWatch } from './cancel-watch';
 import { createScanLogEmitter } from './log-emitter';
+import { resolveRunnerRestSpec } from './runner-rest-spec';
 import { wireRunnerScanAuth } from './runner-scan-auth-wiring';
 import { buildAdHocRegistry } from '../commands/scan';
 import { discoverOperationsDetailed } from '../shared/base-command';
@@ -22,7 +24,7 @@ import type { RunnerRbacWire } from './runner-scan-auth-wiring';
 import type { AcquiredScanAuth } from './scan-auth';
 import type { RunnerState } from './state-store';
 import type { CommandContext } from '../shared/base-command';
-import type { RunnerJob, RunnerResult } from '@dino/core';
+import type { GraphQLOperation, RunnerJob, RunnerResult } from '@dino/core';
 
 type ScanExecuteDeps = {
   state: RunnerState;
@@ -55,7 +57,11 @@ type ScanExecuteDeps = {
     onToolEvent?: PipelineOptions['onToolEvent'];
     abortSignal?: PipelineOptions['abortSignal'];
   }) => PipelineOptions;
-  buildTenantConfig: (tenantId: string, targetUrl: string) => CommandContext['tenantConfig'];
+  buildTenantConfig: (
+    tenantId: string,
+    targetUrl: string,
+    rest?: { source: string; specPath: string },
+  ) => CommandContext['tenantConfig'];
 };
 
 /**
@@ -86,25 +92,78 @@ export function withRunnerScanAuth(
   };
 }
 
-async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
+/** @internal Exported for unit tests (#2124). */
+export function resolveBaseEffectiveTools(agentSet?: string[]): ToolName[] {
+  const base = [...VALID_TOOL_NAMES].filter((t) => t !== 'rbac-matrix') as ToolName[];
+  if (agentSet === undefined || agentSet.length === 0) {
+    return base;
+  }
+  const dropped: string[] = [];
+  const allowed = new Set(
+    agentSet.filter((name) => {
+      if (VALID_TOOL_NAMES.has(name)) {
+        return true;
+      }
+      dropped.push(name);
+      return false;
+    }),
+  );
+  if (dropped.length > 0) {
+    console.warn(JSON.stringify({ message: 'runner_agent_set_unknown_dropped', dropped }));
+  }
+  if (allowed.size === 0) {
+    return base;
+  }
+  return base.filter((name) => allowed.has(name));
+}
+
+/** @internal Exported for unit tests (#2124). */
+export function agentSetAllowsRbac(agentSet?: string[]): boolean {
+  if (agentSet === undefined || agentSet.length === 0) {
+    return true;
+  }
+  return agentSet.some((name) => name === 'rbac-matrix' && VALID_TOOL_NAMES.has(name));
+}
+
+/** @internal Exported for #2087 integration tests. */
+export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
   const { state, assignment } = deps;
-  const tenantConfig = deps.buildTenantConfig(state.tenantId, assignment.targetUrl);
-  const tracker = createTracker({ adapter: createNoopAdapter(), tenantId: state.tenantId });
-  const context: CommandContext = {
-    tenantConfig,
-    tenantId: state.tenantId,
-    environment: 'cloud',
-    tracker,
-  };
-  const discoveryMeta = await discoverOperationsDetailed(context);
-  const registry = buildAdHocRegistry(discoveryMeta.graphqlOperations, state.tenantId);
-  // #1850 — the pool runner hits customer-controlled targets; pass the (pinned in prod) fetchImpl so the
-  // GraphQL executor's connection is pinned to the validated IP. In tests deps.fetchImpl is the injected mock.
-  const executor = createExecutor(assignment.targetUrl, deps.fetchImpl);
-  const effectiveTools = [...VALID_TOOL_NAMES].filter((t) => t !== 'rbac-matrix') as ToolName[];
-  const restOps = discoveryMeta.discoveredOperations.filter((op) => op.type === 'rest');
-  const hasRest = restOps.length > 0;
-  return { tracker, registry, executor, effectiveTools, restOps, hasRest, discoveryMeta };
+  const restSpec = await resolveRunnerRestSpec(assignment, {
+    fetchImpl: deps.fetchImpl,
+    logger: {
+      info(msg, data) {
+        console.info(JSON.stringify(data ? { event: msg, ...data } : { event: msg }));
+      },
+      error(msg, data) {
+        console.error(JSON.stringify(data ? { event: msg, ...data } : { event: msg }));
+      },
+    },
+  });
+  try {
+    const tenantConfig = deps.buildTenantConfig(
+      state.tenantId,
+      assignment.targetUrl,
+      restSpec.restConfig,
+    );
+    const tracker = createTracker({ adapter: createNoopAdapter(), tenantId: state.tenantId });
+    const context: CommandContext = {
+      tenantConfig,
+      tenantId: state.tenantId,
+      environment: 'cloud',
+      tracker,
+    };
+    const discoveryMeta = await discoverOperationsDetailed(context);
+    const registry = buildAdHocRegistry(discoveryMeta.graphqlOperations, state.tenantId);
+    // #1850 — the pool runner hits customer-controlled targets; pass the (pinned in prod) fetchImpl so the
+    // GraphQL executor's connection is pinned to the validated IP. In tests deps.fetchImpl is the injected mock.
+    const executor = createExecutor(assignment.targetUrl, deps.fetchImpl);
+    const effectiveTools = resolveBaseEffectiveTools(assignment.agentSet);
+    const restOps = discoveryMeta.discoveredOperations.filter((op) => op.type === 'rest');
+    const hasRest = restOps.length > 0;
+    return { tracker, registry, executor, effectiveTools, restOps, hasRest, discoveryMeta };
+  } finally {
+    await restSpec.cleanup();
+  }
 }
 
 type ResolvedRestExecutor =
@@ -168,7 +227,14 @@ export function rbacPipelineFields(
   const configuredRbac = rbac !== undefined && rbac.rbacRoles.length > 0;
 
   if (restWire.rbacDeclared === true && !configuredRbac) {
-    return { effectiveTools: [] as ToolName[] };
+    // #1873 — declared but wire empty/invalid: keep rbac-matrix in with empty roles so the
+    // agent surfaces notTested → UNTESTED (never drop the tool → false CLEAN on auth).
+    return {
+      effectiveTools: ['rbac-matrix'],
+      rbacRoles: [],
+      tokenResolver: async () => null,
+      rbacDefaultProbeMode: false,
+    };
   }
 
   if (configuredRbac && rbac !== undefined) {
@@ -194,12 +260,14 @@ export function rbacPipelineFields(
   return { effectiveTools: [] as ToolName[] };
 }
 
-function buildCompletedRunnerResult(
-  assignment: RunnerJob,
-  result: Awaited<ReturnType<typeof runPipeline>>,
-  restWire: Extract<ResolvedRestExecutor, { ok: true }>,
-  cancelObserved: boolean,
-): RunnerResult {
+function buildCompletedRunnerResult(opts: {
+  assignment: RunnerJob;
+  result: Awaited<ReturnType<typeof runPipeline>>;
+  restWire: Extract<ResolvedRestExecutor, { ok: true }>;
+  cancelObserved: boolean;
+  schemaSnapshot?: unknown;
+}): RunnerResult {
+  const { assignment, result, restWire, cancelObserved, schemaSnapshot } = opts;
   // Terminal cancel (Spec B INV-4): ONLY when the cloud's cancelRequested flag was actually
   // observed AND the pipeline abort path ran — never fabricated from an abort alone.
   if (cancelObserved && result.metadata.cancelled) {
@@ -231,7 +299,34 @@ function buildCompletedRunnerResult(
     attestation: result.attestation,
     result,
     ...(rotated === undefined ? {} : { rotatedRefreshToken: rotated }),
+    ...(schemaSnapshot === undefined ? {} : { schemaSnapshot }),
   };
+}
+
+/** Build a SchemaSnapshot when GraphQL ops exist; omit for REST-only (#2110). */
+export function buildRunnerSchemaSnapshot(opts: {
+  graphqlOperations: readonly GraphQLOperation[];
+  tenantId: string;
+}): unknown | undefined {
+  if (opts.graphqlOperations.length === 0) {
+    return undefined;
+  }
+  try {
+    return buildSnapshot({
+      introspection: opts.graphqlOperations,
+      tenantId: opts.tenantId,
+      environment: 'cloud',
+    });
+  } catch (e) {
+    console.error(
+      JSON.stringify({
+        message: 'runner_schema_snapshot_build_failed',
+        tenant_id: opts.tenantId,
+        detail: e instanceof Error ? e.message : String(e),
+      }),
+    );
+    return undefined;
+  }
 }
 
 type LiveScanWires = {
@@ -278,7 +373,9 @@ function assemblePipelineArgs(
 ): Parameters<ScanExecuteDeps['buildPipelineOptions']>[0] {
   const hasProbeTargets =
     prepared.restOps.length > 0 || Object.values(prepared.registry).some((ops) => ops.length > 0);
-  const rbacFields = rbacPipelineFields(restWire, hasProbeTargets);
+  const rbacFields = agentSetAllowsRbac(opts.assignment.agentSet)
+    ? rbacPipelineFields(restWire, hasProbeTargets)
+    : { effectiveTools: [] as ToolName[] };
   const effectiveTools =
     rbacFields.effectiveTools.length > 0
       ? ([...prepared.effectiveTools, ...rbacFields.effectiveTools] as ToolName[])
@@ -342,7 +439,17 @@ export async function executeRunnerAssignment(
       opts.buildPipelineOptions(assemblePipelineArgs(opts, prepared, restWire, wires)),
     );
 
-    return buildCompletedRunnerResult(assignment, result, restWire, wires.cancelObserved());
+    const schemaSnapshot = buildRunnerSchemaSnapshot({
+      graphqlOperations: prepared.discoveryMeta.graphqlOperations,
+      tenantId: opts.state.tenantId,
+    });
+    return buildCompletedRunnerResult({
+      assignment,
+      result,
+      restWire,
+      cancelObserved: wires.cancelObserved(),
+      schemaSnapshot,
+    });
   } finally {
     wires.watch.stop();
     await wires.emitter.stop();

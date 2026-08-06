@@ -1,6 +1,6 @@
 {
   "name": "@dino-hq/cli",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "API quality intelligence for every deploy. Security, correctness, documentation, and lifecycle for GraphQL and REST.",
   "license": "MIT",
@@ -56,7 +56,7 @@
   },
   "homepage": "https://usedino.dev",
   "bugs": {
-    "url": "https://github.com/Dino-HQ/project-dino/issues"
+    "url": "https://github.com/Dino-HQ/dino/issues"
   },
   "devDependencies": {
     "@dino/auth": "*",
