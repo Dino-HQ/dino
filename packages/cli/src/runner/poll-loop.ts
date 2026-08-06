@@ -117,6 +117,57 @@ function parseOptionalCommand(commandRaw: unknown): SentinelScanCommand | undefi
   return undefined;
 }
 
+function parseOptionalNonBlankString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+function parseOptionalProtocol(value: unknown): 'rest' | 'graphql' | undefined {
+  if (value === 'rest' || value === 'graphql') return value;
+  return undefined;
+}
+
+function parseOptionalSpecFormat(value: unknown): 'json' | 'yaml' | undefined {
+  if (value === 'json' || value === 'yaml') return value;
+  return undefined;
+}
+
+function parseOptionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) return undefined;
+  const strings: string[] = [];
+  for (const v of value) {
+    if (typeof v !== 'string') return undefined;
+    strings.push(v);
+  }
+  return strings;
+}
+
+function assembleRunnerJob(
+  o: Record<string, unknown>,
+  ids: { scanId: string; tenantId: string; targetUrl: string },
+): RunnerJob {
+  const command = parseOptionalCommand(o.command);
+  const authProfileId = parseOptionalNonBlankString(o.authProfileId);
+  const capabilityToken = parseOptionalNonBlankString(o.capabilityToken);
+  const protocol = parseOptionalProtocol(o.protocol);
+  const specUrl = parseOptionalNonBlankString(o.specUrl);
+  const specBody = parseOptionalNonBlankString(o.specBody);
+  const specFormat = parseOptionalSpecFormat(o.specFormat);
+  const agentSet = parseOptionalStringArray(o.agentSet);
+  return {
+    scanId: asScanId(ids.scanId),
+    tenantId: asTenantId(ids.tenantId),
+    targetUrl: ids.targetUrl,
+    ...(command === undefined ? {} : { command }),
+    ...(authProfileId === undefined ? {} : { authProfileId }),
+    ...(capabilityToken === undefined ? {} : { capabilityToken }),
+    ...(protocol === undefined ? {} : { protocol }),
+    ...(specUrl === undefined ? {} : { specUrl }),
+    ...(specBody === undefined ? {} : { specBody }),
+    ...(specFormat === undefined ? {} : { specFormat }),
+    ...(agentSet === undefined ? {} : { agentSet }),
+  };
+}
+
 /** Parse assignment JSON from GET /v1/runners/:id/assignments (#1388). */
 export function parseAssignment(json: unknown): RunnerJob | null {
   if (json === null || typeof json !== 'object') return null;
@@ -125,23 +176,7 @@ export function parseAssignment(json: unknown): RunnerJob | null {
   const tenantId = o.tenantId;
   const targetUrl = o.targetUrl;
   if (typeof scanId === 'string' && typeof tenantId === 'string' && typeof targetUrl === 'string') {
-    const command = parseOptionalCommand(o.command);
-    const authProfileId =
-      typeof o.authProfileId === 'string' && o.authProfileId.trim() !== ''
-        ? o.authProfileId
-        : undefined;
-    const capabilityToken =
-      typeof o.capabilityToken === 'string' && o.capabilityToken.trim() !== ''
-        ? o.capabilityToken
-        : undefined;
-    return {
-      scanId: asScanId(scanId),
-      tenantId: asTenantId(tenantId),
-      targetUrl,
-      ...(command === undefined ? {} : { command }),
-      ...(authProfileId === undefined ? {} : { authProfileId }),
-      ...(capabilityToken === undefined ? {} : { capabilityToken }),
-    };
+    return assembleRunnerJob(o, { scanId, tenantId, targetUrl });
   }
   return null;
 }

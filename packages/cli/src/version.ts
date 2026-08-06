@@ -1,2 +1,2 @@
 /** CLI version — updated on release. MUST match packages/cli/package.json version. */
-export const CLI_VERSION = '0.5.0';
+export const CLI_VERSION = '1.0.0';

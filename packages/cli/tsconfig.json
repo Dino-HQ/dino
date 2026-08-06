@@ -3,6 +3,8 @@
   "compilerOptions": {
     "composite": true,
     "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "outDir": "./dist",
     "rootDir": "src",
     "paths": {

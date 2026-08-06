@@ -15,8 +15,8 @@ import {
   resolveAndValidateDNS,
   ENDPOINT_REJECT_MESSAGES,
 } from './endpoint-validator';
+import { unsupportedProtocolMessage, type TenantConfig } from './tenant-config';
 import { safeExistsSync, safeReadFileSync } from '../utils/safe-fs';
-import type { TenantConfig } from './tenant-config';
 
 // Re-export for barrel consumers and tests
 export { resolveAndValidateDNS } from './endpoint-validator';
@@ -101,20 +101,7 @@ const RestApiConfigSchema = z
   })
   .strict();
 
-const GrpcApiConfigSchema = z
-  .object({
-    name: z.string().min(1),
-    type: z.literal('grpc'),
-    source: z.string().min(1),
-    specPath: SpecPathSchema,
-  })
-  .strict();
-
-const ApiConfigSchema = z.discriminatedUnion('type', [
-  GraphQLApiConfigSchema,
-  RestApiConfigSchema,
-  GrpcApiConfigSchema,
-]);
+const ApiConfigSchema = z.discriminatedUnion('type', [GraphQLApiConfigSchema, RestApiConfigSchema]);
 
 const TenantConfigSchema = z.object({
   schemaVersion: z.number().int().positive(),
@@ -189,7 +176,22 @@ export function loadTenantConfig(filePath: string): TenantConfig {
  * @returns Validated TenantConfig
  * @throws Error with details if validation fails
  */
+function rejectUnsupportedApiProtocols(raw: unknown): void {
+  if (raw === null || typeof raw !== 'object') return;
+  const apis = (raw as { apis?: unknown }).apis;
+  if (!Array.isArray(apis)) return;
+  for (const api of apis) {
+    if (api === null || typeof api !== 'object') continue;
+    const msg = unsupportedProtocolMessage((api as { type?: unknown }).type);
+    if (msg !== null) {
+      throw new Error(`Tenant config validation failed:\n  - apis: ${msg}`);
+    }
+  }
+}
+
 export function validateTenantConfig(raw: unknown): TenantConfig {
+  rejectUnsupportedApiProtocols(raw);
+
   const result = TenantConfigSchema.safeParse(raw);
 
   if (!result.success) {

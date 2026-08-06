@@ -12,7 +12,6 @@ export type {
   ApiConfig,
   GraphQLApiConfig,
   RestApiConfig,
-  GrpcApiConfig,
   EnvironmentConfig,
   AuthConfig,
   TargetAuthConfig,
@@ -21,7 +20,12 @@ export type {
   AgentActivation,
   AgentSchedule,
 } from './tenant/tenant-config';
-export { toTargetAuthConfig } from './tenant/tenant-config';
+export {
+  toTargetAuthConfig,
+  UNSUPPORTED_PROTOCOL_MESSAGE,
+  UNSUPPORTED_PROTOCOLS,
+  unsupportedProtocolMessage,
+} from './tenant/tenant-config';
 
 // Tenant loader
 export {
@@ -45,13 +49,15 @@ export type { PinnedFetchDeps, PinnedRequestImpl, PinnedRequestArgs } from './te
 export type { AgentContext, CreateAgentContextOptions } from './tenant/context';
 export { createAgentContext } from './tenant/context';
 
-// Domain verification — scan-target ownership classifier (#57)
+// Domain verification — scan-target ownership classifier (#57, #2058)
 export {
   hostFromUrl,
   classifyScanTargetHost,
   isHostVerified,
+  classifyScanTargetGate,
+  isEnvironmentScannable,
 } from './tenant/domain-verification.js';
-export type { ScanHostClass } from './tenant/domain-verification.js';
+export type { ScanHostClass, ScanTargetGate } from './tenant/domain-verification.js';
 
 // Operation types
 export type {

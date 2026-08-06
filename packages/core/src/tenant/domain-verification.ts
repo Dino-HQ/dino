@@ -64,3 +64,28 @@ export function isHostVerified(host: string, verifiedDomains: readonly string[])
   }
   return false;
 }
+
+/** The scan-target ownership decision as a pure value — the single source of truth the domain gate
+ *  consumes and the console mirrors (browser-side, C3b). Total, never throws (INV-5).
+ *   - null / unparseable host  → 'scannable'        (the gate returns without throwing)
+ *   - exempt host (localhost / single-label) → 'scannable'
+ *   - any IP literal           → 'unverifiable_ip'  (cannot be DNS-TXT verified in v1)
+ *   - public FQDN covered by a verified domain → 'scannable', else 'needs_verification' */
+export type ScanTargetGate = 'scannable' | 'needs_verification' | 'unverifiable_ip';
+
+export function classifyScanTargetGate(
+  url: string,
+  verifiedDomains: readonly string[],
+): ScanTargetGate {
+  const host = hostFromUrl(url);
+  if (host === null) return 'scannable';
+  const cls = classifyScanTargetHost(host);
+  if (cls === 'ip_literal') return 'unverifiable_ip';
+  if (cls === 'exempt') return 'scannable';
+  return isHostVerified(host, verifiedDomains) ? 'scannable' : 'needs_verification';
+}
+
+/** True when the domain-ownership gate would ALLOW a scan of this target. */
+export function isEnvironmentScannable(url: string, verifiedDomains: readonly string[]): boolean {
+  return classifyScanTargetGate(url, verifiedDomains) === 'scannable';
+}
