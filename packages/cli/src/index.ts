@@ -5,6 +5,7 @@
 
 import { sanitizeEventError } from '@dino/analytics';
 import { recordGet } from '@dino/core';
+import { setLogLevel } from '@dino/engine';
 import { runLogin, runLogout, runWhoami } from './commands/auth';
 import { runChangelog } from './commands/changelog';
 import { runConfigFromArgv } from './commands/config';
@@ -19,6 +20,7 @@ import { runVerify } from './commands/verify';
 import { runWatch } from './commands/watch';
 import { loadCliConfig } from './config/loader';
 import { parseArgs, buildContext } from './shared/base-command';
+import { printCommandHelp } from './shared/command-help';
 import { CliError } from './shared/errors';
 import { printError, detectUi } from './shared/ui';
 import { CLI_VERSION } from './version';
@@ -66,8 +68,10 @@ export {
   healthLabel,
   durationLabel,
   printError,
+  printNotice,
+  printHeaderBanner,
 } from './shared/ui';
-export type { UiOptions, ChalkColor } from './shared/ui';
+export type { UiOptions, ChalkColor, HeaderBannerMeta } from './shared/ui';
 export { computeGlobalHealthScore } from './shared/pipeline-helpers';
 
 // Ink design system (#1014)
@@ -163,13 +167,18 @@ function handleEarlyExit(
     console.info(CLI_VERSION);
     return 0;
   }
-  if (
-    flags.help === true ||
-    flags.h === true ||
-    command === '--help' ||
-    command === '-h' ||
-    !command
-  ) {
+  const helpRequested =
+    flags.help === true || flags.h === true || command === '--help' || command === '-h';
+  if (helpRequested) {
+    // #2141: `dino <command> --help` shows that command's help, not the top-level banner.
+    const named = command !== undefined && command !== '--help' && command !== '-h';
+    if (named && printCommandHelp(command)) {
+      return 0;
+    }
+    printUsage();
+    return 0;
+  }
+  if (!command) {
     printUsage();
     return 0;
   }
@@ -383,6 +392,22 @@ async function runTenantBackedCommand(
  */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const { command, flags } = parseArgs(argv);
+
+  // #2143: the default happy path shows ONLY product output — the report plus product notices
+  // the CLI prints itself (see printNotice). Internal engine logs (introspecting endpoint,
+  // introspection fallback, pipeline progress, registry mapping) stay hidden until
+  // `--verbose` (info) / `--debug` (debug). Default and `--quiet` suppress everything below
+  // `error`; the CLI surfaces user-relevant conditions via product notices, not raw logs.
+  // An explicit DINO_LOG_LEVEL env var still wins for power users and CI.
+  if (process.env.DINO_LOG_LEVEL === undefined) {
+    let level: 'debug' | 'info' | 'error' = 'error';
+    if (flags.debug === true) {
+      level = 'debug';
+    } else if (flags.verbose === true) {
+      level = 'info';
+    }
+    setLogLevel(level);
+  }
 
   const earlyExit = handleEarlyExit(command, flags);
   if (earlyExit !== null) return earlyExit;

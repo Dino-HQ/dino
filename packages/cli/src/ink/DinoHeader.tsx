@@ -1,8 +1,7 @@
 import { Box, Text } from 'ink';
 import React from 'react';
 import { DINO_THEME } from './theme';
-
-const DINO_ASCII = ['  ▟██▙ ▄', '  █ ●██▀', '  ▜██▛▀ '];
+import { DINO_ASCII, DINO_TAGLINE } from '../shared/brand';
 
 export interface DinoHeaderProps {
   version: string;
@@ -94,10 +93,10 @@ export function DinoHeader({
         </Box>
         {colored ? (
           <Text dimColor color={DINO_THEME.dim}>
-            API Intelligence Layer
+            {DINO_TAGLINE}
           </Text>
         ) : (
-          <Text>API Intelligence Layer</Text>
+          <Text>{DINO_TAGLINE}</Text>
         )}
         <HeaderMeta tenant={tenant} environment={environment} extra={extra} colored={colored} />
       </Box>

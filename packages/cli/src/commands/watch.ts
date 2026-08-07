@@ -10,6 +10,7 @@ import {
   loadLatestSnapshot,
   diffSnapshots,
   runPipeline,
+  determineOverallLevel,
 } from '@dino/engine';
 import {
   resolveMaxIterations,
@@ -152,6 +153,7 @@ async function runIteration(opts: RunIterationOptions): Promise<number | null> {
   await saveSnapshot(snapshot, snapshotOpts);
 
   const healthScore = computeGlobalHealthScore(result.condensed);
+  const healthLevel = determineOverallLevel(result.condensed.envelopes.flatMap((e) => e.findings));
   const changes = diff?.summary ?? { added: 0, removed: 0, modified: 0, breakingChanges: 0 };
 
   const entry = buildIterationHistoryEntry({ ops, result, context, healthScore, changes });
@@ -162,6 +164,7 @@ async function runIteration(opts: RunIterationOptions): Promise<number | null> {
     context,
     entry,
     healthScore,
+    healthLevel,
     changes,
     result,
     noColor,

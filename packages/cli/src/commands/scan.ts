@@ -19,8 +19,10 @@ import {
 } from './scan-helpers';
 import { ensureScanTelemetryConsent } from '../config/telemetry-consent';
 import { getEndpoint, discoverOperationsDetailed, withTracking } from '../shared/base-command';
-import { detectUi, createSpinner } from '../shared/ui';
+import { detectUi, createSpinner, printNotice, printHeaderBanner } from '../shared/ui';
+import { CLI_VERSION } from '../version';
 import type { CommandContext, CommonFlags, MergedFlags } from '../shared/base-command';
+import type { UiOptions } from '../shared/ui';
 import type { ResolvedScanConfig } from '@dino/core';
 
 export { buildAdHocRegistry, buildAdHocOperationMappings, getScanExitCode } from './scan-helpers';
@@ -53,6 +55,41 @@ function normalizeScanFlags(f: MergedFlags): ScanFlags {
   return out as ScanFlags;
 }
 
+/** #2143: reduced-fidelity product notice, read from the discovery raw introspection result. */
+function notifyReducedFidelity(discoveryRaw: unknown, ui: UiOptions): void {
+  if (!discoveryRaw || typeof discoveryRaw !== 'object') return;
+  const level = (discoveryRaw as { introspectionLevel?: unknown }).introspectionLevel;
+  if (level === 'minimal' || level === 'shallow') {
+    printNotice('Limited schema access: this API restricts introspection.', ui, {
+      hint: 'Results are best-effort; connect an OpenAPI/GraphQL spec for full coverage.',
+    });
+  }
+}
+
+/** #2143: brand the run start (TTY, stderr), discover under a spinner, surface reduced fidelity. */
+async function discoverWithSpinnerAndBanner(
+  context: CommandContext,
+  ui: UiOptions,
+): Promise<Awaited<ReturnType<typeof discoverOperationsDetailed>>> {
+  printHeaderBanner(ui, {
+    version: CLI_VERSION,
+    command: 'scan',
+    tenant: context.tenantId,
+    environment: context.environment,
+  });
+  const discoverSpinner = createSpinner('Testing your API…', ui);
+  discoverSpinner.start();
+  try {
+    const discoveryMeta = await discoverOperationsDetailed(context);
+    discoverSpinner.succeed('API tested');
+    notifyReducedFidelity(discoveryMeta.discoveryRaw, ui);
+    return discoveryMeta;
+  } catch (err) {
+    discoverSpinner.fail('Test failed');
+    throw err;
+  }
+}
+
 async function discoverAndPrepareScan(
   context: CommandContext,
   flags: ScanFlags,
@@ -66,21 +103,14 @@ async function discoverAndPrepareScan(
   assertReasoningRequiresApiKey(flags);
 
   const endpoint = getEndpoint(context);
-  const ui = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
-  const discoverSpinner = createSpinner('Scanning operations\u2026', ui);
-  discoverSpinner.start();
-  let graphqlOps;
-  let discoveryMeta: Awaited<ReturnType<typeof discoverOperationsDetailed>>;
-  try {
-    discoveryMeta = await discoverOperationsDetailed(context);
-    graphqlOps = discoveryMeta.graphqlOperations;
-    const discoveredCount =
-      graphqlOps.length > 0 ? graphqlOps.length : discoveryMeta.discoveredOperations.length;
-    discoverSpinner.succeed(`Discovered ${discoveredCount} operations`);
-  } catch (err) {
-    discoverSpinner.fail('Scan failed');
-    throw err;
-  }
+  const ui = detectUi({
+    quiet: flags.quiet,
+    noColor: flags.noColor,
+    verbose: flags.verbose,
+    debug: flags.debug,
+  });
+  const discoveryMeta = await discoverWithSpinnerAndBanner(context, ui);
+  const graphqlOps = discoveryMeta.graphqlOperations;
   const rbacRoles = readRbacRolesFromContext(context);
   const { expectations: rbacExpectations, defaultExpectations: rbacDefaultExpectations } =
     readRbacExpectationsFromContext(context);
@@ -120,7 +150,8 @@ async function executeScanBody(context: CommandContext, flags: ScanFlags): Promi
     protocol: flags.protocol,
     tenant: flags.tenant,
     environment: flags.env,
-    format: flags.format,
+    // #2143: humans get the readable report by default; `--format json` for machines.
+    format: flags.format ?? 'markdown',
     snapshotDir: flags.snapshotDir,
     aiKey: flags.aiKey,
     auth: flags.auth,
