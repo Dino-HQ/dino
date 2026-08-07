@@ -2,6 +2,8 @@ import { Box, Text } from 'ink';
 import React from 'react';
 import { HealthBadge } from './HealthBadge';
 import { DINO_THEME } from './theme';
+import type { EnvelopeSeverityLevel } from '@dino/core';
+import type { HealthVerdict } from '@dino/engine';
 
 export interface SummaryStat {
   label: string;
@@ -11,17 +13,70 @@ export interface SummaryStat {
 
 export interface SummaryCardProps {
   title: string;
-  healthScore?: number | undefined;
+  healthScore?: number | null | undefined;
+  healthVerdict?: HealthVerdict | undefined;
+  healthLevel?: EnvelopeSeverityLevel | undefined;
   stats: SummaryStat[];
   colored?: boolean | undefined;
+}
+
+function colorForLevel(level: EnvelopeSeverityLevel | undefined): string {
+  if (level === 'CRITICAL' || level === 'HIGH') return DINO_THEME.error;
+  if (level === 'MEDIUM' || level === 'LOW') return DINO_THEME.warning;
+  if (level === 'CLEAN') return DINO_THEME.success;
+  return DINO_THEME.dim;
+}
+
+function GatedHealthLabel(props: {
+  verdict: HealthVerdict;
+  score: number | null | undefined;
+  level: EnvelopeSeverityLevel | undefined;
+  colored: boolean;
+}): React.ReactElement {
+  const { verdict, score, level, colored } = props;
+  const text =
+    score === null || score === undefined ? verdict : `${verdict} (${Math.round(score)})`;
+  const hex = colorForLevel(level);
+  return (
+    <Box borderStyle="round" paddingX={1} paddingY={0}>
+      {colored ? <Text color={hex}>{text}</Text> : <Text>{text}</Text>}
+    </Box>
+  );
+}
+
+function resolveHealthNode(props: {
+  healthScore: number | null | undefined;
+  healthVerdict: HealthVerdict | undefined;
+  healthLevel: EnvelopeSeverityLevel | undefined;
+  colored: boolean;
+}): React.ReactNode {
+  const { healthScore, healthVerdict, healthLevel, colored } = props;
+  if (healthVerdict !== undefined) {
+    return (
+      <GatedHealthLabel
+        verdict={healthVerdict}
+        score={healthScore}
+        level={healthLevel}
+        colored={colored}
+      />
+    );
+  }
+  if (healthScore !== undefined && healthScore !== null) {
+    return <HealthBadge score={healthScore} colored={colored} />;
+  }
+  return null;
 }
 
 export function SummaryCard({
   title,
   healthScore,
+  healthVerdict,
+  healthLevel,
   stats,
   colored = true,
 }: SummaryCardProps): React.ReactElement {
+  const healthNode = resolveHealthNode({ healthScore, healthVerdict, healthLevel, colored });
+
   return (
     <Box
       flexDirection="column"
@@ -38,7 +93,7 @@ export function SummaryCard({
         ) : (
           <Text>{title.toUpperCase()}</Text>
         )}
-        {healthScore !== undefined ? <HealthBadge score={healthScore} colored={colored} /> : null}
+        {healthNode}
       </Box>
       <Box gap={4} flexWrap="wrap" flexDirection="row">
         {stats.map((s) => (

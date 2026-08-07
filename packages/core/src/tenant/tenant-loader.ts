@@ -214,9 +214,9 @@ export function validateTenantConfig(raw: unknown): TenantConfig {
   const SUPPORTED_SCHEMA_VERSION = 1;
   if (config.schemaVersion > SUPPORTED_SCHEMA_VERSION) {
     console.warn(
-      `[tenant] Config "${config.id}" uses schemaVersion ${config.schemaVersion} ` +
-        `but this version of Dino only supports version ${SUPPORTED_SCHEMA_VERSION}. ` +
-        `Some fields may not be parsed correctly. Update Dino to the latest version.`,
+      `Config "${config.id}" declares schemaVersion ${config.schemaVersion}; ` +
+        `this build of Dino supports version ${SUPPORTED_SCHEMA_VERSION}. ` +
+        `Some fields may be ignored. Update Dino to the latest version.`,
     );
   }
 

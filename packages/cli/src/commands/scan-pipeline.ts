@@ -11,23 +11,20 @@ import {
   buildCatalog,
   renderCatalogMarkdown,
   renderCatalogJson,
+  summarizeCatalogHealth,
   buildSnapshot,
   saveSnapshot,
   runPipeline,
   safePath,
+  logger,
   type PipelineExecutor,
   type TokenResolver,
   type ToolName,
 } from '@dino/engine';
 import { buildAdHocRegistry, buildAdHocOperationMappings } from './scan-helpers';
 import { shouldRenderInkView } from '../ink/InkRender';
-import {
-  DEFAULT_REASONING_OPTS,
-  computeGlobalHealthScore,
-  perOpFindingsFromEnv,
-} from '../shared/pipeline-helpers';
-import { detectUi, colorize, healthLabel } from '../shared/ui';
-import { CLI_VERSION } from '../version';
+import { DEFAULT_REASONING_OPTS, perOpFindingsFromEnv } from '../shared/pipeline-helpers';
+import { detectUi } from '../shared/ui';
 import type { ScanFlags } from './scan';
 import type { CommandContext } from '../shared/base-command';
 import type { createRestExecutor, DefaultExpectationsMap, ExpectationsMap } from '@dino/agents';
@@ -41,8 +38,9 @@ function shouldFallBackToAdHocRegistry(context: CommandContext): boolean {
 
 function logAdHocRegistryHintIfNeeded(context: CommandContext, useAdHocFallback: boolean): void {
   if (useAdHocFallback && context.tenantId !== 'adhoc') {
-    console.info(
-      `No operations file found for "${context.tenantId}" \u2014 auto-generating from introspection.`,
+    // #2143: internal detail \u2014 engine logger (stderr, hidden until --verbose), off the stdout report.
+    logger.info(
+      `No operations file found for "${context.tenantId}": auto-generating from introspection.`,
     );
   }
 }
@@ -116,9 +114,8 @@ async function runScanPipelinePhase(
 
 function warnIfScanReportDegraded(result: ScanPipelineRunResult): void {
   if ('degraded' in result.report && result.report.degraded) {
-    console.warn(
-      'WARNING: Pipeline ran in degraded mode \u2014 all tools failed. Report contains no test data.',
-    );
+    // #2143: user-relevant \u2014 product voice on stderr (no log prefix, no em-dash).
+    console.error('!  All agents failed. No test data was produced for this run.');
   }
 }
 
@@ -163,41 +160,49 @@ async function persistScanSnapshot(params: {
   });
 }
 
+// #2143: the scan report is a QA artifact — title it accordingly. `dino docs`
+// keeps its own default (API documentation), so we thread the title here, not in
+// the shared renderer default.
+const SCAN_REPORT_TITLE = 'API Quality Report';
+
 function formatScanCatalogForOutput(
   catalog: ReturnType<typeof buildCatalog>,
   format: ResolvedScanConfig['format'],
 ): string {
   if (format === 'json') {
-    return JSON.stringify(renderCatalogJson(catalog), null, 2);
+    return JSON.stringify(renderCatalogJson(catalog, { title: SCAN_REPORT_TITLE }), null, 2);
   }
-  return renderCatalogMarkdown(catalog);
+  return renderCatalogMarkdown(catalog, { title: SCAN_REPORT_TITLE });
 }
 
 async function tryRenderScanInkSummary(params: {
   flags: ScanFlags;
   resolvedConfig: ResolvedScanConfig;
-  context: CommandContext;
-  graphqlOps: GraphQLOperation[];
   result: ScanPipelineRunResult;
-}): Promise<boolean> {
-  const { flags, resolvedConfig, context, graphqlOps, result } = params;
+  catalog: ReturnType<typeof buildCatalog>;
+}): Promise<void> {
+  const { flags, resolvedConfig, result, catalog } = params;
   const uiSummary = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
   if (!shouldRenderInkView(uiSummary, { format: resolvedConfig.format, quiet: flags.quiet })) {
-    return false;
+    return;
   }
   try {
     const React = await import('react');
     const { renderViewSafe } = await import('../ink/InkRender');
     const { ScanView } = await import('../views/ScanView');
-    const findingCount = result.condensed.envelopes.flatMap((e) => e.findings).length;
-    const healthScore = computeGlobalHealthScore(result.condensed);
-    return renderViewSafe(
+    // #2143 + #2139: the TTY summary MUST match the report. Health comes from the canonical
+    // summarizeCatalogHealth (the same verdict the report prints); the operation count comes
+    // from the catalog (renderCatalogJson.operationCount) — never graphqlOps.length, which is
+    // 0 for a REST scan.
+    const reportStats = renderCatalogJson(catalog) as { operationCount: number };
+    const h = summarizeCatalogHealth(catalog);
+    const findingCount = (result.condensed.envelopes ?? []).flatMap((e) => e.findings).length;
+    renderViewSafe(
       React.createElement(ScanView, {
-        version: CLI_VERSION,
-        tenant: context.tenantId,
-        environment: context.environment,
-        operationCount: graphqlOps.length,
-        healthScore,
+        operationCount: reportStats.operationCount,
+        healthScore: h.score,
+        healthVerdict: h.verdict,
+        healthLevel: h.level,
         findingCount,
         toolsRun: result.metadata.toolsRun.length,
         breakingChanges: 0,
@@ -207,32 +212,12 @@ async function tryRenderScanInkSummary(params: {
       }),
     );
   } catch (error_) {
-    console.warn(
-      '[dino] Ink scan view failed:',
-      error_ instanceof Error ? error_.message : String(error_),
+    // #2143: Ink render failure is internal — the markdown report already printed to stdout.
+    // Log at debug (surfaced only with --debug), off the user's default output.
+    logger.debug(
+      `[dino] Ink scan view failed: ${error_ instanceof Error ? error_.message : String(error_)}`,
     );
-    return false;
   }
-}
-
-function printScanConsoleFooterIfNeeded(params: {
-  flags: ScanFlags;
-  resolvedConfig: ResolvedScanConfig;
-  graphqlOps: GraphQLOperation[];
-  result: ScanPipelineRunResult;
-  inkSummaryShown: boolean;
-}): void {
-  const { flags, resolvedConfig, graphqlOps, result, inkSummaryShown } = params;
-  if (flags.quiet || resolvedConfig.format === 'json' || inkSummaryShown) return;
-  const uiSummary = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
-  const findingCount = result.condensed.envelopes.flatMap((e) => e.findings).length;
-  const healthScore = computeGlobalHealthScore(result.condensed);
-  const summary = [
-    `${graphqlOps.length} operations tested`,
-    `${findingCount} findings`,
-    `health ${healthLabel(healthScore, uiSummary)}`,
-  ].join(' \u00B7 ');
-  console.info(colorize(summary, 'dim', uiSummary));
 }
 
 export interface PipelineCatalogOptions {
@@ -293,20 +278,15 @@ async function outputScanResults(params: {
 
   await persistScanSnapshot({ resolvedConfig, graphqlOps, context });
 
+  // #2143: the report IS the result — always emit it to stdout, even with --quiet.
+  // `--quiet` suppresses chrome (spinner, notices, the Ink summary), never the result.
   const output = formatScanCatalogForOutput(catalog, resolvedConfig.format);
-  if (!flags.quiet) {
-    console.info(output);
-  }
+  console.info(output);
 
-  const inkSummaryShown = await tryRenderScanInkSummary({
-    flags,
-    resolvedConfig,
-    context,
-    graphqlOps,
-    result,
-  });
-
-  printScanConsoleFooterIfNeeded({ flags, resolvedConfig, graphqlOps, result, inkSummaryShown });
+  // #2143: in a TTY, render the summary card (mirrors the report's op count + canonical
+  // health via summarizeCatalogHealth). No console footer — it was redundant with the report
+  // Summary and, on stdout, polluted `> report.md`.
+  await tryRenderScanInkSummary({ flags, resolvedConfig, result, catalog });
 
   return getScanExitCode(result, flags.failOnHigh);
 }

@@ -9,7 +9,10 @@
 
 import chalk from 'chalk';
 import ora from 'ora';
+import { healthVerdict } from '@dino/engine';
+import { DINO_ASCII, DINO_TAGLINE, DINO_BRAND_HEX } from './brand';
 import { CliError } from './errors';
+import type { EnvelopeSeverityLevel } from '@dino/core';
 import type { Ora } from 'ora';
 
 export interface UiOptions {
@@ -21,12 +24,18 @@ export interface UiOptions {
   quiet: boolean;
   /** True when Ink rendering may be used (interactive TTY; dynamic import handles load failures) — #1014 */
   ink: boolean;
+  /** #2143: --verbose — show extra progress notices the default path suppresses. Set by detectUi. */
+  verbose?: boolean;
+  /** #2143: --debug — show diagnostics + stack traces. Set by detectUi. */
+  debug?: boolean;
 }
 
 /** Detect whether we're in an interactive terminal. */
 export function detectUi(flags: {
   quiet?: boolean | undefined;
   noColor?: boolean | undefined;
+  verbose?: boolean | undefined;
+  debug?: boolean | undefined;
 }): UiOptions {
   const isTTY = process.stdout.isTTY === true;
   const isCI = Boolean(process.env.CI);
@@ -34,7 +43,14 @@ export function detectUi(flags: {
   const noColor = flags.noColor === true || Boolean(process.env.NO_COLOR);
   const colored = interactive && !noColor;
   const ink = interactive;
-  return { interactive, colored, quiet: flags.quiet === true, ink };
+  return {
+    interactive,
+    colored,
+    quiet: flags.quiet === true,
+    ink,
+    verbose: flags.verbose === true || flags.debug === true,
+    debug: flags.debug === true,
+  };
 }
 
 function createNoopOra(initialText: string): Ora {
@@ -103,27 +119,30 @@ function clampHealthScore(score: number): number {
 }
 
 /**
- * Health score → colored label with verdict string.
- * UX Language §4.1: "The number supports the verdict — never IS the verdict."
- * Thresholds: ≥80 green, 50-79 yellow, <50 red+bold.
+ * Severity-gated health label. UX Language §4.1: "The number supports the verdict — never IS the verdict."
+ * Verdict comes from healthVerdict(level); score is optional display support (null → no number).
  */
-export function healthLabel(score: number, ui: UiOptions): string {
-  const clamped = clampHealthScore(score);
-  let verdict: string;
+export function healthLabel(
+  score: number | null,
+  level: EnvelopeSeverityLevel,
+  ui: UiOptions,
+): string {
+  const verdict = healthVerdict(level);
   let color: ChalkColor;
-
-  if (clamped >= 80) {
-    verdict = 'Healthy';
-    color = 'green';
-  } else if (clamped >= 50) {
-    verdict = 'Needs attention';
-    color = 'yellow';
-  } else {
-    verdict = 'Critical';
+  if (level === 'CRITICAL') {
     color = 'redBold';
+  } else if (level === 'HIGH') {
+    color = 'red';
+  } else if (level === 'MEDIUM' || level === 'LOW') {
+    color = 'yellow';
+  } else if (level === 'CLEAN') {
+    color = 'green';
+  } else {
+    color = 'dim';
   }
 
-  return colorize(`${verdict} (${clamped})`, color, ui);
+  const text = score === null ? verdict : `${verdict} (${clampHealthScore(score)})`;
+  return colorize(text, color, ui);
 }
 
 /** Format milliseconds as human-readable duration. */
@@ -152,4 +171,53 @@ export function printError(err: Error, ui: UiOptions, debug?: boolean): void {
   if (debug && err.stack) {
     console.error(colorize(err.stack, 'dim', ui));
   }
+}
+
+/**
+ * #2143: print a product notice to STDERR (never stdout — stdout is the result only).
+ * Product voice, no timestamp, no log-level prefix. Use for user-relevant conditions the
+ * default path should surface (reduced fidelity, running unauthenticated). No-ops when --quiet.
+ */
+export function printNotice(message: string, ui: UiOptions, opts?: { hint?: string }): void {
+  if (ui.quiet) return;
+  console.error(colorize(`!  ${message}`, 'yellow', ui));
+  if (opts?.hint) {
+    console.error(colorize(`   ${opts.hint}`, 'dim', ui));
+  }
+}
+
+export interface HeaderBannerMeta {
+  version: string;
+  command: string;
+  tenant?: string | undefined;
+  environment?: string | undefined;
+}
+
+/**
+ * #2143: branded start-of-run header, printed to STDERR (chrome, never stdout).
+ * Interactive terminals only — suppressed when piped, redirected, in CI, or --quiet,
+ * so `dino scan | jq` / `> report.md` stay pure result and logs stay clean.
+ */
+export function printHeaderBanner(ui: UiOptions, meta: HeaderBannerMeta): void {
+  if (!ui.interactive) return;
+  const brand = (s: string): string => (ui.colored ? chalk.hex(DINO_BRAND_HEX)(s) : s);
+  const dim = (s: string): string => (ui.colored ? chalk.dim(s) : s);
+  const bold = (s: string): string => (ui.colored ? chalk.bold(s) : s);
+  const metaBits: string[] = [];
+  if (meta.tenant !== undefined) {
+    metaBits.push(`tenant: ${meta.tenant}`);
+  }
+  if (meta.environment !== undefined) {
+    metaBits.push(`env: ${meta.environment}`);
+  }
+  metaBits.push(`dino ${meta.command}`);
+  const versionText = `v${meta.version}`;
+  const right = [
+    `${bold('DINO')} ${dim(versionText)}`,
+    dim(DINO_TAGLINE),
+    dim(metaBits.join('  ')),
+  ];
+  const lines = DINO_ASCII.map((art, i) => `${brand(art)}   ${right.at(i) ?? ''}`);
+  console.error(lines.join('\n'));
+  console.error('');
 }

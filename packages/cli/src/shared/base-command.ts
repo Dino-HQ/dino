@@ -18,7 +18,7 @@ import { getEffectiveTelemetryLevel, readGlobalDinoConfigSync } from '../config/
 import { CLI_VERSION } from '../version';
 import type { DinoCliConfig } from '../config/loader';
 import type { AnalyticsAdapter, Tracker } from '@dino/analytics';
-import type { TenantConfig, GraphQLOperation, Operation } from '@dino/core';
+import type { TenantConfig, ApiConfig, GraphQLOperation, Operation } from '@dino/core';
 
 /** Events sent at 'crash' level (errors/failures only). */
 const CRASH_LEVEL_EVENTS = new Set([
@@ -245,7 +245,9 @@ export interface WithTrackingOptions {
  * Returns the exit code from the body, or 1 on error.
  */
 export async function withTracking(opts: WithTrackingOptions): Promise<number> {
-  const { context, command, flagsPayload, quiet, body } = opts;
+  // `quiet` is accepted on the options for API symmetry but no longer gates error output
+  // (#2143: errors always surface on stderr regardless of --quiet).
+  const { context, command, flagsPayload, body } = opts;
   const startMs = Date.now(); // determinism:allowed
   context.tracker.track({
     type: 'cli.command.invoked',
@@ -279,17 +281,18 @@ export async function withTracking(opts: WithTrackingOptions): Promise<number> {
         errorClass: err instanceof Error ? err.name : 'Unknown',
       },
     });
-    if (!quiet) {
-      const ui = detectUi({
-        quiet,
-        noColor: (flagsPayload as { noColor?: boolean }).noColor === true,
-      });
-      printError(
-        err instanceof Error ? err : new Error(String(err)),
-        ui,
-        Boolean((flagsPayload as { debug?: boolean }).debug),
-      );
-    }
+    // #2143: errors are not chrome. `--quiet` suppresses progress (spinner, notices, logs),
+    // never the failure reason — a silent nonzero exit is undebuggable. Always surface the
+    // error on stderr (forced non-quiet ui so printError prints); stdout stays untouched.
+    const ui = detectUi({
+      quiet: false,
+      noColor: (flagsPayload as { noColor?: boolean }).noColor === true,
+    });
+    printError(
+      err instanceof Error ? err : new Error(String(err)),
+      ui,
+      Boolean((flagsPayload as { debug?: boolean }).debug),
+    );
     return exitCode;
   }
 }
@@ -319,8 +322,42 @@ function parseFlag(argv: string[], i: number, flags: Record<string, unknown>): n
 }
 
 /**
+ * #2141: recognize `-h`/`-v` anywhere, not just first position. Without this, `dino login -h`
+ * fell through as a positional and STARTED the OAuth flow instead of printing help.
+ * Returns true if the arg was a recognized short flag.
+ */
+function handleShortFlag(arg: string, flags: Record<string, unknown>): boolean {
+  if (arg === '-h') {
+    recordSet(flags, 'h', true);
+    return true;
+  }
+  if (arg === '-v') {
+    recordSet(flags, 'v', true);
+    return true;
+  }
+  return false;
+}
+
+/** Record every argument after a `--` terminator as an indexed positional. */
+function collectTrailingPositionals(
+  argv: string[],
+  startIndex: number,
+  flags: Record<string, unknown>,
+): void {
+  for (let i = startIndex; i < argv.length; i++) {
+    const positional = argv.at(i);
+    if (positional === undefined) {
+      throw new Error(
+        `Expected positional argument at index ${i} but argv.at(${i}) returned undefined`,
+      );
+    }
+    recordSet(flags, `_${String(i)}`, positional);
+  }
+}
+
+/**
  * Parse argv: first positional (non-flag) = command; remaining args as flags.
- * Supports --key value, --key=value, --flag (boolean).
+ * Supports --key value, --key=value, --flag (boolean), and -h/-v short flags.
  */
 export function parseArgs(argv: string[]): { command: string; flags: Record<string, unknown> } {
   const flags: Record<string, unknown> = {};
@@ -338,6 +375,10 @@ export function parseArgs(argv: string[]): { command: string; flags: Record<stri
       i += parseFlag(argv, i, flags);
       continue;
     }
+    if (handleShortFlag(arg, flags)) {
+      i++;
+      continue;
+    }
     if (command) {
       recordSet(flags, `_${String(i)}`, arg);
     } else {
@@ -346,17 +387,7 @@ export function parseArgs(argv: string[]): { command: string; flags: Record<stri
     i++;
   }
 
-  while (i < argv.length) {
-    const positional = argv.at(i);
-    if (positional === undefined) {
-      throw new Error(
-        `Expected positional argument at index ${i} but argv.at(${i}) returned undefined`,
-      );
-    }
-    recordSet(flags, `_${String(i)}`, positional);
-    i++;
-  }
-
+  collectTrailingPositionals(argv, i, flags);
   return { command: command || '', flags };
 }
 
@@ -364,17 +395,35 @@ export function parseArgs(argv: string[]): { command: string; flags: Record<stri
  * Build a synthetic TenantConfig for ad-hoc scans (no tenant YAML).
  * Endpoint comes from .dino.yml directly. All agents disabled (scan uses tools, not agents).
  * Request timeout uses the default from #560.
+ *
+ * #2140: `protocol: 'rest'` discovers operations from an OpenAPI spec (`specPath`,
+ * a URL or file path) rather than GraphQL introspection. REST has no introspection,
+ * so the spec is mandatory — a missing spec is a config error, not a silent empty scan.
  */
 function buildAdHocTenantConfig(
   endpoint: string,
-  protocol: 'graphql',
+  protocol: 'graphql' | 'rest',
   requestTimeoutMs: number,
+  specPath?: string,
 ): TenantConfig {
+  let api: ApiConfig;
+  if (protocol === 'rest') {
+    if (specPath === undefined || specPath.trim() === '') {
+      throw new CliError(
+        'protocol: rest requires specUrl (a URL or file path to your OpenAPI spec).',
+        1,
+        'Add specUrl: <openapi-url-or-path> to your .dino.yml, or use protocol: graphql.',
+      );
+    }
+    api = { name: 'default', type: 'rest', source: 'openapi', specPath };
+  } else {
+    api = { name: 'default', type: 'graphql', source: 'introspection' };
+  }
   return {
     schemaVersion: 1,
     id: 'adhoc',
     name: 'Ad-hoc scan',
-    apis: [{ name: 'default', type: protocol, source: 'introspection' }],
+    apis: [api],
     environments: {
       default: {
         endpoints: { default: endpoint },
@@ -400,6 +449,7 @@ export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): 
       config.endpoint,
       config.protocol ?? 'graphql',
       30_000, // DEFAULT_SCAN_CONFIG.requestTimeoutMs — hardcoded to avoid circular dep
+      config.specUrl,
     );
     const tracker = createTracker({
       adapter: createCliAnalyticsAdapter(),

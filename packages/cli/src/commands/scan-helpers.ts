@@ -8,6 +8,7 @@ import { assertNever } from '@dino/core';
 import {
   createTokenFactory,
   createAuthAdapter,
+  logger,
   type OperationMapping,
   type PipelineExecutor,
   type TokenResolver,
@@ -24,6 +25,7 @@ import {
   validateConfigConsistency,
   VALID_TOOL_NAMES,
 } from '../shared/pipeline-helpers';
+import { detectUi, printNotice } from '../shared/ui';
 import type { ScanFlags } from './scan';
 import type { CommandContext } from '../shared/base-command';
 import type { ResolvedScanConfig, GraphQLOperation } from '@dino/core';
@@ -111,7 +113,7 @@ export function logVerboseDefaultsForScan(flags: ScanFlags, resolved: ResolvedSc
     `  concurrency: ${String(resolved.concurrency)}`,
     `  outputDir: ${resolved.outputDir}`,
   ];
-  console.info(`[dino] Applied defaults (#560):\n${lines.join('\n')}`);
+  logger.info(`Applied defaults:\n${lines.join('\n')}`);
 }
 
 interface ScanToolsAndModules {
@@ -131,10 +133,16 @@ export function prepareScanToolsAndModules(
     : validatedTools;
 
   if (authAbsent && flags.tools?.includes('rbac-matrix')) {
-    console.warn(
-      '\u26A0\uFE0F  --tools includes rbac-matrix but no auth is configured. ' +
-        'RBAC tool skipped to prevent false-positive results. Configure auth to enable RBAC.',
-    );
+    // #2143: user-relevant product notice on stderr (quiet-aware, no em-dash / winston prefix).
+    const ui = detectUi({
+      quiet: flags.quiet,
+      noColor: flags.noColor,
+      verbose: flags.verbose,
+      debug: flags.debug,
+    });
+    printNotice('RBAC test skipped: no auth is configured for this API.', ui, {
+      hint: 'Configure auth to test role-based access.',
+    });
   }
 
   const validatedModules = flags.modules
@@ -158,8 +166,8 @@ export function logRbacRolesHintWhenMissing(
   rbacRoles: string[] | undefined,
 ): void {
   if ((!rbacRoles || rbacRoles.length === 0) && context.tenantId !== 'adhoc') {
-    console.info(
-      'No rbac.roles in tenant config \u2014 skipping RBAC matrix. Add an rbac: section to your tenant YAML to enable.',
+    logger.info(
+      'No rbac.roles in tenant config: skipping RBAC matrix. Add an rbac: section to your tenant YAML to enable.',
     );
   }
 }
@@ -183,9 +191,14 @@ export function buildScanExecutor(
     executor = withAuth(executor, tokenFactory, auth.role ?? 'USER');
     tokenResolver = buildTokenResolver(tokenFactory);
   } else {
-    console.warn(
-      '\u26A0\uFE0F  No auth config \u2014 running unauthenticated. RBAC matrix skipped.',
-    );
+    // #2143: product notice on stderr, quiet-aware (suppressed under --quiet).
+    const ui = detectUi({
+      quiet: flags.quiet,
+      noColor: flags.noColor,
+      verbose: flags.verbose,
+      debug: flags.debug,
+    });
+    printNotice('Running unauthenticated. Configure auth to test role-based access.', ui);
   }
 
   return { executor, tokenResolver };
