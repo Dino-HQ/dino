@@ -159,18 +159,19 @@ async function resolveHostnameViaDns(hostname: string, resolve: DNSResolver): Pr
   let ips: string[] | undefined;
   try {
     ips = await withDnsTimeout(resolve.resolve4(hostname), DNS_TIMEOUT_MS);
-  } catch (error_) {
-    // masked-fix:allowed — IPv4 DNS failure expected for invalid/unreachable hosts
-    const msg = error_ instanceof Error ? error_.message : String(error_);
-    console.warn(`[endpoint-validator] IPv4 DNS failed for ${hostname}: ${msg}`);
+  } catch {
+    // masked-fix:allowed — IPv4 DNS failure is an expected outcome for invalid/unreachable
+    // hosts. The caller reports it once as `dns_resolution_failed`; the underlying resolver
+    // message (e.g. "queryA ENOTFOUND") is redundant jargon, so no raw console noise (#2143).
+    ips = undefined;
   }
   if ((ips === undefined || ips.length === 0) && resolve.resolve6) {
     try {
       ips = await withDnsTimeout(resolve.resolve6(hostname), DNS_TIMEOUT_MS);
-    } catch (error_) {
-      // masked-fix:allowed — IPv6 DNS failure expected for invalid/unreachable hosts
-      const msg = error_ instanceof Error ? error_.message : String(error_);
-      console.warn(`[endpoint-validator] IPv6 DNS failed for ${hostname}: ${msg}`);
+    } catch {
+      // masked-fix:allowed — IPv6 DNS failure is likewise expected; surfaced once by the
+      // caller as `dns_resolution_failed` (#2143).
+      ips = undefined;
     }
   }
   return ips ?? [];

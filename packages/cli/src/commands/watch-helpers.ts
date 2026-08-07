@@ -22,6 +22,7 @@ import {
 import { detectUi, healthLabel, durationLabel, colorize } from '../shared/ui';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 import type { WatchHistoryEntry } from '../shared/history';
+import type { EnvelopeSeverityLevel } from '@dino/core';
 import type { TokenResolver } from '@dino/engine';
 
 export interface WatchFlags extends CommonFlags {
@@ -191,6 +192,7 @@ export interface IterationSummaryOpts {
   context: CommandContext;
   entry: WatchHistoryEntry;
   healthScore: number;
+  healthLevel: EnvelopeSeverityLevel;
   changes: { added: number; removed: number; modified: number; breakingChanges: number };
   result: { durationMs: number; metadata: { degraded: boolean } };
   noColor?: boolean | undefined;
@@ -240,7 +242,8 @@ export async function showIterationSummary(opts: IterationSummaryOpts): Promise<
   const inkShown = await tryRenderInkIterationView(opts);
   if (inkShown) return;
 
-  const { iteration, context, entry, healthScore, changes, result, noColor, quiet } = opts;
+  const { iteration, context, entry, healthScore, healthLevel, changes, result, noColor, quiet } =
+    opts;
   const summaryUi = detectUi({ quiet, noColor });
   const lines = [
     '',
@@ -249,7 +252,7 @@ export async function showIterationSummary(opts: IterationSummaryOpts): Promise<
       'dim',
       summaryUi,
     ),
-    `  Health:     ${healthLabel(healthScore, summaryUi)}`,
+    `  Health:     ${healthLabel(healthScore, healthLevel, summaryUi)}`,
     `  Operations: ${entry.operationCount}`,
     `  Tools:      ${entry.toolsRun} run, ${entry.toolsCompleted} completed, ${entry.toolsFailed} failed`,
     `  Breaking:   ${changes.breakingChanges > 0 ? colorize(String(changes.breakingChanges) + ' breaking', 'redBold', summaryUi) : colorize('0', 'green', summaryUi)}`,

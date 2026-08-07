@@ -27,7 +27,10 @@ const DinoCliConfigSchema = z.looseObject({
     .optional(),
   // #560: Ad-hoc scan support — endpoint + protocol in .dino.yml
   endpoint: z.url().optional(),
-  protocol: z.enum(['graphql']).optional(),
+  protocol: z.enum(['graphql', 'rest']).optional(),
+  // #2140: REST ad-hoc scans have no introspection — point at an OpenAPI spec
+  // (URL or local file path). Required when protocol is 'rest'.
+  specUrl: z.string().min(1).optional(),
 });
 
 export interface LoadCliConfigOptions {
@@ -68,8 +71,10 @@ export interface DinoCliConfig {
     | undefined;
   /** Direct API endpoint URL for ad-hoc scans (#560) */
   endpoint?: string | undefined;
-  /** API protocol — only graphql supported (#560) */
-  protocol?: 'graphql' | undefined;
+  /** API protocol for ad-hoc scans — graphql (introspection) or rest (OpenAPI). #560/#2140 */
+  protocol?: 'graphql' | 'rest' | undefined;
+  /** OpenAPI spec URL or file path — required when protocol is 'rest' (#2140). */
+  specUrl?: string | undefined;
 }
 
 /**
@@ -129,5 +134,6 @@ export async function loadCliConfig(options?: LoadCliConfigOptions): Promise<Din
     rateLimit: config.rateLimit,
     endpoint: config.endpoint,
     protocol: config.protocol,
+    specUrl: config.specUrl,
   };
 }
