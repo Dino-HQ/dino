@@ -19,9 +19,10 @@ import {
   validateRbacRoles,
   validateConfigConsistency,
 } from '../shared/pipeline-helpers';
-import { detectUi, healthLabel, durationLabel, colorize } from '../shared/ui';
+import { detectUi, healthLabel, durationLabel, colorize, printNotice } from '../shared/ui';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 import type { WatchHistoryEntry } from '../shared/history';
+import type { UiOptions } from '../shared/ui';
 import type { EnvelopeSeverityLevel } from '@dino/core';
 import type { TokenResolver } from '@dino/engine';
 
@@ -81,7 +82,7 @@ function validateInterval(interval: number): void {
   }
 }
 
-export function resolveAutonomy(flags: WatchFlags): AutonomyLevel {
+export function resolveAutonomy(flags: WatchFlags, ui?: UiOptions): AutonomyLevel {
   const raw = flags.autonomy;
   let level: string;
   if (typeof raw === 'string') {
@@ -92,7 +93,8 @@ export function resolveAutonomy(flags: WatchFlags): AutonomyLevel {
     level = 'observe';
   }
   if (!VALID_AUTONOMY_LEVELS.has(level)) {
-    console.warn(`Unknown autonomy level "${level}", defaulting to "observe".`);
+    const noticeUi = ui ?? detectUi({ quiet: flags.quiet, noColor: flags.noColor });
+    printNotice(`Unknown autonomy level "${level}", defaulting to "observe".`, noticeUi);
     return 'observe';
   }
   return level as AutonomyLevel;
@@ -118,7 +120,7 @@ export function buildReasoningConfig(reasoning: boolean | undefined, aiKey: stri
   if (reasoning) {
     if (aiKey === undefined) {
       throw new CliError(
-        'Reasoning enabled but no API key provided. Set DINO_REASONING_API_KEY or pass --ai-key.',
+        'Reasoning enabled but no API key provided. Set DINO_AI_KEY or pass --ai-key.',
         1,
         'Provide an Anthropic API key when using --reasoning.',
       );
@@ -130,7 +132,8 @@ export function buildReasoningConfig(reasoning: boolean | undefined, aiKey: stri
 
 function buildExecutor(
   context: CommandContext,
-  auth?: WatchFlags['auth'],
+  auth: WatchFlags['auth'] | undefined,
+  ui: UiOptions,
 ): { executor: ReturnType<typeof createExecutor>; tokenResolver?: TokenResolver } {
   const endpoint = getEndpoint(context);
   const base = createExecutor(endpoint);
@@ -145,9 +148,7 @@ function buildExecutor(
     const tokenResolver = buildTokenResolver(tokenFactory);
     return { executor, tokenResolver };
   }
-  console.warn(
-    '\u26A0\uFE0F  No auth config \u2014 running unauthenticated. RBAC matrix will only test UNAUTHENTICATED role.',
-  );
+  printNotice('Running unauthenticated. RBAC matrix will only test the UNAUTHENTICATED role.', ui);
   return { executor: base };
 }
 
@@ -183,7 +184,7 @@ export function throwIfCircuitBroken(
   if (!isCircuitBroken(consecutiveFailures, cfg)) return;
   const msg = iterError instanceof Error ? iterError.message : String(iterError);
   throw new CliError(
-    `[watch] ${consecutiveFailures} consecutive failures \u2014 exiting. Last error: ${msg}`,
+    `[watch] ${consecutiveFailures} consecutive failures: exiting. Last error: ${msg}`,
   );
 }
 
@@ -248,7 +249,7 @@ export async function showIterationSummary(opts: IterationSummaryOpts): Promise<
   const lines = [
     '',
     colorize(
-      `\u2500\u2500 Iteration ${iteration} \u2014 ${context.environment} \u2500\u2500`,
+      `\u2500\u2500 Iteration ${iteration}: ${context.environment} \u2500\u2500`,
       'dim',
       summaryUi,
     ),
@@ -259,7 +260,7 @@ export async function showIterationSummary(opts: IterationSummaryOpts): Promise<
     `  Duration:   ${colorize(durationLabel(result.durationMs), 'dim', summaryUi)}`,
   ];
   if (result.metadata.degraded) {
-    const degradedMsg = '\u26A0  Degraded \u2014 all tools failed. Health score may be unreliable.';
+    const degradedMsg = 'Degraded: all tools failed. Health score may be unreliable.';
     lines.push(`  ${colorize(degradedMsg, 'yellow', summaryUi)}`);
   }
   lines.push('');
@@ -291,12 +292,13 @@ function validateWatchInputs(flags: WatchFlags, intervalSec: number, historyLimi
   return maxConsecutiveFailures;
 }
 
-function resolveWatchRbacRoles(context: CommandContext, quiet?: boolean): string[] | undefined {
+function resolveWatchRbacRoles(context: CommandContext, ui: UiOptions): string[] | undefined {
   const rbacRoles: string[] | undefined = (context.tenantConfig as { rbac?: { roles?: string[] } })
     .rbac?.roles;
-  if (!quiet && (!rbacRoles || rbacRoles.length === 0)) {
-    console.info(
-      'No rbac.roles in tenant config \u2014 skipping RBAC matrix. Add an rbac: section to your tenant YAML to enable.',
+  if (!rbacRoles || rbacRoles.length === 0) {
+    printNotice(
+      'No rbac.roles in tenant config: skipping RBAC matrix. Add an rbac: section to your tenant YAML to enable.',
+      ui,
     );
   }
   if (rbacRoles) {
@@ -315,7 +317,8 @@ export function validateAndBuildConfig(
   historyLimit: number,
 ): IterationConfig {
   const maxConsecutiveFailures = validateWatchInputs(flags, intervalSec, historyLimit);
-  const autonomy = resolveAutonomy(flags);
+  const ui = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
+  const autonomy = resolveAutonomy(flags, ui);
   const validatedTools = flags.tools ? validateTools(flags.tools) : undefined;
   const validatedModules = flags.modules
     ? validateModules(flags.modules, context.tenantId)
@@ -327,8 +330,8 @@ export function validateAndBuildConfig(
     );
   }
 
-  const { executor, tokenResolver } = buildExecutor(context, flags.auth);
-  const rbacRoles = resolveWatchRbacRoles(context, flags.quiet);
+  const { executor, tokenResolver } = buildExecutor(context, flags.auth, ui);
+  const rbacRoles = resolveWatchRbacRoles(context, ui);
 
   return {
     context,

@@ -61,6 +61,8 @@ export interface OpenAPIOperationSource {
   summary?: string | undefined;
   /** Longer description. Preferred over summary for Operation.description. */
   description?: string | undefined;
+  /** OpenAPI tags — first tag becomes Operation.module (#208). */
+  tags?: string[] | undefined;
   /** Whether this operation is deprecated. */
   deprecated?: boolean | undefined;
   /** Declared operation parameters. */

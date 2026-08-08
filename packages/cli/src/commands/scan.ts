@@ -37,7 +37,7 @@ export interface ScanFlags extends CommonFlags {
   auth?: { enabled: boolean; role?: string };
   verbose?: boolean;
   endpoint?: string;
-  protocol?: 'graphql';
+  protocol?: 'graphql' | 'rest';
   failOnHigh?: boolean;
 }
 
@@ -60,7 +60,7 @@ function notifyReducedFidelity(discoveryRaw: unknown, ui: UiOptions): void {
   if (!discoveryRaw || typeof discoveryRaw !== 'object') return;
   const level = (discoveryRaw as { introspectionLevel?: unknown }).introspectionLevel;
   if (level === 'minimal' || level === 'shallow') {
-    printNotice('Limited schema access: this API restricts introspection.', ui, {
+    printNotice('Limited schema access: this API only exposes part of its schema.', ui, {
       hint: 'Results are best-effort; connect an OpenAPI/GraphQL spec for full coverage.',
     });
   }
@@ -135,19 +135,35 @@ async function discoverAndPrepareScan(
     rbacExpectations,
     rbacDefaultExpectations,
     restExecutor: hasRest
-      ? // #1850 — pin the REST scanner's fetch to the validated IP (customer-controlled endpoint).
-        createRestExecutor({ fetch: createPinnedFetch() })
+      ? (() => {
+          // #1850 - pin the REST scanner's fetch to the validated IP (customer-controlled endpoint).
+          const base = createRestExecutor({ fetch: createPinnedFetch() });
+          const staticHeaders = context.authHeaders;
+          if (staticHeaders === undefined || Object.keys(staticHeaders).length === 0) {
+            return base;
+          }
+          // #2160: merge static auth headers; per-call options.headers win on conflict.
+          return (operation: Parameters<typeof base>[0], options: Parameters<typeof base>[1]) =>
+            base(operation, {
+              ...options,
+              headers: { ...staticHeaders, ...options.headers },
+            });
+        })()
       : undefined,
     restBaseUrl: hasRest ? endpoint : undefined,
     openApiSpec: hasRest ? discoveryMeta.discoveryRaw : undefined,
     restOperations: hasRest ? restOps : undefined,
+    // #202: durable report disclosure (stderr notice stays in notifyReducedFidelity)
+    introspectionLevel: discoveryMeta.introspectionLevel,
   };
 }
 
 async function executeScanBody(context: CommandContext, flags: ScanFlags): Promise<number> {
   const resolvedConfig: ResolvedScanConfig = resolveConfig({
     endpoint: flags.endpoint,
-    protocol: flags.protocol,
+    // resolveConfig's UserConfigInput still types protocol as graphql-only; REST ad-hoc
+    // routing uses buildContext/flags, not ResolvedScanConfig.protocol (#206/#2140).
+    protocol: flags.protocol === 'graphql' ? 'graphql' : undefined,
     tenant: flags.tenant,
     environment: flags.env,
     // #2143: humans get the readable report by default; `--format json` for machines.

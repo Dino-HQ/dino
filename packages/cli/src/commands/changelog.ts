@@ -15,7 +15,7 @@ import {
 import { renderChangelogJson } from '../formatters/json';
 import { renderChangelogMarkdown } from '../formatters/markdown';
 import { shouldRenderInkView } from '../ink/InkRender';
-import { discoverOperations, withTracking } from '../shared/base-command';
+import { discoverOperationsDetailed, withTracking } from '../shared/base-command';
 import { CliError } from '../shared/errors';
 import { detectUi, createSpinner } from '../shared/ui';
 import { CLI_VERSION } from '../version';
@@ -88,8 +88,11 @@ async function executeChangelog(context: CommandContext, flags: ChangelogFlags):
   spinner.start();
 
   let graphqlOps;
+  let restOperations;
   try {
-    graphqlOps = await discoverOperations(context);
+    const detailed = await discoverOperationsDetailed(context);
+    graphqlOps = detailed.graphqlOperations;
+    restOperations = detailed.discoveredOperations.filter((o) => o.type === 'rest');
     spinner.text = 'Loading snapshots…';
   } catch (err) {
     spinner.fail('Changelog failed');
@@ -104,6 +107,7 @@ async function executeChangelog(context: CommandContext, flags: ChangelogFlags):
   };
   const currentSnapshot = buildSnapshot({
     introspection: graphqlOps,
+    restOperations,
     tenantId: context.tenantId,
     environment: context.environment,
   });
@@ -124,7 +128,8 @@ async function executeChangelog(context: CommandContext, flags: ChangelogFlags):
   spinner.succeed('Changelog generated');
 
   const format = flags.format ?? 'markdown';
-  if (!flags.quiet) console.info(formatChangelogOutput(changelog, format, ui));
+  // #172: --quiet strips chrome only — the changelog always goes to stdout
+  console.info(formatChangelogOutput(changelog, format, ui));
   if (!flags.quiet && shouldRenderInkView(ui, { format, quiet: flags.quiet })) {
     await tryRenderInkView(changelog, context);
   }

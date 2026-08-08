@@ -7,6 +7,28 @@ import { cosmiconfig } from 'cosmiconfig';
 import { z } from 'zod';
 
 // B99 (#668): Zod schema for .dino.yml validation
+// #2160/#2161: auth is a union: none | header-token | oauth2 | legacy {enabled,role}
+const FlatAuthSchema = z.union([
+  z.object({ type: z.literal('none') }),
+  z.object({
+    type: z.literal('header'),
+    header: z.string().min(1),
+    scheme: z.string().min(1).optional(),
+    valueEnv: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal('oauth2'),
+    tokenEndpoint: z.url(),
+    clientIdEnv: z.string().min(1),
+    clientSecretEnv: z.string().min(1),
+    scope: z.string().min(1).optional(),
+  }),
+  z.object({
+    enabled: z.boolean(),
+    role: z.string().min(1).optional(),
+  }),
+]);
+
 const DinoCliConfigSchema = z.looseObject({
   tenant: z.string().optional(),
   environment: z.string().optional(),
@@ -14,17 +36,7 @@ const DinoCliConfigSchema = z.looseObject({
   snapshotDir: z.string().optional(),
   aiKey: z.string().optional(),
   autonomy: z.object({ level: z.enum(['observe', 'enforce']) }).optional(),
-  auth: z
-    .object({
-      enabled: z.boolean(),
-      role: z.string().min(1).optional(),
-    })
-    .optional(),
-  rateLimit: z
-    .object({
-      burst: z.number().int().min(1).max(500).optional(),
-    })
-    .optional(),
+  auth: FlatAuthSchema.optional(),
   // #560: Ad-hoc scan support — endpoint + protocol in .dino.yml
   endpoint: z.url().optional(),
   protocol: z.enum(['graphql', 'rest']).optional(),
@@ -38,6 +50,27 @@ export interface LoadCliConfigOptions {
   tenantId?: string | undefined;
 }
 
+/** #2160/#2161: flat-config auth arms (none | header | oauth2 | legacy tenant-rbac). */
+export type FlatAuthConfig =
+  | { type: 'none' }
+  | {
+      type: 'header';
+      header: string;
+      scheme?: string | undefined;
+      valueEnv: string;
+    }
+  | {
+      type: 'oauth2';
+      tokenEndpoint: string;
+      clientIdEnv: string;
+      clientSecretEnv: string;
+      scope?: string | undefined;
+    }
+  | {
+      enabled: boolean;
+      role?: string | undefined;
+    };
+
 export interface DinoCliConfig {
   /** Default tenant ID */
   tenant?: string | undefined;
@@ -47,7 +80,7 @@ export interface DinoCliConfig {
   format?: ('markdown' | 'json') | undefined;
   /** Snapshot directory override */
   snapshotDir?: string | undefined;
-  /** AI API key for reasoning (Pro tier). Also reads DINO_AI_KEY env var. */
+  /** AI key for reasoning (or set DINO_AI_KEY when running scan). */
   aiKey?: string | undefined;
   /** Shadow Mode autonomy config */
   autonomy?:
@@ -55,25 +88,13 @@ export interface DinoCliConfig {
         level: 'observe' | 'enforce';
       }
     | undefined;
-  /** Auth configuration — enables authenticated scans */
-  auth?:
-    | {
-        enabled: boolean;
-        role?: string | undefined;
-      }
-    | undefined;
-  /** Rate limit validation configuration */
-  rateLimit?:
-    | {
-        /** Burst size override (Free: 10, Pro: 50, Team: 100). Max: 500. */
-        burst?: number | undefined;
-      }
-    | undefined;
+  /** Auth configuration: none | header-token | oauth2 | legacy {enabled,role} (#2160/#2161) */
+  auth?: FlatAuthConfig | undefined;
   /** Direct API endpoint URL for ad-hoc scans (#560) */
   endpoint?: string | undefined;
-  /** API protocol for ad-hoc scans — graphql (introspection) or rest (OpenAPI). #560/#2140 */
+  /** API protocol for ad-hoc scans - graphql (introspection) or rest (OpenAPI). #560/#2140 */
   protocol?: 'graphql' | 'rest' | undefined;
-  /** OpenAPI spec URL or file path — required when protocol is 'rest' (#2140). */
+  /** OpenAPI spec URL or file path - required when protocol is 'rest' (#2140). */
   specUrl?: string | undefined;
 }
 
@@ -130,8 +151,8 @@ export async function loadCliConfig(options?: LoadCliConfigOptions): Promise<Din
     snapshotDir: config.snapshotDir,
     aiKey,
     autonomy: config.autonomy,
-    auth: config.auth?.enabled ? { enabled: true, role: config.auth.role } : undefined,
-    rateLimit: config.rateLimit,
+    // #2160: pass the auth union through verbatim (drop enabled-only narrowing)
+    auth: config.auth,
     endpoint: config.endpoint,
     protocol: config.protocol,
     specUrl: config.specUrl,

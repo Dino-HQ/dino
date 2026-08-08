@@ -22,7 +22,7 @@ dino scan
 
 Dino introspects the schema, discovers every operation, and runs its full test suite — fuzzing, schema validation, error-contract, and rate-limit checks — then scores the health of each endpoint. Add `--fail-on-high` and it gates your CI (exits 1 on HIGH/CRITICAL).
 
-> Ad-hoc mode is GraphQL, unauthenticated. For REST/OpenAPI, authenticated scans, RBAC role matrices, and per-operation coverage, run `dino init` to onboard your API fully (see [Full setup](#full-setup)).
+> Ad-hoc mode supports GraphQL and REST (`--protocol rest --spec-url <url>`) plus authenticated scans (`--header` / `--token`). OAuth2 client_credentials is supported via `dino init` (env-var client id/secret). Run `dino init` for interactive setup (see [Full setup](#full-setup)). For RBAC role matrices and tenant YAML, see the [docs](https://docs.usedino.dev/).
 
 ## What your QA engineer checks
 
@@ -51,7 +51,7 @@ Dino introspects the schema, discovers every operation, and runs its full test s
 | `dino docs` | Generates documentation from how the API actually behaves |
 | `dino lint` | Flags undocumented operations |
 | `dino changelog` | Writes a changelog from schema diffs |
-| `dino init` | Onboards a new API (full tenant config) |
+| `dino init` | Interactive setup: writes a flat `.dino.yml` (endpoint, protocol, optional auth) |
 
 ## Catch breaking changes before they ship
 
@@ -73,15 +73,17 @@ Exits 1 on HIGH or CRITICAL findings. Zero findings = green build.
 
 ## Full setup
 
-For REST/OpenAPI targets, authenticated scans, RBAC role matrices, and per-operation coverage:
+For REST/OpenAPI targets, authenticated header scans, and interactive onboarding:
 
 ```bash
-dino init                    # onboard your API interactively
-dino scan --tenant my-api    # full authenticated pipeline
+dino init    # writes .dino.yml (endpoint, protocol, optional header / OAuth2 auth)
+dino scan    # uses the flat config (no --tenant required)
 ```
+
+For RBAC role matrices and multi-tenant YAML, see the [docs](https://docs.usedino.dev/).
 
 Requires Node.js 22+.
 
-[Website](https://usedino.dev) | [Docs](https://docs.usedino.dev/) | [Changelog](https://usedino.dev/changelog) | [GitHub](https://github.com/Dino-HQ/project-dino)
+[Website](https://usedino.dev) | [Docs](https://docs.usedino.dev/) | [Changelog](https://usedino.dev/changelog) | [GitHub](https://github.com/Dino-HQ/dino)
 
 MIT License

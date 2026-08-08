@@ -4,6 +4,7 @@
  * NOTE: Do NOT add a shebang here — esbuild injects it via banner config.
  */
 
+import { humanizeError } from './shared/ui';
 import { main } from './index';
 
 void main(process.argv.slice(2)).then(
@@ -11,7 +12,8 @@ void main(process.argv.slice(2)).then(
     process.exitCode = exitCode;
   },
   (err) => {
-    console.error(err instanceof Error ? err.message : String(err));
+    // #174: humanize known node/network errors at the top-level boundary
+    console.error(humanizeError(err));
     process.exitCode = 1;
   },
 );

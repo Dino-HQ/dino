@@ -20,11 +20,15 @@ import { runVerify } from './commands/verify';
 import { runWatch } from './commands/watch';
 import { loadCliConfig } from './config/loader';
 import { parseArgs, buildContext } from './shared/base-command';
+import { quickstartText, usageText } from './shared/cli-usage';
 import { printCommandHelp } from './shared/command-help';
 import { CliError } from './shared/errors';
+import { runInitScanNow } from './shared/init-scan-now';
 import { printError, detectUi } from './shared/ui';
 import { CLI_VERSION } from './version';
 import type { CommandContext, MergedFlags } from './shared/base-command';
+
+export { usageText, quickstartText } from './shared/cli-usage';
 
 export { runScan } from './commands/scan';
 export type { ScanFlags } from './commands/scan';
@@ -48,13 +52,21 @@ export { runLogin, runLogout, runWhoami } from './commands/auth';
 export { getValidToken, readStoredToken } from './auth/token-store';
 export type { StoredToken } from './auth/token-store';
 export type { PkcePair, OAuthEnvConfig, OidcEndpoints } from './auth/oauth-core';
-export { runInit, buildConfigYaml, checkEndpoint } from './commands/init';
+export {
+  runInit,
+  buildConfigYaml,
+  checkEndpoint,
+  remainingInitPromptQuestions,
+} from './commands/init';
 export type { InitFlags } from './commands/init';
 export type { DinoCliConfig } from './config/loader';
 export type { CommonFlags, CommandContext, MergedFlags } from './shared/base-command';
 export {
   parseArgs,
   buildContext,
+  buildAuthHeaders,
+  parseHeaderArg,
+  resolveAuthHeaders,
   getEndpoint,
   discoverOperations,
   withTracking,
@@ -72,7 +84,7 @@ export {
   printHeaderBanner,
 } from './shared/ui';
 export type { UiOptions, ChalkColor, HeaderBannerMeta } from './shared/ui';
-export { computeGlobalHealthScore } from './shared/pipeline-helpers';
+export { computeGlobalHealthScore, withStaticHeaders } from './shared/pipeline-helpers';
 
 // Ink design system (#1014)
 export { DINO_THEME } from './ink/theme';
@@ -104,58 +116,9 @@ export function normalizeToolsAndModules(flags: Record<string, unknown>): void {
   }
 }
 
-function printUsage(): void {
-  console.info(`dino v${CLI_VERSION} — AI-powered API quality scanner
-
-Usage: dino <command> [options]
-
-Commands:
-  scan   Run the full test pipeline (fuzzing, validation, RBAC, rate limits, error codes, deprecation)
-  config Configure CLI preferences (e.g. telemetry)
-  watch  Run scheduled scans with Shadow Mode (observe or enforce)
-  docs   Generate API documentation from live introspection
-  diff   Compare current schema against a saved snapshot
-  lint   Check schema descriptions (fails on new undocumented ops)
-  changelog  Generate a changelog from schema snapshot diffs
-  runner     Cloud runner: \`dino runner register\` then \`dino runner start\`
-  verify     Verify a scan DCG against its Sigstore attestation (requires --cloud-endpoint and --token)
-  login      Authenticate via browser (Connected Apps + PKCE); stores token in ~/.dino/credentials.json
-  logout     Clear stored credentials (best-effort server revoke)
-  whoami     Show the active tenant for the current login
-  validate   Validate .dino.yml config (with helpful error messages)
-  init       Set up your project — generates .dino.yml interactively
-
-Common options:
-  --tenant <id>       Tenant configuration to use (required)
-  --env <name>        Target environment (default: tenant's default)
-  --format <type>     Output format: markdown | json
-  --quiet             Suppress non-essential output
-  --verbose           Show applied defaults and internal diagnostics
-  --debug             Show full stack traces on errors
-  --no-color          Disable all color output (also respects NO_COLOR env var)
-  --help, -h          Show this help message
-  --version, -v       Show version number
-
-Scan options:
-  --fail-on-high          Exit 1 if HIGH or CRITICAL findings exist
-
-Lint options:
-  --fail-on-undocumented  Exit 1 if new undocumented operations are found
-
-Diff options:
-  --fail-on-breaking      Exit 1 if breaking changes are detected
-
-Changelog options:
-  --fail-on-breaking      Exit 1 if breaking changes are detected
-  --from <id>             Compare against a specific snapshot ID
-
-Watch options:
-  --autonomy <mode>   Shadow Mode: observe (default) or enforce
-  --once              Run a single scan and exit (alias for --iterations 1)
-  --interval <sec>    Seconds between scans (default: 300)
-  --iterations <n>    Maximum number of scan iterations
-
-Run "dino <command> --help" for command-specific options.`);
+function printUsage(opts?: { stream?: 'stdout' | 'stderr' }): void {
+  const writer = opts?.stream === 'stderr' ? console.error : console.info;
+  writer(usageText());
 }
 
 /** Check if argv requests version or help output. Returns exit code 0 if handled, null otherwise. */
@@ -163,15 +126,28 @@ function handleEarlyExit(
   command: string | undefined,
   flags: Record<string, unknown>,
 ): number | null {
-  if (flags.version === true || flags.v === true || command === '--version' || command === '-v') {
+  // #173: bare words `dino version` / `dino help` alias the flag forms
+  if (
+    flags.version === true ||
+    flags.v === true ||
+    command === '--version' ||
+    command === '-v' ||
+    command === 'version'
+  ) {
     console.info(CLI_VERSION);
     return 0;
   }
   const helpRequested =
-    flags.help === true || flags.h === true || command === '--help' || command === '-h';
+    flags.help === true ||
+    flags.h === true ||
+    command === '--help' ||
+    command === '-h' ||
+    command === 'help';
   if (helpRequested) {
     // #2141: `dino <command> --help` shows that command's help, not the top-level banner.
-    const named = command !== undefined && command !== '--help' && command !== '-h';
+    // `dino help` is the bare-word alias for top-level help (not a named command).
+    const named =
+      command !== undefined && command !== '--help' && command !== '-h' && command !== 'help';
     if (named && printCommandHelp(command)) {
       return 0;
     }
@@ -179,7 +155,8 @@ function handleEarlyExit(
     return 0;
   }
   if (!command) {
-    printUsage();
+    // #2160: no-args → quickstart (explicit --help still uses full usage above)
+    console.info(quickstartText());
     return 0;
   }
   return null;
@@ -205,6 +182,11 @@ type TenantCliCommonFlags = {
   verbose: boolean;
   debug: boolean;
   noColor: boolean;
+  endpoint: string | undefined;
+  protocol: ('graphql' | 'rest') | undefined;
+  specUrl: string | undefined;
+  header: string | string[] | undefined;
+  token: string | undefined;
 };
 
 /** Options for handleCommandError. */
@@ -320,6 +302,26 @@ async function invokeTrackedPipelineCommand(opts: InvokeTrackedPipelineOptions):
   }
 }
 
+function buildTenantCliCommonFlags(
+  flags: Record<string, unknown>,
+  config: Awaited<ReturnType<typeof loadCliConfig>>,
+): TenantCliCommonFlags {
+  return {
+    tenant: (flags.tenant ?? config?.tenant) as string,
+    env: flags.env as string | undefined,
+    format: validateFormat(flags.format as string | undefined),
+    quiet: flags.quiet === true,
+    verbose: flags.verbose === true, // #560
+    debug: flags.debug === true,
+    noColor: flags.noColor === true,
+    endpoint: flags.endpoint as string | undefined, // #171
+    protocol: flags.protocol as ('graphql' | 'rest') | undefined, // #171
+    specUrl: flags.specUrl as string | undefined, // #171
+    header: flags.header as string | string[] | undefined, // #2160
+    token: flags.token as string | undefined, // #2160
+  };
+}
+
 /** Tenant-backed commands: config load, format coercion, tracker lifecycle. */
 async function runTenantBackedCommand(
   argv: string[],
@@ -336,26 +338,18 @@ async function runTenantBackedCommand(
     return 1;
   }
 
-  const commonFlags = {
-    tenant: (flags.tenant ?? config?.tenant) as string,
-    env: flags.env as string | undefined,
-    format: validateFormat(rawFormat),
-    quiet: flags.quiet === true,
-    verbose: flags.verbose === true, // #560
-    debug: flags.debug === true,
-    noColor: flags.noColor === true,
-  };
+  const commonFlags = buildTenantCliCommonFlags(flags, config);
 
-  // #558: dino validate runs without tenant context (INV-4)
   if (command === 'validate') {
     return runValidate(null, { quiet: commonFlags.quiet, noColor: commonFlags.noColor });
   }
-
-  // #322: dino init runs without tenant context (INV-4)
   if (command === 'init') {
-    return runInit({ quiet: commonFlags.quiet, force: flags.force === true });
+    return runInit({
+      quiet: commonFlags.quiet,
+      force: flags.force === true,
+      onScanNow: () => runInitScanNow(commonFlags),
+    });
   }
-
   if (command === 'config') {
     return runConfigFromArgv(argv);
   }
@@ -363,7 +357,7 @@ async function runTenantBackedCommand(
   const handler = recordGet(COMMAND_HANDLERS, command);
   if (!handler) {
     console.error(`Unknown command: ${command}`);
-    printUsage();
+    printUsage({ stream: 'stderr' });
     return 1;
   }
 

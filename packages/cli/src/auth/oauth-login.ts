@@ -120,7 +120,7 @@ function attachLoopbackTimeout(opts: {
   result: Promise<CallbackResult>;
 }): void {
   // eslint-disable-next-line prettier/prettier -- HC #31 allow-marker must share the timer call line
-  const timeout = setTimeout(() => { // determinism:allowed — login loopback wall-clock timeout
+  const timeout = setTimeout(() => { // determinism:allowed - login loopback wall-clock timeout
     opts.close();
     opts.rejectFn(
       new CliError(
@@ -306,14 +306,14 @@ function assertCallbackOk(
     canonicalIssuer(callback.iss) !== canonicalIssuer(expectedIssuer)
   ) {
     throw new CliError(
-      'OAuth issuer mismatch — aborting login',
+      'OAuth issuer mismatch: aborting login',
       1,
       'The authorization response came from an unexpected issuer (possible mix-up). Re-run `dino login`.',
     );
   }
   if (callback.state !== expectedState) {
     throw new CliError(
-      'OAuth state mismatch — aborting login',
+      'OAuth state mismatch: aborting login',
       1,
       'This can indicate a CSRF attempt. Re-run `dino login`.',
     );

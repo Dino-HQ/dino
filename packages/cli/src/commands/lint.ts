@@ -13,7 +13,7 @@ import {
 import { renderLintJson } from '../formatters/json';
 import { renderLintMarkdown } from '../formatters/markdown';
 import { shouldRenderInkView } from '../ink/InkRender';
-import { discoverOperations, withTracking } from '../shared/base-command';
+import { discoverOperationsDetailed, withTracking } from '../shared/base-command';
 import { detectUi, createSpinner } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
@@ -71,8 +71,11 @@ async function executeLintBody(context: CommandContext, flags: LintFlags): Promi
   const spinner = createSpinner('Auditing schema descriptions…', ui);
   spinner.start();
   let graphqlOps;
+  let restOperations;
   try {
-    graphqlOps = await discoverOperations(context);
+    const detailed = await discoverOperationsDetailed(context);
+    graphqlOps = detailed.graphqlOperations;
+    restOperations = detailed.discoveredOperations.filter((o) => o.type === 'rest');
     spinner.text = 'Auditing descriptions…';
   } catch (err) {
     spinner.fail('Audit failed');
@@ -87,10 +90,11 @@ async function executeLintBody(context: CommandContext, flags: LintFlags): Promi
   };
 
   const previousSnapshot = await loadLatestSnapshot(snapshotOptions);
-  const audit = auditDescriptions(graphqlOps, previousSnapshot);
+  const audit = auditDescriptions([...graphqlOps, ...restOperations], previousSnapshot);
 
   const currentSnapshot = buildSnapshot({
     introspection: graphqlOps,
+    restOperations,
     tenantId: context.tenantId,
     environment: context.environment,
   });
@@ -101,7 +105,8 @@ async function executeLintBody(context: CommandContext, flags: LintFlags): Promi
   const format = flags.format ?? 'markdown';
   const markdownUi = format === 'json' ? undefined : ui;
   const output = format === 'json' ? renderLintJson(audit) : renderLintMarkdown(audit, markdownUi);
-  if (!flags.quiet) console.info(output);
+  // #172: --quiet strips chrome only — the audit report always goes to stdout
+  console.info(output);
 
   if (!flags.quiet && shouldRenderInkView(ui, { format, quiet: flags.quiet })) {
     await tryRenderLintInkView(audit, context, ui);

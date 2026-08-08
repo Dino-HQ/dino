@@ -13,7 +13,7 @@ import {
   safePath,
 } from '@dino/engine';
 import { buildAdHocOperationMappings } from './scan-helpers';
-import { discoverOperations, withTracking } from '../shared/base-command';
+import { discoverOperationsDetailed, withTracking } from '../shared/base-command';
 import { detectUi, createSpinner } from '../shared/ui';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 
@@ -49,8 +49,11 @@ async function executeDocsBody(context: CommandContext, flags: DocsFlags): Promi
   const spinner = createSpinner('Generating documentation…', ui);
   spinner.start();
   let graphqlOps;
+  let restOperations;
   try {
-    graphqlOps = await discoverOperations(context);
+    const detailed = await discoverOperationsDetailed(context);
+    graphqlOps = detailed.graphqlOperations;
+    restOperations = detailed.discoveredOperations.filter((op) => op.type === 'rest');
     spinner.text = 'Building documentation…';
   } catch (err) {
     spinner.fail('Docs failed');
@@ -64,6 +67,7 @@ async function executeDocsBody(context: CommandContext, flags: DocsFlags): Promi
   const useAdHocFallback = context.tenantId === 'adhoc' || !hasOperationsFile(context.tenantId);
   const catalog = buildCatalog({
     introspection: graphqlOps,
+    restOperations,
     registry: useAdHocFallback
       ? buildAdHocOperationMappings(graphqlOps, context.tenantId)
       : getAllOperations(context.tenantId),
@@ -76,7 +80,8 @@ async function executeDocsBody(context: CommandContext, flags: DocsFlags): Promi
   if (flags.output) {
     const resolvedOutput = safePath(flags.output);
     await safeWriteFile(resolvedOutput, output, process.cwd());
-  } else if (!flags.quiet) {
+  } else {
+    // #172: --quiet strips chrome only — the report always goes to stdout
     console.info(output);
   }
 

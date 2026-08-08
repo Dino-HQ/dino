@@ -43,9 +43,9 @@ export async function ensureScanTelemetryConsent(
   console.info(`Dino collects anonymous usage data to improve the product.
 No API keys, endpoints, or scan results are ever transmitted.
 
-  [a]ll   — full usage analytics (default)
-  [c]rash — error reports only
-  [n]o    — nothing sent
+  [a]ll   - full usage analytics (default)
+  [c]rash - error reports only
+  [n]o    - nothing sent
 
 Run dino config telemetry off to change later.
 `);

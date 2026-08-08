@@ -92,7 +92,7 @@ async function bestEffortRevoke(
   }
 }
 
-/** `dino login` — browser OAuth (PKCE + loopback) or `--no-browser` manual path. */
+/** `dino login` - browser OAuth (PKCE + loopback) or `--no-browser` manual path. */
 export async function runLogin(flags: Record<string, unknown>): Promise<number> {
   const noBrowser = flags['no-browser'] === true || flags.noBrowser === true;
   const ui = detectUi({
@@ -106,7 +106,7 @@ export async function runLogin(flags: Record<string, unknown>): Promise<number> 
     const token = await runOAuthLogin({
       // randomBytes omitted → oauth-core defaults to node:crypto.randomBytes (CSPRNG).
       http: fetch,
-      now: () => Date.now(), // determinism:allowed — production clock; tests inject via runOAuthLogin
+      now: () => Date.now(), // determinism:allowed - production clock; tests inject via runOAuthLogin
       openBrowser: defaultOpenBrowser,
       env,
       noBrowser: effectiveNoBrowser,
@@ -129,7 +129,7 @@ export async function runLogin(flags: Record<string, unknown>): Promise<number> 
   }
 }
 
-/** `dino logout` — best-effort revoke, then clear local store. */
+/** `dino logout` - best-effort revoke, then clear local store. */
 export async function runLogout(flags: Record<string, unknown>): Promise<number> {
   const env = envFromProcess();
   const stored = readStoredToken(env);
@@ -143,7 +143,7 @@ export async function runLogout(flags: Record<string, unknown>): Promise<number>
   return 0;
 }
 
-/** `dino whoami` — print active tenant (+ email when present). */
+/** `dino whoami` - print active tenant (+ email when present). */
 export async function runWhoami(flags: Record<string, unknown>): Promise<number> {
   const env = envFromProcess({
     DINO_API_URL: apiUrlFlag(flags) ?? process.env.DINO_API_URL,

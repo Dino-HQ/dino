@@ -127,7 +127,7 @@ interface AuthConfigBase {
 export type TargetAuthConfig =
   | { adapter: 'none' }
   | ({ adapter: 'jwt'; signingKey: string } & AuthConfigBase)
-  | ({ adapter: 'oauth2'; tokenEndpoint: string } & AuthConfigBase)
+  | ({ adapter: 'oauth2'; tokenEndpoint: string; scope?: string } & AuthConfigBase)
   | ({ adapter: 'api-key' } & AuthConfigBase);
 
 /**
@@ -156,9 +156,12 @@ export function toTargetAuthConfig(auth: AuthConfig): TargetAuthConfig | null {
       if (typeof tokenEndpoint !== 'string' || tokenEndpoint.length === 0) {
         throw new Error('auth.adapterConfig.tokenEndpoint is required for oauth2 adapter');
       }
+      const scopeRaw = auth.adapterConfig.scope;
+      const scope = typeof scopeRaw === 'string' && scopeRaw.length > 0 ? scopeRaw : undefined;
       return {
         adapter: 'oauth2',
         tokenEndpoint,
+        ...(scope ? { scope } : {}),
         roles: auth.roles,
         tokenRefresh: auth.tokenRefresh,
       };

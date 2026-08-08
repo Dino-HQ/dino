@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "dino-config-schema",
+  "$id": "https://usedino.dev/schema.json",
   "title": "Dino Configuration",
   "description": "Configuration for .dino.yml — the Dino API quality scanner.",
   "type": "object",
@@ -12,9 +12,14 @@
     },
     "protocol": {
       "type": "string",
-      "enum": ["graphql"],
+      "enum": ["graphql", "rest"],
       "default": "graphql",
-      "description": "API protocol. Only GraphQL is supported currently."
+      "description": "API protocol: graphql (introspection) or rest (OpenAPI)."
+    },
+    "specUrl": {
+      "type": "string",
+      "minLength": 1,
+      "description": "OpenAPI spec URL or file path. Required when protocol is rest."
     },
     "tenant": {
       "type": "string",
@@ -27,8 +32,8 @@
     "format": {
       "type": "string",
       "enum": ["json", "markdown"],
-      "default": "json",
-      "description": "Output format. JSON is machine-readable; markdown is human-readable."
+      "default": "markdown",
+      "description": "Output format. Markdown is human-readable; JSON is machine-readable."
     },
     "snapshotDir": {
       "type": "string",
@@ -37,7 +42,7 @@
     },
     "aiKey": {
       "type": "string",
-      "description": "API key for AI reasoning features (Pro tier). Also reads DINO_AI_KEY env var."
+      "description": "AI key for reasoning (or set DINO_AI_KEY when running scan)."
     },
     "autonomy": {
       "type": "object",
@@ -52,33 +57,85 @@
       "additionalProperties": true
     },
     "auth": {
-      "type": "object",
-      "required": ["enabled"],
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Enable authenticated scans. Required for RBAC testing."
+      "description": "Authentication for local scans. Prefer type: none | header | oauth2; legacy {enabled, role} retained for tenant RBAC.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "none" }
+          }
         },
-        "role": {
-          "type": "string",
-          "minLength": 1,
-          "default": "USER",
-          "description": "Default auth role for scans."
+        {
+          "type": "object",
+          "required": ["type", "header", "valueEnv"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "header" },
+            "header": {
+              "type": "string",
+              "minLength": 1,
+              "description": "HTTP header name (e.g. Authorization)."
+            },
+            "scheme": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional scheme prefix (e.g. Bearer). Omit for a raw header value."
+            },
+            "valueEnv": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Environment variable holding the secret (never write the secret itself)."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "tokenEndpoint", "clientIdEnv", "clientSecretEnv"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "oauth2" },
+            "tokenEndpoint": {
+              "type": "string",
+              "format": "uri",
+              "description": "OAuth2 token endpoint URL (client_credentials grant)."
+            },
+            "clientIdEnv": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Environment variable name for the OAuth2 client id (never the secret value)."
+            },
+            "clientSecretEnv": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Environment variable name for the OAuth2 client secret (never the secret value)."
+            },
+            "scope": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional OAuth2 scope for the client_credentials request."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["enabled"],
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Legacy: enable authenticated scans for RBAC testing."
+            },
+            "role": {
+              "type": "string",
+              "minLength": 1,
+              "default": "USER",
+              "description": "Legacy: default auth role for scans."
+            }
+          },
+          "additionalProperties": true
         }
-      },
-      "additionalProperties": true
-    },
-    "rateLimit": {
-      "type": "object",
-      "properties": {
-        "burst": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 500,
-          "description": "Rate limit burst size override. Free: 10, Pro: 50, Team: 100."
-        }
-      },
-      "additionalProperties": true
+      ]
     }
   },
   "additionalProperties": true

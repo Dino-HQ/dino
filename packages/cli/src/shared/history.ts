@@ -130,7 +130,7 @@ export async function saveHistoryEntry(
       await safeRename(tmpPath, safeFilepath, historyRoot);
     }
   } catch (err) {
-    logger.warn('saveHistoryEntry: trim failed — file may grow beyond limit', {
+    logger.warn('saveHistoryEntry: trim failed - file may grow beyond limit', {
       filepath: safeFilepath,
       error: err instanceof Error ? err.message : String(err),
     });

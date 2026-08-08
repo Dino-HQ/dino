@@ -15,7 +15,7 @@ export type ScanCompletedExtras = {
   attestation?: ScanAttestationWire;
   pipelineResult?: unknown;
   rotatedRefreshToken?: string;
-  /** Pool identity: scan-bound capability sent as x-dino-scan-capability (Spec B — a pool JWT carries no tenant claim). */
+  /** Pool identity: scan-bound capability sent as x-dino-scan-capability (Spec B - a pool JWT carries no tenant claim). */
   capabilityToken?: string;
 };
 
@@ -63,11 +63,11 @@ export interface PostScanResultWithRetriesOptions {
   body: Record<string, unknown>;
   httpClient: (url: string, init: RequestInit) => Promise<Response>;
   timer: Timer;
-  /** Pool identity: sent as x-dino-scan-capability — without it a pool results POST 401s (Spec B). */
+  /** Pool identity: sent as x-dino-scan-capability - without it a pool results POST 401s (Spec B). */
   capabilityToken?: string | undefined;
 }
 
-/** Exported for unit tests — wire custom timer for deterministic retries. */
+/** Exported for unit tests - wire custom timer for deterministic retries. */
 export async function postScanResultWithRetries(
   opts: PostScanResultWithRetriesOptions,
 ): Promise<void> {
