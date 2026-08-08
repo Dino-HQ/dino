@@ -14,7 +14,7 @@ import type { PipelineLogger, PipelineToolEvent, Timer } from '@dino/engine';
 
 /** Spec A wire cap: one batch carries at most 100 events. */
 const MAX_EVENTS_PER_BATCH = 100;
-/** Buffer hard cap — overflow drops OLDEST events and marks the gap (never silent). */
+/** Buffer hard cap - overflow drops OLDEST events and marks the gap (never silent). */
 const MAX_BUFFERED_EVENTS = 1_000;
 const MAX_MESSAGE_LENGTH = 2_048;
 const DEFAULT_FLUSH_INTERVAL_MS = 2_000;
@@ -214,7 +214,7 @@ export function createScanLogEmitter(opts: CreateScanLogEmitterOptions): ScanLog
   const state: EmitterState = {
     opts,
     url: ingestUrl(opts.cloudEndpoint, opts.scanId),
-    batchIdGen: opts.batchIdGen ?? ((): string => crypto.randomUUID()), // determinism:allowed — injected seam default
+    batchIdGen: opts.batchIdGen ?? ((): string => crypto.randomUUID()), // determinism:allowed - injected seam default
     flushIntervalMs: opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS,
     buffer: [],
     pending: null,

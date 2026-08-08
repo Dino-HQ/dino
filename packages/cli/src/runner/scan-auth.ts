@@ -43,7 +43,7 @@ export interface AcquiredScanAuth {
   cookieHeader?: string;
   expiresAt?: number | null;
   authFailed: boolean;
-  /** ms at acquisition — feeds L1 proportional margin. */
+  /** ms at acquisition - feeds L1 proportional margin. */
   acquiredAt?: number;
   /** Rotated OAuth2 refresh token (when refresh sub-flow is configured). */
   refreshToken?: string;

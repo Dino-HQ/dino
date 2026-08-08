@@ -32,9 +32,9 @@ function printTelemetryStatus(): void {
 
   console.info('');
   console.info('Levels:');
-  console.info('  off   — nothing sent');
-  console.info('  crash — only error/crash reports');
-  console.info('  all   — full usage analytics');
+  console.info('  off   - nothing sent');
+  console.info('  crash - only error/crash reports');
+  console.info('  all   - full usage analytics');
 }
 
 /**
@@ -69,9 +69,9 @@ export async function runConfigFromArgv(argv: string[]): Promise<number> {
   if (mapped === 'off') {
     console.info('Telemetry disabled.');
   } else if (mapped === 'crash') {
-    console.info('Telemetry set to crash — only error reports will be sent.');
+    console.info('Telemetry set to crash: only error reports will be sent.');
   } else {
-    console.info('Telemetry enabled — full usage analytics.');
+    console.info('Telemetry enabled: full usage analytics.');
   }
   return 0;
 }

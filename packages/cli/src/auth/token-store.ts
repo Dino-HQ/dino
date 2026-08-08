@@ -110,7 +110,7 @@ export function writeStoredToken(t: StoredToken): void {
       // eslint-disable-next-line security/detect-non-literal-fs-filename -- cleanup tmp
       fs.unlinkSync(tmp);
     } catch {
-      void 0; // ignore — tmp may not exist if mkdir failed first
+      void 0; // ignore - tmp may not exist if mkdir failed first
     }
     throw new CliError(
       'Failed to write credentials file',
@@ -172,7 +172,7 @@ async function acquireLock(now: () => number): Promise<void> {
           continue;
         }
       } catch {
-        void 0; // raced with unlock — retry
+        void 0; // raced with unlock - retry
       }
       await sleepMs(LOCK_RETRY_MS);
     }

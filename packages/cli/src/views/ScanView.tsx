@@ -19,6 +19,8 @@ export interface ScanViewProps {
   durationMs: number;
   degraded: boolean;
   colored?: boolean;
+  /** #202: true when discovery fidelity was minimal/shallow */
+  partial?: boolean | undefined;
 }
 
 function formatDuration(ms: number): string {
@@ -66,6 +68,7 @@ export function ScanView({
   durationMs,
   degraded,
   colored = true,
+  partial = false,
 }: ScanViewProps): React.ReactElement {
   const stats = buildScanStats({
     operationCount,
@@ -92,6 +95,11 @@ export function ScanView({
         stats={stats}
         colored={colored}
       />
+      {partial && (
+        <Box marginTop={1}>
+          <Text dimColor={colored}>Partial coverage: limited schema access</Text>
+        </Box>
+      )}
       {degraded && (
         <Box marginTop={1}>
           <Text {...(colored ? { color: DINO_THEME.warning } : {})}>

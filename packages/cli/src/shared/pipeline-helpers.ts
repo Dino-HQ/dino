@@ -16,7 +16,7 @@ import type {
   ToolName,
 } from '@dino/engine';
 
-/** Wraps createExecutor with automatic token injection — reuses existing auth logic */
+/** Wraps createExecutor with automatic token injection - reuses existing auth logic */
 export function withAuth(
   executor: PipelineExecutor,
   tokenFactory: TokenFactory,
@@ -25,6 +25,19 @@ export function withAuth(
   return async (document, variables, options) => {
     const token = options?.authToken ?? (await tokenFactory.getToken({ role }));
     return executor(document, variables, { ...options, authToken: token });
+  };
+}
+
+/** #2160: inject static auth headers on every GraphQL executor call (per-call headers win). */
+export function withStaticHeaders(
+  executor: PipelineExecutor,
+  headers: Record<string, string>,
+): PipelineExecutor {
+  return async (document, variables, options) => {
+    return executor(document, variables, {
+      ...options,
+      headers: { ...headers, ...options?.headers },
+    });
   };
 }
 
@@ -142,7 +155,7 @@ export function validateConfigConsistency(
   }
 }
 
-/** #1981 — injection values are pre-resolved by the auth context; apply them verbatim (mirrors graphql-client). */
+/** #1981 - injection values are pre-resolved by the auth context; apply them verbatim (mirrors graphql-client). */
 const IDENTITY_RESOLVER: TemplateResolver = { resolve: (template) => template };
 
 /**

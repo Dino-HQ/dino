@@ -172,7 +172,7 @@ export function renderLintMarkdown(audit: DescriptionAuditResult, ui?: UiOptions
   ];
 
   if (audit.firstRun) {
-    lines.push('First run — baseline snapshot saved. No regressions to compare against.', '');
+    lines.push('First run - baseline snapshot saved. No regressions to compare against.', '');
     return lines.join('\n');
   }
 
@@ -183,10 +183,10 @@ export function renderLintMarkdown(audit: DescriptionAuditResult, ui?: UiOptions
   const regressions = audit.newUndocumented.length + audit.descriptionRemoved.length;
   if (regressions > 0) {
     const suffix = regressions === 1 ? '' : 's';
-    const failLine = `Result: FAIL — ${regressions} regression${suffix} found`;
+    const failLine = `Result: FAIL - ${regressions} regression${suffix} found`;
     lines.push(maybeColor(applyColor, chalk.red, failLine), '');
   } else {
-    const passLine = 'Result: PASS — no description regressions';
+    const passLine = 'Result: PASS - no description regressions';
     lines.push(maybeColor(applyColor, chalk.green, passLine), '');
   }
 
@@ -205,7 +205,7 @@ function appendChangelogBreaking(
   const titleOut = maybeColor(applyColor, (s) => chalk.red.bold(s), title);
   lines.push(titleOut, '');
   for (const e of breakingEntries) {
-    const opLine = `- **${e.operation}** — ${e.description}`;
+    const opLine = `- **${e.operation}** - ${e.description}`;
     lines.push(maybeColor(applyColor, chalk.red, opLine));
     if (e.migration) {
       const mig = `  > Migration: ${e.migration}`;
@@ -237,7 +237,7 @@ function appendChangelogCategorySections(
     const sectionOut = isAdded && applyColor ? chalk.green(sectionTitle) : sectionTitle;
     lines.push(sectionOut, '');
     for (const e of entries) {
-      const entryLine = `- **${e.operation}** — ${e.description}`;
+      const entryLine = `- **${e.operation}** - ${e.description}`;
       const lineOut = isAdded && applyColor ? chalk.green(entryLine) : entryLine;
       lines.push(lineOut);
     }

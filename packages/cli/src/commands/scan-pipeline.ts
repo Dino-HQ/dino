@@ -32,7 +32,7 @@ import type { ResolvedScanConfig, GraphQLOperation, Operation, ResultEnvelope } 
 
 export type ScanPipelineRunResult = Awaited<ReturnType<typeof runPipeline>>;
 
-function shouldFallBackToAdHocRegistry(context: CommandContext): boolean {
+export function shouldFallBackToAdHocRegistry(context: CommandContext): boolean {
   return context.tenantId === 'adhoc' || !hasOperationsFile(context.tenantId);
 }
 
@@ -165,14 +165,22 @@ async function persistScanSnapshot(params: {
 // the shared renderer default.
 const SCAN_REPORT_TITLE = 'API Quality Report';
 
+/** #202: discovery fidelity threaded into the durable scan report */
+type ScanIntrospectionLevel = 'full' | 'shallow' | 'minimal';
+
 function formatScanCatalogForOutput(
   catalog: ReturnType<typeof buildCatalog>,
   format: ResolvedScanConfig['format'],
+  introspectionLevel?: ScanIntrospectionLevel,
 ): string {
   if (format === 'json') {
-    return JSON.stringify(renderCatalogJson(catalog, { title: SCAN_REPORT_TITLE }), null, 2);
+    return JSON.stringify(
+      renderCatalogJson(catalog, { title: SCAN_REPORT_TITLE, introspectionLevel }),
+      null,
+      2,
+    );
   }
-  return renderCatalogMarkdown(catalog, { title: SCAN_REPORT_TITLE });
+  return renderCatalogMarkdown(catalog, { title: SCAN_REPORT_TITLE, introspectionLevel });
 }
 
 async function tryRenderScanInkSummary(params: {
@@ -180,8 +188,9 @@ async function tryRenderScanInkSummary(params: {
   resolvedConfig: ResolvedScanConfig;
   result: ScanPipelineRunResult;
   catalog: ReturnType<typeof buildCatalog>;
+  introspectionLevel?: ScanIntrospectionLevel | undefined;
 }): Promise<void> {
-  const { flags, resolvedConfig, result, catalog } = params;
+  const { flags, resolvedConfig, result, catalog, introspectionLevel } = params;
   const uiSummary = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
   if (!shouldRenderInkView(uiSummary, { format: resolvedConfig.format, quiet: flags.quiet })) {
     return;
@@ -197,6 +206,7 @@ async function tryRenderScanInkSummary(params: {
     const reportStats = renderCatalogJson(catalog) as { operationCount: number };
     const h = summarizeCatalogHealth(catalog);
     const findingCount = (result.condensed.envelopes ?? []).flatMap((e) => e.findings).length;
+    const partial = introspectionLevel === 'minimal' || introspectionLevel === 'shallow';
     renderViewSafe(
       React.createElement(ScanView, {
         operationCount: reportStats.operationCount,
@@ -209,6 +219,7 @@ async function tryRenderScanInkSummary(params: {
         durationMs: result.durationMs,
         degraded: Boolean(result.report.degraded),
         colored: uiSummary.colored,
+        partial,
       }),
     );
   } catch (error_) {
@@ -236,6 +247,8 @@ export interface PipelineCatalogOptions {
   restBaseUrl: string | undefined;
   openApiSpec: unknown;
   restOperations: Operation[] | undefined;
+  /** #202: discovery fidelity for durable report disclosure */
+  introspectionLevel?: ScanIntrospectionLevel | undefined;
 }
 
 async function runPipelineAndBuildCatalog(options: PipelineCatalogOptions) {
@@ -273,20 +286,22 @@ async function outputScanResults(params: {
   graphqlOps: GraphQLOperation[];
   result: ScanPipelineRunResult;
   catalog: ReturnType<typeof buildCatalog>;
+  introspectionLevel?: ScanIntrospectionLevel | undefined;
 }): Promise<number> {
-  const { flags, resolvedConfig, context, graphqlOps, result, catalog } = params;
+  const { flags, resolvedConfig, context, graphqlOps, result, catalog, introspectionLevel } =
+    params;
 
   await persistScanSnapshot({ resolvedConfig, graphqlOps, context });
 
   // #2143: the report IS the result — always emit it to stdout, even with --quiet.
   // `--quiet` suppresses chrome (spinner, notices, the Ink summary), never the result.
-  const output = formatScanCatalogForOutput(catalog, resolvedConfig.format);
+  const output = formatScanCatalogForOutput(catalog, resolvedConfig.format, introspectionLevel);
   console.info(output);
 
   // #2143: in a TTY, render the summary card (mirrors the report's op count + canonical
   // health via summarizeCatalogHealth). No console footer — it was redundant with the report
   // Summary and, on stdout, polluted `> report.md`.
-  await tryRenderScanInkSummary({ flags, resolvedConfig, result, catalog });
+  await tryRenderScanInkSummary({ flags, resolvedConfig, result, catalog, introspectionLevel });
 
   return getScanExitCode(result, flags.failOnHigh);
 }
@@ -303,6 +318,7 @@ export async function runPipelineCatalogSnapshotAndPrint(
     graphqlOps: options.graphqlOps,
     result,
     catalog,
+    introspectionLevel: options.introspectionLevel,
   });
 }
 

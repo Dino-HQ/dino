@@ -7,10 +7,10 @@
 import { verifyAttestation, type AttestationBundle } from '@dino/engine';
 import { CliError } from '../shared/errors';
 
-/** GitHub Actions OIDC issuer — canonical default for Dino-hosted runners. */
+/** GitHub Actions OIDC issuer - canonical default for Dino-hosted runners. */
 const DINO_DEFAULT_CERTIFICATE_ISSUER = 'https://token.actions.githubusercontent.com';
 
-/** Narrow unknown CLI flag values to non-empty strings (literal keys only — avoids object-injection noise). */
+/** Narrow unknown CLI flag values to non-empty strings (literal keys only - avoids object-injection noise). */
 function optionalNonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

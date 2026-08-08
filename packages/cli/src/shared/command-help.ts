@@ -20,6 +20,11 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
       'Run the full test pipeline (fuzzing, validation, RBAC, rate limits, error codes, deprecation).',
     usage: 'dino scan --tenant <id> [--env <name>] [options]',
     options: [
+      '--endpoint <url>      Ad-hoc scan target (no .dino.yml needed)',
+      '--protocol <type>     graphql (default) | rest',
+      '--spec-url <url|path> OpenAPI spec: required when --protocol rest',
+      '--header <"Name: Value">  Send a static auth header (repeatable)',
+      '--token <token>        Shortcut for --header "Authorization: Bearer <token>"',
       '--fail-on-high        Exit 1 if HIGH or CRITICAL findings exist',
       '--tools <list>        Comma-separated tools to run (default: all)',
       '--modules <list>      Comma-separated modules to scan (default: all)',
@@ -91,7 +96,7 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
     options: [],
   },
   init: {
-    summary: 'Set up your project — generates .dino.yml interactively.',
+    summary: 'Set up your project: generates .dino.yml interactively.',
     usage: 'dino init [--force]',
     options: ['--force               Overwrite an existing .dino.yml'],
   },
@@ -106,7 +111,7 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
 export function printCommandHelp(command: string): boolean {
   const help = recordGet(COMMAND_HELP, command);
   if (!help) return false;
-  const lines = [`dino ${command} — ${help.summary}`, '', `Usage: ${help.usage}`];
+  const lines = [`dino ${command}: ${help.summary}`, '', `Usage: ${help.usage}`];
   if (help.options.length > 0) {
     lines.push('', 'Options:', ...help.options.map((o) => `  ${o}`));
   }

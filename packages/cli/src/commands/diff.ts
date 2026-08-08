@@ -13,8 +13,8 @@ import {
 import { renderDiffJson } from '../formatters/json';
 import { renderDiffMarkdown } from '../formatters/markdown';
 import { shouldRenderInkView } from '../ink/InkRender';
-import { discoverOperations, withTracking } from '../shared/base-command';
-import { detectUi, createSpinner, colorize } from '../shared/ui';
+import { discoverOperationsDetailed, withTracking } from '../shared/base-command';
+import { detectUi, createSpinner, printNotice } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 import type { UiOptions } from '../shared/ui';
@@ -74,8 +74,11 @@ async function executeDiffBody(context: CommandContext, flags: DiffFlags): Promi
   const spinner = createSpinner('Comparing snapshots…', ui);
   spinner.start();
   let graphqlOps;
+  let restOperations;
   try {
-    graphqlOps = await discoverOperations(context);
+    const detailed = await discoverOperationsDetailed(context);
+    graphqlOps = detailed.graphqlOperations;
+    restOperations = detailed.discoveredOperations.filter((o) => o.type === 'rest');
     spinner.text = 'Loading snapshots…';
   } catch (err) {
     spinner.fail('Diff failed');
@@ -91,6 +94,7 @@ async function executeDiffBody(context: CommandContext, flags: DiffFlags): Promi
 
   const currentSnapshot = buildSnapshot({
     introspection: graphqlOps,
+    restOperations,
     tenantId: context.tenantId,
     environment: context.environment,
   });
@@ -110,9 +114,8 @@ async function executeDiffBody(context: CommandContext, flags: DiffFlags): Promi
   const format = flags.format ?? 'markdown';
   const markdownUi = format === 'json' ? undefined : ui;
   const output = format === 'json' ? renderDiffJson(diff) : renderDiffMarkdown(diff, markdownUi);
-  if (!flags.quiet) {
-    console.info(output);
-  }
+  // #172: --quiet strips chrome only — the diff result always goes to stdout
+  console.info(output);
 
   let inkFooter = false;
   if (
@@ -122,14 +125,9 @@ async function executeDiffBody(context: CommandContext, flags: DiffFlags): Promi
   ) {
     inkFooter = await showDiffFooter(ui, diff, context);
   }
+  // #175: next-step is chrome → stderr via printNotice (Ink footer stays quiet-gated above)
   if (!flags.quiet && format !== 'json' && !inkFooter) {
-    console.info(
-      colorize(
-        'Next: run dino watch --autonomy enforce to block breaking changes in CI.',
-        'dim',
-        ui,
-      ),
-    );
+    printNotice('Next: run dino watch --autonomy enforce to block breaking changes in CI.', ui);
   }
 
   return flags.failOnBreaking && diff.summary.breakingChanges > 0 ? 1 : 0;

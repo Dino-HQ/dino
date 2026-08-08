@@ -207,6 +207,20 @@ function extractResponseSchemas(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * First meaningful path segment for module fallback (#208).
+ * Skips leading version prefixes (`v1`, `v2`, …) and `{param}` segments.
+ */
+function pathModuleFallback(path: string): string | undefined {
+  const segments = path.split('/').filter((s) => s.length > 0 && !s.startsWith('{'));
+  const withoutLeadingVersions = [...segments];
+  while (withoutLeadingVersions.length > 0 && /^v\d+$/i.test(withoutLeadingVersions.at(0) ?? '')) {
+    withoutLeadingVersions.shift();
+  }
+  const candidate = withoutLeadingVersions.at(0);
+  return candidate !== undefined && candidate.length > 0 ? candidate : undefined;
+}
+
 function toOperation(method: HttpMethod, path: string, op: OpenAPIOperationSource): Operation {
   const rawId = op.operationId;
   const resolvedName =
@@ -214,6 +228,11 @@ function toOperation(method: HttpMethod, path: string, op: OpenAPIOperationSourc
   const parameters = extractParameters(op);
   const requestBody = extractRequestBody(op);
   const responseSchemas = extractResponseSchemas(op);
+  const tagModule =
+    Array.isArray(op.tags) && typeof op.tags[0] === 'string' && op.tags[0].trim() !== ''
+      ? op.tags[0].trim()
+      : undefined;
+  const module = tagModule ?? pathModuleFallback(path);
   return {
     name: resolvedName,
     type: 'rest',
@@ -221,6 +240,7 @@ function toOperation(method: HttpMethod, path: string, op: OpenAPIOperationSourc
     path,
     description: pickDescription(op),
     deprecated: op.deprecated ?? false,
+    ...(module === undefined ? {} : { module }),
     ...(parameters === undefined ? {} : { parameters }),
     ...(requestBody === undefined ? {} : { requestBody }),
     ...(responseSchemas === undefined ? {} : { responseSchemas }),

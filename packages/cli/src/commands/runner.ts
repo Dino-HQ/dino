@@ -54,15 +54,15 @@ export type RunRunnerStartDeps = {
   timer?: Timer;
   createReporter?: typeof createCloudReporter;
   createExecuteScan?: (state: RunnerState) => (a: RunnerJob) => Promise<RunnerResult>;
-  /** Test seam — production uses poll-loop default (5s). */
+  /** Test seam - production uses poll-loop default (5s). */
   pollIntervalMs?: number;
-  /** Test seam — production uses poll-loop default (60s cap). */
+  /** Test seam - production uses poll-loop default (60s cap). */
   maxBackoffMs?: number;
-  /** Test seam — production uses 30_000ms. */
+  /** Test seam - production uses 30_000ms. */
   hardShutdownMs?: number;
-  /** Test seam — production uses true. */
+  /** Test seam - production uses true. */
   hardShutdownTimerUnref?: boolean;
-  /** #70 test seams — production reads DINO_RUNNER_MODE / DINO_RUNNER_WAKE_SECRET / PORT from env. */
+  /** #70 test seams - production reads DINO_RUNNER_MODE / DINO_RUNNER_WAKE_SECRET / PORT from env. */
   runnerMode?: string;
   wakeSecret?: string;
   port?: number;
@@ -112,7 +112,7 @@ export type RunnerExecuteScanDeps = {
 
 function runnerDefaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms); // determinism:allowed — CfInboxOtpResolver poll seam (runner CLI)
+    setTimeout(resolve, ms); // determinism:allowed - CfInboxOtpResolver poll seam (runner CLI)
   });
 }
 
@@ -207,7 +207,7 @@ export function createRunnerExecuteScan(
   pipelineRunner: typeof runPipeline = runPipeline,
   scanDeps: RunnerExecuteScanDeps = {},
 ): (assignment: RunnerJob) => Promise<RunnerResult> {
-  const now = scanDeps.now ?? (() => Date.now()); // determinism:allowed — default seam for production runner
+  const now = scanDeps.now ?? (() => Date.now()); // determinism:allowed - default seam for production runner
   const sleep = scanDeps.sleep ?? runnerDefaultSleep;
   // #1850 — the runner's outbound fetch (flow-runner auth + REST executor) hits CUSTOMER-controlled URLs;
   // pin to the validated IP so a rebinding target cannot reach the runner's localhost / metadata / other tenants.

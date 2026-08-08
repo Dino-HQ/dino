@@ -5,7 +5,7 @@
 
 import { loadCliConfig } from '../config/loader';
 import { shouldRenderInkView } from '../ink/InkRender';
-import { detectUi, colorize, createSpinner } from '../shared/ui';
+import { detectUi, colorize, createSpinner, printNotice } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { UiOptions } from '../shared/ui';
 
@@ -42,7 +42,8 @@ async function showValidateResult(
     }
   }
   if (!inkShown) {
-    console.info(colorize('Next: run dino scan to check your API.', 'dim', ui));
+    // #175: next-step is chrome → stderr
+    printNotice('Next: run dino scan to check your API.', ui);
   }
 }
 
@@ -63,8 +64,8 @@ export async function runValidate(_context: unknown, flags: ValidateFlags): Prom
   try {
     const config = await loadCliConfig();
     if (!config) {
-      spinner.succeed('No .dino.yml found — using smart defaults. Config is valid.');
-      await showValidateResult('No .dino.yml — smart defaults. Config is valid.', ui, flags);
+      spinner.succeed('No .dino.yml found - using smart defaults. Config is valid.');
+      await showValidateResult('No .dino.yml - smart defaults. Config is valid.', ui, flags);
       return 0;
     }
     spinner.succeed('.dino.yml is valid');

@@ -1,6 +1,6 @@
 {
   "name": "@dino-hq/cli",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "API quality intelligence for every deploy. Security, correctness, documentation, and lifecycle for GraphQL and REST.",
   "license": "MIT",

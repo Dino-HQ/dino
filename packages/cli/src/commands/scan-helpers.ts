@@ -20,6 +20,7 @@ import {
   validateModules,
   createExecutor,
   withAuth,
+  withStaticHeaders,
   buildTokenResolver,
   validateRbacRoles,
   validateConfigConsistency,
@@ -134,15 +135,27 @@ export function prepareScanToolsAndModules(
 
   if (authAbsent && flags.tools?.includes('rbac-matrix')) {
     // #2143: user-relevant product notice on stderr (quiet-aware, no em-dash / winston prefix).
+    // #2160: header auth is still "auth absent" for RBAC (no roles), but the notice must
+    // not claim "no auth is configured" when the user supplied a static credential.
     const ui = detectUi({
       quiet: flags.quiet,
       noColor: flags.noColor,
       verbose: flags.verbose,
       debug: flags.debug,
     });
-    printNotice('RBAC test skipped: no auth is configured for this API.', ui, {
-      hint: 'Configure auth to test role-based access.',
-    });
+    const hasHeaderAuth =
+      context.authHeaders !== undefined && Object.keys(context.authHeaders).length > 0;
+    if (hasHeaderAuth) {
+      printNotice(
+        'RBAC test skipped: static header auth provides a single credential, not multiple roles.',
+        ui,
+        { hint: 'Configure role-based auth to test the RBAC matrix.' },
+      );
+    } else {
+      printNotice('RBAC test skipped: no auth is configured for this API.', ui, {
+        hint: 'Configure auth to test role-based access.',
+      });
+    }
   }
 
   const validatedModules = flags.modules
@@ -190,6 +203,9 @@ export function buildScanExecutor(
     });
     executor = withAuth(executor, tokenFactory, auth.role ?? 'USER');
     tokenResolver = buildTokenResolver(tokenFactory);
+  } else if (context.authHeaders !== undefined && Object.keys(context.authHeaders).length > 0) {
+    // #2160: static header auth (flags / flat config): authenticated, no roles.
+    executor = withStaticHeaders(executor, context.authHeaders);
   } else {
     // #2143: product notice on stderr, quiet-aware (suppressed under --quiet).
     const ui = detectUi({

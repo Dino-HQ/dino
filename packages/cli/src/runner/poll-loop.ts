@@ -312,7 +312,7 @@ async function doPoll(
   timer: Timer,
   pollIntervalMs: number,
 ): Promise<'continue' | 'backoff'> {
-  const pollStart = Date.now(); // determinism:allowed — logging only
+  const pollStart = Date.now(); // determinism:allowed - logging only
   const res = await config.httpClient(assignmentsUrl(config.state), {
     method: 'GET',
     headers: { Authorization: `Bearer ${config.state.token}` },

@@ -10,15 +10,25 @@ import {
   sanitizeEventError,
   sanitizeCliFlags,
 } from '@dino/analytics';
-import { loadTenantById, recordGet, recordSet } from '@dino/core';
-import { createDiscoveryBridge } from '@dino/engine';
+import { loadTenantById, recordGet } from '@dino/core';
+import { createDiscoveryBridge, logger as engineLogger } from '@dino/engine';
+import { buildAuthHeaders } from './auth-headers';
 import { CliError } from './errors';
+import { readIntrospectionLevel } from './introspection-level';
+import { oauth2DescriptorFromConfig, resolveAuthHeaders } from './oauth2-auth';
+import { requireStringFlag } from './require-string-flag';
 import { printError, detectUi } from './ui';
 import { getEffectiveTelemetryLevel, readGlobalDinoConfigSync } from '../config/global-dino-config';
 import { CLI_VERSION } from '../version';
+import type { OAuth2AuthDescriptor } from './oauth2-auth';
 import type { DinoCliConfig } from '../config/loader';
 import type { AnalyticsAdapter, Tracker } from '@dino/analytics';
 import type { TenantConfig, ApiConfig, GraphQLOperation, Operation } from '@dino/core';
+
+export { buildAuthHeaders, parseHeaderArg } from './auth-headers';
+export { parseArgs } from './parse-args';
+export { resolveAuthHeaders } from './oauth2-auth';
+export type { OAuth2AuthDescriptor } from './oauth2-auth';
 
 /** Events sent at 'crash' level (errors/failures only). */
 const CRASH_LEVEL_EVENTS = new Set([
@@ -30,19 +40,13 @@ const CRASH_LEVEL_EVENTS = new Set([
 function createCliAnalyticsAdapter(): AnalyticsAdapter {
   const g = readGlobalDinoConfigSync();
   const level = getEffectiveTelemetryLevel(g);
-  if (level === 'off') {
-    return createNoopAdapter();
-  }
+  if (level === 'off') return createNoopAdapter();
   const key =
     typeof process.env.POSTHOG_API_KEY === 'string' ? process.env.POSTHOG_API_KEY.trim() : '';
-  if (!key) {
-    return createNoopAdapter();
-  }
+  if (!key) return createNoopAdapter();
   const distinctId =
     typeof g.anonymousId === 'string' && g.anonymousId.length > 0 ? g.anonymousId : '';
-  if (!distinctId) {
-    return createNoopAdapter();
-  }
+  if (!distinctId) return createNoopAdapter();
   const inner = createPostHogAdapter({ apiKey: key, distinctId });
 
   // 'all' sends everything; 'crash' filters to error events only
@@ -72,6 +76,13 @@ export interface CommonFlags {
   verbose?: boolean | undefined;
   debug?: boolean | undefined;
   noColor?: boolean | undefined;
+  endpoint?: string | undefined; // #171: ad-hoc scan via CLI flag
+  protocol?: ('graphql' | 'rest') | undefined;
+  specUrl?: string | undefined;
+  /** #2160: static auth header(s), repeatable (`"Name: Value"`) */
+  header?: string | string[] | undefined;
+  /** #2160: shortcut for Authorization: Bearer <token> */
+  token?: string | undefined;
 }
 
 /** Parsed + merged flags at command dispatch (config + argv + common). */
@@ -83,6 +94,12 @@ export interface CommandContext {
   tenantId: string;
   environment: string;
   tracker: Tracker;
+  /** #2160: static auth headers for discovery + scan (undefined when no auth configured) */
+  authHeaders?: Record<string, string> | undefined;
+  /** #2161: oauth2 flat-config descriptor; resolved asynchronously via resolveAuthHeaders */
+  oauth2Auth?: OAuth2AuthDescriptor | undefined;
+  /** Test seam: override fetch for OAuth2 token acquisition (#2161) */
+  fetchImpl?: typeof fetch | undefined;
 }
 
 /**
@@ -124,6 +141,8 @@ export interface DiscoverOperationsResult {
   graphqlOperations: GraphQLOperation[];
   discoveredOperations: Operation[];
   discoveryRaw: unknown;
+  /** #202: discovery fidelity for durable report disclosure */
+  introspectionLevel?: 'full' | 'shallow' | 'minimal' | undefined;
 }
 
 async function runPluginDiscovery(context: CommandContext) {
@@ -141,11 +160,19 @@ async function runPluginDiscovery(context: CommandContext) {
   const api = context.tenantConfig.apis[0];
   const specPath = api && 'specPath' in api ? (api as { specPath?: string }).specPath : undefined;
 
+  // #2161: async oauth2 acquisition at the discovery boundary (buildContext stays sync)
+  const authHeaders = await resolveAuthHeaders(context);
+
   try {
     return await plugin.discover({
       endpoint,
       specPath,
       timeout: envConfig.timeout,
+      ...(authHeaders ? { headers: authHeaders } : {}),
+      logger: {
+        info: (m: string) => engineLogger.info(m),
+        warn: (m: string) => engineLogger.warn(m),
+      },
     });
   } catch (err: unknown) {
     if (isIntrospectionTimeout(err)) {
@@ -188,6 +215,7 @@ export async function discoverOperationsDetailed(
     graphqlOperations,
     discoveredOperations: discoveryResult.operations,
     discoveryRaw: raw,
+    introspectionLevel: readIntrospectionLevel(raw),
   };
 }
 
@@ -204,13 +232,7 @@ export async function discoverOperations(context: CommandContext): Promise<Graph
 /** Detect the AbortController timeout signature from plugin.discover. INV-UX-1. */
 function isIntrospectionTimeout(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
-  // Node's AbortController rejects with DOMException name 'AbortError' OR an Error whose
-  // message includes 'aborted due to timeout' (timings differ by runtime version).
-  // Prettier (prettier/prettier eslint rule, --max-warnings 0) removes parens around
-  // `a === x || b === y` compound booleans as unnecessary. HC #16 / Gate 14's
-  // "parenthesize boolean sub-expressions" rule targets mixed-precedence cases
-  // (e.g. `a && b || c`); a simple `||` over two `===` checks is unambiguous.
-  // Defer to Prettier. See Maciver 2026-04-16 LOW unparenthesizedTimeoutPredicate.
+  // AbortError or timeout message; unparenthesized || is intentional (Prettier / Maciver LOW).
   return err.name === 'AbortError' || err.message.includes('aborted due to timeout');
 }
 
@@ -224,7 +246,7 @@ function buildIntrospectionTimeoutError(
   const hint = [
     'Common causes:',
     '  • Endpoint does not support GraphQL introspection at this path',
-    `  • Path suffix missing — try ${endpoint.replace(/\/?$/, '/graphql')}`,
+    `  • Path suffix missing - try ${endpoint.replace(/\/?$/, '/graphql')}`,
     '  • Authentication required but not configured (run: dino init)',
     '  • Endpoint unreachable from this network',
   ].join('\n');
@@ -297,100 +319,6 @@ export async function withTracking(opts: WithTrackingOptions): Promise<number> {
   }
 }
 
-function camelCase(flag: string): string {
-  return flag.replaceAll(/-([a-z])/g, (_: string, c: string) => c.toUpperCase());
-}
-
-/** Parse a --flag arg, returning the number of consumed tokens. */
-function parseFlag(argv: string[], i: number, flags: Record<string, unknown>): number {
-  const arg = argv.at(i);
-  if (!arg) throw new Error(`parseFlag: argv index ${i} out of bounds (length ${argv.length})`);
-  const eq = arg.indexOf('=');
-  if (eq > 0) {
-    recordSet(flags, camelCase(arg.slice(2, eq)), arg.slice(eq + 1));
-    return 1;
-  }
-  const key = camelCase(arg.slice(2));
-  // B27 (#607): Check for single-dash flags (-v, -h) — don't consume them as values
-  const nextArg = i + 1 < argv.length ? argv.at(i + 1) : undefined;
-  if (nextArg !== undefined && !nextArg.startsWith('-')) {
-    recordSet(flags, key, nextArg);
-    return 2;
-  }
-  recordSet(flags, key, true);
-  return 1;
-}
-
-/**
- * #2141: recognize `-h`/`-v` anywhere, not just first position. Without this, `dino login -h`
- * fell through as a positional and STARTED the OAuth flow instead of printing help.
- * Returns true if the arg was a recognized short flag.
- */
-function handleShortFlag(arg: string, flags: Record<string, unknown>): boolean {
-  if (arg === '-h') {
-    recordSet(flags, 'h', true);
-    return true;
-  }
-  if (arg === '-v') {
-    recordSet(flags, 'v', true);
-    return true;
-  }
-  return false;
-}
-
-/** Record every argument after a `--` terminator as an indexed positional. */
-function collectTrailingPositionals(
-  argv: string[],
-  startIndex: number,
-  flags: Record<string, unknown>,
-): void {
-  for (let i = startIndex; i < argv.length; i++) {
-    const positional = argv.at(i);
-    if (positional === undefined) {
-      throw new Error(
-        `Expected positional argument at index ${i} but argv.at(${i}) returned undefined`,
-      );
-    }
-    recordSet(flags, `_${String(i)}`, positional);
-  }
-}
-
-/**
- * Parse argv: first positional (non-flag) = command; remaining args as flags.
- * Supports --key value, --key=value, --flag (boolean), and -h/-v short flags.
- */
-export function parseArgs(argv: string[]): { command: string; flags: Record<string, unknown> } {
-  const flags: Record<string, unknown> = {};
-  let command = '';
-  let i = 0;
-
-  while (i < argv.length) {
-    const arg = argv.at(i);
-    if (!arg) throw new Error(`parseArgs: argv index ${i} out of bounds (length ${argv.length})`);
-    if (arg === '--') {
-      i++;
-      break;
-    }
-    if (arg.startsWith('--')) {
-      i += parseFlag(argv, i, flags);
-      continue;
-    }
-    if (handleShortFlag(arg, flags)) {
-      i++;
-      continue;
-    }
-    if (command) {
-      recordSet(flags, `_${String(i)}`, arg);
-    } else {
-      command = arg;
-    }
-    i++;
-  }
-
-  collectTrailingPositionals(argv, i, flags);
-  return { command: command || '', flags };
-}
-
 /**
  * Build a synthetic TenantConfig for ad-hoc scans (no tenant YAML).
  * Endpoint comes from .dino.yml directly. All agents disabled (scan uses tools, not agents).
@@ -437,25 +365,62 @@ function buildAdHocTenantConfig(
   };
 }
 
+function withOptionalAuth(
+  base: Omit<CommandContext, 'authHeaders' | 'oauth2Auth' | 'fetchImpl'>,
+  authHeaders: Record<string, string> | undefined,
+  oauth2Auth: OAuth2AuthDescriptor | undefined,
+): CommandContext {
+  return {
+    ...base,
+    ...(authHeaders ? { authHeaders } : {}),
+    ...(oauth2Auth ? { oauth2Auth } : {}),
+  };
+}
+
 /**
  * Build CommandContext from flags + optional config. Flags take precedence over config.
  */
 export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): CommandContext {
   const tenantId = flags.tenant ?? config?.tenant ?? '';
 
-  // #560: Ad-hoc mode — endpoint provided directly, no tenant needed
-  if (!tenantId && config?.endpoint) {
-    const tenantConfig = buildAdHocTenantConfig(
-      config.endpoint,
-      config.protocol ?? 'graphql',
-      30_000, // DEFAULT_SCAN_CONFIG.requestTimeoutMs — hardcoded to avoid circular dep
-      config.specUrl,
+  // Value-less `--endpoint`/`--protocol`/`--spec-url` arrive as boolean `true` from parseFlag —
+  // reject at the consumption point (do not change parseFlag; booleans are valid for --quiet etc.)
+  const endpointFlag = requireStringFlag('--endpoint', flags.endpoint, {
+    requires: 'a URL value (e.g. --endpoint https://api.example.com/graphql).',
+    hint: 'Pass the endpoint URL immediately after the flag.',
+  });
+  const protocolFlag = requireStringFlag('--protocol', flags.protocol, {
+    requires: 'a value: graphql or rest',
+    hint: 'Pass graphql or rest immediately after the flag.',
+  });
+  const specUrlFlag = requireStringFlag('--spec-url', flags.specUrl, {
+    requires: 'a URL or file path value.',
+    hint: 'Pass the spec URL or path immediately after the flag.',
+  });
+
+  const authHeaders = buildAuthHeaders(flags, config);
+  const oauth2Auth = oauth2DescriptorFromConfig(config);
+
+  // #560/#171: Ad-hoc mode — endpoint from flags (preferred) or .dino.yml; no tenant needed
+  const adhocEndpoint = endpointFlag ?? config?.endpoint;
+  if (!tenantId && typeof adhocEndpoint === 'string' && adhocEndpoint.length > 0) {
+    const protocolRaw = protocolFlag ?? config?.protocol ?? 'graphql';
+    const protocol: 'graphql' | 'rest' = protocolRaw === 'rest' ? 'rest' : 'graphql';
+    return withOptionalAuth(
+      {
+        tenantConfig: buildAdHocTenantConfig(
+          adhocEndpoint,
+          protocol,
+          30_000,
+          specUrlFlag ?? config?.specUrl,
+        ),
+        tenantId: 'adhoc',
+        environment: 'default',
+        tracker: createTracker({ adapter: createCliAnalyticsAdapter(), tenantId: 'adhoc' }),
+      },
+      authHeaders,
+      oauth2Auth,
     );
-    const tracker = createTracker({
-      adapter: createCliAnalyticsAdapter(),
-      tenantId: 'adhoc',
-    });
-    return { tenantConfig, tenantId: 'adhoc', environment: 'default', tracker };
   }
 
   if (!tenantId) {
@@ -467,15 +432,14 @@ export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): 
     );
   }
   const tenantConfig = loadTenantById(tenantId);
-  const environment = flags.env ?? config?.environment ?? tenantConfig.defaultEnvironment;
-  const tracker = createTracker({
-    adapter: createCliAnalyticsAdapter(),
-    tenantId,
-  });
-  return {
-    tenantConfig,
-    tenantId,
-    environment,
-    tracker,
-  };
+  return withOptionalAuth(
+    {
+      tenantConfig,
+      tenantId,
+      environment: flags.env ?? config?.environment ?? tenantConfig.defaultEnvironment,
+      tracker: createTracker({ adapter: createCliAnalyticsAdapter(), tenantId }),
+    },
+    authHeaders,
+    oauth2Auth,
+  );
 }

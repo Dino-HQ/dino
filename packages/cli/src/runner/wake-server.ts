@@ -135,7 +135,7 @@ export function maybeStartWakeServer(opts: {
   const port = opts.port ?? Number(process.env.PORT ?? 8080);
   // Default token bucket for the public endpoint (#70 M4): 5 burst, refill 30/min. Date.now is fine
   // here — rate-limiting is operational, not business logic (the runner CLI, not the deterministic core).
-  const limiter = createWakeLimiter(() => Date.now()); // determinism:allowed — operational rate limit
+  const limiter = createWakeLimiter(() => Date.now()); // determinism:allowed - operational rate limit
   return startWakeServer(
     { wakeSecret, onWake: opts.onWake, limiter, ...(opts.logger ? { logger: opts.logger } : {}) },
     port,

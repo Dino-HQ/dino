@@ -172,7 +172,7 @@ export type RunnerAuthWireResult =
       authConfigured: boolean;
       /** True when the hydrated profile declares multi-role RBAC (bindings + roles). */
       rbacDeclared?: boolean;
-      /** Live acquired scan auth (reflects REST-triggered refresh) — feeds the GraphQL executor wrapper (R4).
+      /** Live acquired scan auth (reflects REST-triggered refresh) - feeds the GraphQL executor wrapper (R4).
        *  Optional for backward-compat with existing wire literals; production always sets it. */
       getAuth?: () => AcquiredScanAuth;
       authLost: () => boolean;

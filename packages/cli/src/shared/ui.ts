@@ -16,17 +16,17 @@ import type { EnvelopeSeverityLevel } from '@dino/core';
 import type { Ora } from 'ora';
 
 export interface UiOptions {
-  /** True when stdout is a TTY, not CI, and not --quiet — controls spinner animation */
+  /** True when stdout is a TTY, not CI, and not --quiet - controls spinner animation */
   interactive: boolean;
   /** True when color output is allowed (interactive AND not --no-color / NO_COLOR) */
   colored: boolean;
   /** True when --quiet is set */
   quiet: boolean;
-  /** True when Ink rendering may be used (interactive TTY; dynamic import handles load failures) — #1014 */
+  /** True when Ink rendering may be used (interactive TTY; dynamic import handles load failures) - #1014 */
   ink: boolean;
-  /** #2143: --verbose — show extra progress notices the default path suppresses. Set by detectUi. */
+  /** #2143: --verbose - show extra progress notices the default path suppresses. Set by detectUi. */
   verbose?: boolean;
-  /** #2143: --debug — show diagnostics + stack traces. Set by detectUi. */
+  /** #2143: --debug - show diagnostics + stack traces. Set by detectUi. */
   debug?: boolean;
 }
 
@@ -161,7 +161,7 @@ export function durationLabel(ms: number): string {
  * UX Language §9: errors describe what happened + suggest next action.
  */
 export function printError(err: Error, ui: UiOptions, debug?: boolean): void {
-  const message = err.message;
+  const message = humanizeError(err);
   const hint = err instanceof CliError ? err.hint : undefined;
 
   console.error(colorize(`✗  ${message}`, 'red', ui));
@@ -171,6 +171,80 @@ export function printError(err: Error, ui: UiOptions, debug?: boolean): void {
   if (debug && err.stack) {
     console.error(colorize(err.stack, 'dim', ui));
   }
+}
+
+/**
+ * #201: rewrite endpoint-validation jargon at the CLI boundary.
+ * Returns undefined when the message is not an endpoint-validation error.
+ */
+function humanizeEndpointValidationError(message: string): string | undefined {
+  // All engine SSRF/DNS errors carry the literal "SSRF blocked:" prefix + a reason code.
+  if (message.includes('SSRF blocked:')) {
+    if (message.includes('dns_resolution_failed')) {
+      return "We couldn't find that host. Check the endpoint URL for a typo and try again.";
+    }
+    if (
+      message.includes('blocked_ipv4') ||
+      message.includes('blocked_ipv6') ||
+      message.includes('metadata_host') ||
+      message.includes('unparseable_mapped_ip')
+    ) {
+      return "That endpoint points to a private or internal address, so Dino won't test it. Use a public API endpoint.";
+    }
+    if (message.includes('wrong_protocol')) {
+      return 'The endpoint URL must start with http:// or https://.';
+    }
+    if (message.includes('malformed_url')) {
+      return "That endpoint URL isn't valid. Example: https://api.example.com/graphql";
+    }
+    // Unknown/future reason code — never leak "SSRF blocked … <code>".
+    return "Dino couldn't test that endpoint: it didn't pass an address safety check.";
+  }
+  return undefined;
+}
+
+/**
+ * #174/#201: map known node/network and endpoint-validation errors to clean product text.
+ * Default arm keeps the original `.message`. Never interpolates the raw error
+ * object or `process.env` — map by code/name/message substrings only.
+ */
+export function humanizeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : '';
+  let code = '';
+  if (err !== null && typeof err === 'object') {
+    const rawCode = Reflect.get(err, 'code');
+    if (typeof rawCode === 'string') {
+      code = rawCode;
+    }
+  }
+  const haystack = `${code} ${name} ${message}`;
+
+  const endpointMsg = humanizeEndpointValidationError(message);
+  if (endpointMsg !== undefined) return endpointMsg;
+
+  // #201: node's own malformed-URL TypeError. Anchor on the stable ERR_INVALID_URL code,
+  // not a message substring, so a target API's error text can't false-match.
+  if (code === 'ERR_INVALID_URL') {
+    return "That endpoint URL isn't valid. Example: https://api.example.com/graphql";
+  }
+
+  if (haystack.includes('ECONNRESET') || message.includes('socket hang up')) {
+    return 'The connection to the API was closed unexpectedly. Check the endpoint and your network.';
+  }
+  if (haystack.includes('ENOTFOUND')) {
+    return "Couldn't resolve the endpoint host. Check the URL.";
+  }
+  if (haystack.includes('ECONNREFUSED')) {
+    return 'The endpoint refused the connection. Is it running and reachable?';
+  }
+  if (haystack.includes('ETIMEDOUT') || name === 'AbortError' || haystack.includes('AbortError')) {
+    return 'The request timed out. The endpoint may be slow or unreachable.';
+  }
+  if (message.includes('fetch failed')) {
+    return "Couldn't reach the endpoint. Check the URL and your network.";
+  }
+  return message;
 }
 
 /**

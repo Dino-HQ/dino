@@ -2,6 +2,8 @@
  * @dino/cli — dino watch (scheduled scans + Shadow Mode). Issue #309.
  */
 
+import { createRestExecutor } from '@dino/agents';
+import { createPinnedFetch } from '@dino/core';
 import {
   loadOperationRegistry,
   clearTenantCache,
@@ -12,6 +14,8 @@ import {
   runPipeline,
   determineOverallLevel,
 } from '@dino/engine';
+import { buildAdHocRegistry } from './scan-helpers';
+import { shouldFallBackToAdHocRegistry } from './scan-pipeline';
 import {
   resolveMaxIterations,
   validateAndBuildConfig,
@@ -21,10 +25,10 @@ import {
   type IterationConfig,
   type WatchFlags,
 } from './watch-helpers';
-import { discoverOperations, withTracking } from '../shared/base-command';
+import { discoverOperationsDetailed, getEndpoint, withTracking } from '../shared/base-command';
 import { saveHistoryEntry } from '../shared/history';
 import { computeGlobalHealthScore, perOpFindingsFromEnv } from '../shared/pipeline-helpers';
-import { detectUi, createSpinner } from '../shared/ui';
+import { detectUi, createSpinner, printNotice } from '../shared/ui';
 import type { CommandContext } from '../shared/base-command';
 import type { WatchHistoryEntry } from '../shared/history';
 
@@ -63,6 +67,25 @@ interface RunIterationOptions {
   nextSleepSec?: number | undefined;
 }
 
+/** Outcome of one watch iteration (honest exit uses the final iteration). */
+type IterationOutcome = { kind: 'ok' } | { kind: 'degraded' } | { kind: 'enforce' };
+
+function buildWatchRestExecutor(
+  context: CommandContext,
+): ReturnType<typeof createRestExecutor> | undefined {
+  // Mirror scan.ts:119-150 — pin fetch; merge context.authHeaders (per-call headers win).
+  const base = createRestExecutor({ fetch: createPinnedFetch() });
+  const staticHeaders = context.authHeaders;
+  if (staticHeaders === undefined || Object.keys(staticHeaders).length === 0) {
+    return base;
+  }
+  return (operation: Parameters<typeof base>[0], options: Parameters<typeof base>[1]) =>
+    base(operation, {
+      ...options,
+      headers: { ...staticHeaders, ...options.headers },
+    });
+}
+
 async function executeIterationPipeline(cfg: IterationConfig, quiet?: boolean, noColor?: boolean) {
   const { context } = cfg;
   // B11 (#584): Clear tenant cache each iteration -- watch runs indefinitely,
@@ -71,19 +94,29 @@ async function executeIterationPipeline(cfg: IterationConfig, quiet?: boolean, n
   const ui = detectUi({ quiet, noColor });
   const discoverSpinner = createSpinner('Discovering operations\u2026', ui);
   discoverSpinner.start();
-  let ops;
+  let ops: Awaited<ReturnType<typeof discoverOperationsDetailed>>;
   try {
-    ops = await discoverOperations(context);
-    discoverSpinner.succeed(`Found ${ops.length} operations`);
+    ops = await discoverOperationsDetailed(context);
+    discoverSpinner.succeed(`Found ${ops.discoveredOperations.length} operations`);
   } catch (err) {
     discoverSpinner.fail('Discovery failed');
     throw err;
   }
+
+  const useAdHoc = shouldFallBackToAdHocRegistry(context);
+  const registry = useAdHoc
+    ? buildAdHocRegistry(ops.graphqlOperations, context.tenantId)
+    : loadOperationRegistry(context.tenantId);
+
+  const restOperations = ops.discoveredOperations.filter((o) => o.type === 'rest');
+  const hasRest = restOperations.length > 0;
+  const endpoint = hasRest ? getEndpoint(context) : undefined;
+
   const result = await runPipeline({
     tenantId: context.tenantId,
     environment: context.environment,
     trigger: 'watch',
-    registry: loadOperationRegistry(context.tenantId),
+    registry,
     executor: cfg.executor,
     tokenResolver: cfg.tokenResolver,
     rbacRoles: cfg.rbacRoles,
@@ -96,13 +129,17 @@ async function executeIterationPipeline(cfg: IterationConfig, quiet?: boolean, n
     // B102 + B103: Share cache and circuit breaker across watch iterations
     circuitBreaker: cfg.circuitBreaker,
     reasoningCache: cfg.reasoningCache,
+    restExecutor: hasRest ? buildWatchRestExecutor(context) : undefined,
+    restBaseUrl: endpoint,
+    openApiSpec: hasRest ? ops.discoveryRaw : undefined,
+    restOperations: hasRest ? restOperations : undefined,
   });
 
   return { ops, result };
 }
 
 function buildIterationHistoryEntry(params: {
-  ops: Awaited<ReturnType<typeof discoverOperations>>;
+  ops: Awaited<ReturnType<typeof discoverOperationsDetailed>>;
   result: Awaited<ReturnType<typeof runPipeline>>;
   context: CommandContext;
   healthScore: number;
@@ -116,7 +153,7 @@ function buildIterationHistoryEntry(params: {
     environment: context.environment,
     trigger: 'watch',
     durationMs: result.durationMs,
-    operationCount: ops.length,
+    operationCount: ops.discoveredOperations.length,
     toolsRun: result.metadata.toolsRun.length,
     toolsCompleted: result.metadata.toolsCompleted.length,
     toolsFailed: result.metadata.toolsFailed.length,
@@ -131,15 +168,17 @@ function buildIterationHistoryEntry(params: {
   };
 }
 
-/** Execute one watch iteration. Returns exit code (1 for enforce breach) or null to continue. */
-async function runIteration(opts: RunIterationOptions): Promise<number | null> {
+/** Execute one watch iteration. */
+async function runIteration(opts: RunIterationOptions): Promise<IterationOutcome> {
   const { cfg, iteration, quiet, noColor, nextSleepSec } = opts;
   const { context } = cfg;
 
   const { ops, result } = await executeIterationPipeline(cfg, quiet, noColor);
 
+  const restOperations = ops.discoveredOperations.filter((o) => o.type === 'rest');
   const snapshot = buildSnapshot({
-    introspection: ops,
+    introspection: ops.graphqlOperations,
+    restOperations,
     tenantId: context.tenantId,
     environment: context.environment,
   });
@@ -173,12 +212,17 @@ async function runIteration(opts: RunIterationOptions): Promise<number | null> {
   });
 
   if (cfg.autonomy === 'enforce' && diff && diff.summary.breakingChanges > 0) {
-    console.error(
-      `[enforce] ${diff.summary.breakingChanges} breaking change(s) detected \u2014 exiting with code 1`,
+    const ui = detectUi({ quiet, noColor });
+    printNotice(
+      `[enforce] ${diff.summary.breakingChanges} breaking change(s) detected: exiting with code 1`,
+      ui,
     );
-    return 1;
+    return { kind: 'enforce' };
   }
-  return null;
+  if (result.metadata.degraded) {
+    return { kind: 'degraded' };
+  }
+  return { kind: 'ok' };
 }
 
 /** Log + persist a degraded iteration entry. */
@@ -212,6 +256,7 @@ async function executeWatchLoop(
   let iteration = 0;
   let consecutiveFailures = 0;
   let interrupted = false;
+  let lastIterationOk = true;
   let pendingSleep: { cancel: () => void } | null = null;
   const onShutdown = (): void => {
     interrupted = true;
@@ -227,17 +272,19 @@ async function executeWatchLoop(
       iteration++;
       try {
         const willSleepAgain = !interrupted && iteration < maxIterations;
-        const exitCode = await runIteration({
+        const outcome = await runIteration({
           cfg,
           iteration,
           quiet: flags.quiet,
           noColor: flags.noColor,
           nextSleepSec: willSleepAgain ? intervalSec : undefined,
         });
-        if (exitCode !== null) return exitCode;
+        if (outcome.kind === 'enforce') return 1;
+        lastIterationOk = outcome.kind === 'ok';
         consecutiveFailures = 0;
       } catch (iterError) {
         consecutiveFailures++;
+        lastIterationOk = false;
         await handleIterationError(iterError, iteration, cfg, flags.quiet);
         throwIfCircuitBroken(consecutiveFailures, cfg, iterError);
       }
@@ -249,7 +296,7 @@ async function executeWatchLoop(
         pendingSleep = null;
       }
     }
-    return 0;
+    return lastIterationOk ? 0 : 1;
   } finally {
     process.removeListener('SIGINT', onShutdown);
     process.removeListener('SIGTERM', onShutdown);
