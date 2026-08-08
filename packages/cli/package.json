@@ -66,6 +66,8 @@
     "@dino/engine": "*",
     "@dino/plugins": "*",
     "@dino/reasoning": "*",
+    "chalk": "^6.0.0",
+    "cosmiconfig": "^10.0.0",
     "chalk": "^5.6.2",
     "cosmiconfig": "^9.0.2",
     "esbuild": "^0.28.1",
