@@ -1,8 +1,8 @@
 {
   "name": "@dino-hq/cli",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "type": "module",
-  "description": "API quality intelligence for every deploy. Security, correctness, documentation, and lifecycle for GraphQL and REST.",
+  "description": "The deterministic verification layer for APIs. An independent, reproducible verdict on whether an API change is correct, secure, and safe to ship — for AI agents, CI, and developers.",
   "license": "MIT",
   "bin": {
     "dino": "dist/bin.js"
@@ -27,8 +27,8 @@
   "author": "Dino-HQ (https://usedino.dev)",
   "contributors": [
     {
-      "name": "Dennis Mary",
-      "url": "https://github.com/dennismary"
+      "name": "Dennismary Chidiebere",
+      "url": "https://github.com/dennismarye"
     }
   ],
   "keywords": [
