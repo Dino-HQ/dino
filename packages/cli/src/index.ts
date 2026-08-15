@@ -11,7 +11,6 @@ import { runChangelog } from './commands/changelog';
 import { runConfigFromArgv } from './commands/config';
 import { runDiff } from './commands/diff';
 import { runDocs } from './commands/docs';
-import { runInit } from './commands/init';
 import { runLint } from './commands/lint';
 import { runRunnerFromFlags } from './commands/runner';
 import { runScan } from './commands/scan';
@@ -19,12 +18,12 @@ import { runValidate } from './commands/validate';
 import { runVerify } from './commands/verify';
 import { runWatch } from './commands/watch';
 import { loadCliConfig } from './config/loader';
+import { dispatchBareInit } from './shared/bare-init-dispatch';
 import { parseArgs, buildContext } from './shared/base-command';
 import { quickstartText, usageText } from './shared/cli-usage';
 import { printCommandHelp } from './shared/command-help';
 import { emitResult } from './shared/emit-result';
 import { CliError } from './shared/errors';
-import { runInitScanNow } from './shared/init-scan-now';
 import { reportCaughtFailure } from './shared/report-failure';
 import { CLI_VERSION } from './version';
 import type { CommandContext, MergedFlags } from './shared/base-command';
@@ -56,6 +55,7 @@ export type { PkcePair, OAuthEnvConfig, OidcEndpoints } from './auth/oauth-core'
 export {
   runInit,
   buildConfigYaml,
+  buildAuthAnswers,
   checkEndpoint,
   remainingInitPromptQuestions,
 } from './commands/init';
@@ -115,6 +115,14 @@ export {
   judgeContract,
 } from './shared/output-contract';
 export { withStaticHeaders } from './shared/pipeline-helpers';
+export {
+  isNonInteractiveInit,
+  gatherHeadlessInputs,
+  resolveHeadlessInitAnswers,
+  buildInitResultDoc,
+} from './shared/init-headless';
+export type { HeadlessInitInputs, InitResultDoc } from './shared/init-headless';
+export { yamlScalar } from './shared/config-yaml';
 // prettier-ignore
 export { buildScanSummarySection, buildPrComment, assertOutputClean, PR_COMMENT_MARKER, PR_COMMENT_MAX, type ScanSummaryInput, type PrCommentInput } from './shared/pr-summary';
 // prettier-ignore
@@ -184,8 +192,9 @@ function handleEarlyExit(
 
 // B14 (#587): Validate --format before dispatch — unknown values silently fall through to markdown
 const VALID_FORMATS = new Set(['markdown', 'json']);
+type CliOutputFormat = 'markdown' | 'json';
 
-function validateFormat(raw: string | undefined): 'markdown' | 'json' | undefined {
+function validateFormat(raw: string | undefined): CliOutputFormat | undefined {
   if (raw !== undefined && !VALID_FORMATS.has(raw)) {
     console.error(`Invalid --format: "${raw}". Valid: markdown, json`);
     return undefined;
@@ -284,6 +293,9 @@ async function runWithoutTenantContext(
   if (command === 'whoami') {
     return runBareCommand(() => runWhoami(flags), flags);
   }
+  if (command === 'init') {
+    return dispatchBareInit(flags, runBareCommand);
+  }
   return null;
 }
 
@@ -345,13 +357,6 @@ async function runStandaloneTenantCommand(
 ): Promise<number | null> {
   if (command === 'validate') {
     return runValidate(null, { quiet: commonFlags.quiet, noColor: commonFlags.noColor });
-  }
-  if (command === 'init') {
-    return runInit({
-      quiet: commonFlags.quiet,
-      force: flags.force === true,
-      onScanNow: () => runInitScanNow(commonFlags),
-    });
   }
   if (command === 'config') {
     return runBareCommand(() => runConfigFromArgv(argv), flags);

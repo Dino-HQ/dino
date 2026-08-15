@@ -13,13 +13,11 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import prompts from 'prompts';
 import { shouldRenderInkView } from '../ink/InkRender';
-import { buildConfigYaml, type InitAuthAnswers } from '../shared/config-yaml';
+import { buildAuthAnswers, buildConfigYaml, type InitAuthAnswers } from '../shared/config-yaml';
 import { headerAuthPromptQuestions } from '../shared/init-header-auth';
-import {
-  buildOAuth2AuthAnswers,
-  oauth2AuthPromptQuestions,
-  oauth2NextStepLines,
-} from '../shared/init-oauth2';
+import { isNonInteractiveInit } from '../shared/init-headless';
+import { runHeadlessInit } from '../shared/init-headless-command';
+import { oauth2AuthPromptQuestions, oauth2NextStepLines } from '../shared/init-oauth2';
 import { detectUi, colorize, printNotice } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { UiOptions } from '../shared/ui';
@@ -28,13 +26,22 @@ export interface InitFlags {
   quiet?: boolean;
   /** Skip existing config overwrite check */
   force?: boolean;
+  /** Force non-interactive mode (no prompts). */
+  yes?: boolean;
+  /** Preview config without writing. */
+  dryRun?: boolean;
+  format?: 'markdown' | 'json';
+  /** INV-11: injectable terminal state for interactivity decision. */
+  terminal?: { stdinTTY?: boolean; stdoutTTY?: boolean };
+  /** Parsed argv record for headless input gathering (flag > env). */
+  rawFlags?: Record<string, unknown>;
   /** #2160: when user opts into "Run a scan now?", invoke this (wired by index). */
   onScanNow?: (() => Promise<number>) | undefined;
 }
 
 // buildConfigYaml + InitAuthAnswers moved to ../shared/config-yaml (UI-free, #2191). Re-export for
 // existing importers (barrel, tests) that reference them from this module.
-export { buildConfigYaml } from '../shared/config-yaml';
+export { buildConfigYaml, buildAuthAnswers } from '../shared/config-yaml';
 export type { InitAuthAnswers } from '../shared/config-yaml';
 
 /** Case-insensitive check: URL path ends with /graphql (trailing slash + querystring tolerant). INV-UX-6. */
@@ -155,35 +162,6 @@ export function remainingInitPromptQuestions(
   );
 
   return questions;
-}
-
-function buildAuthAnswers(answers: {
-  authType?: unknown;
-  authHeader?: unknown;
-  authScheme?: unknown;
-  authValueEnv?: unknown;
-  oauth2TokenEndpoint?: unknown;
-  oauth2ClientIdEnv?: unknown;
-  oauth2ClientSecretEnv?: unknown;
-  oauth2Scope?: unknown;
-}): InitAuthAnswers | undefined {
-  if (answers.authType === 'oauth2') {
-    return buildOAuth2AuthAnswers(answers);
-  }
-  if (answers.authType !== 'header') return { type: 'none' };
-  const header =
-    typeof answers.authHeader === 'string' && answers.authHeader.trim().length > 0
-      ? answers.authHeader.trim()
-      : 'Authorization';
-  const valueEnv =
-    typeof answers.authValueEnv === 'string' && answers.authValueEnv.trim().length > 0
-      ? answers.authValueEnv.trim()
-      : 'DINO_API_TOKEN';
-  const schemeRaw = typeof answers.authScheme === 'string' ? answers.authScheme.trim() : '';
-  if (schemeRaw.length > 0) {
-    return { type: 'header', header, scheme: schemeRaw, valueEnv };
-  }
-  return { type: 'header', header, valueEnv };
 }
 
 /** Lines after the "Next steps:" heading (export hints + dino scan). */
@@ -315,16 +293,25 @@ function writeInitConfigOrReturnError(configPath: string, yaml: string): number 
   }
 }
 
-/**
- * dino init [--force]
- *
- * Interactive onboarding — generates .dino.yml.
- * INV-4: No tenant required. Runs before any config exists.
- */
-export async function runInit(flags: InitFlags): Promise<number> {
-  const configPath = resolve(process.cwd(), '.dino.yml');
-  const ui = detectUi({ quiet: flags.quiet });
+async function promptInitScanNow(flags: InitFlags): Promise<number> {
+  const { scanNow } = await prompts({
+    type: 'confirm',
+    name: 'scanNow',
+    message: 'Run a scan now?',
+    initial: true,
+    stdout: process.stderr,
+  });
+  if (scanNow === true && flags.onScanNow !== undefined) {
+    return flags.onScanNow();
+  }
+  return 0;
+}
 
+async function runInteractiveInit(
+  flags: InitFlags,
+  configPath: string,
+  ui: ReturnType<typeof detectUi>,
+): Promise<number> {
   const overwriteOutcome = await promptOverwriteWhenConfigExists(configPath, flags);
   if (overwriteOutcome === 'aborted') return 0;
 
@@ -385,17 +372,20 @@ export async function runInit(flags: InitFlags): Promise<number> {
     printInitNextSteps(nextStepAnswers, ui);
   }
 
-  // #2160: offer an immediate ad-hoc scan of the just-written flat config.
-  const { scanNow } = await prompts({
-    type: 'confirm',
-    name: 'scanNow',
-    message: 'Run a scan now?',
-    initial: true,
-    stdout: process.stderr,
-  });
-  if (scanNow === true && flags.onScanNow !== undefined) {
-    return flags.onScanNow();
-  }
+  return promptInitScanNow(flags);
+}
 
-  return 0;
+/**
+ * dino init [--force]
+ *
+ * Interactive onboarding — generates .dino.yml.
+ * INV-4: No tenant required. Runs before any config exists.
+ */
+export async function runInit(flags: InitFlags): Promise<number> {
+  const configPath = resolve(process.cwd(), '.dino.yml');
+  if (isNonInteractiveInit(flags, flags.terminal)) {
+    return runHeadlessInit(flags, configPath);
+  }
+  const ui = detectUi({ quiet: flags.quiet });
+  return runInteractiveInit(flags, configPath, ui);
 }
