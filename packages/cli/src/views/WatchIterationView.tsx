@@ -11,7 +11,7 @@ export interface WatchIterationViewProps {
   tenant: string;
   environment: string;
   iteration: number;
-  healthScore: number;
+  healthScore: number | null;
   operationCount: number;
   toolsRun: number;
   toolsCompleted: number;

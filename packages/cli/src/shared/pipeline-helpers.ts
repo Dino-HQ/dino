@@ -5,11 +5,10 @@
 
 import { applyInjections, type TemplateResolver } from '@dino/auth';
 import { resolveAndValidateDNS } from '@dino/core';
-import { calculateNumericScore, getModuleSlugs, logger, safeEndpointUrl } from '@dino/engine';
+import { getModuleSlugs, logger, safeEndpointUrl } from '@dino/engine';
 import { CliError } from './errors';
 import type {
   AccountRole,
-  CondensedReport,
   PipelineExecutor,
   TokenFactory,
   TokenResolver,
@@ -64,8 +63,10 @@ export function validateTools(tools: string[]): ToolName[] {
   if (invalid.length > 0) {
     throw new CliError(
       `Invalid tool name(s): ${invalid.join(', ')}. Valid: ${[...VALID_TOOL_NAMES].join(', ')}`,
-      1,
+      2,
       'Use --tools with comma-separated names from the list above.',
+      undefined,
+      'usage',
     );
   }
   return tools as ToolName[];
@@ -78,8 +79,10 @@ export function validateModules(modules: string[], tenantId: string): string[] {
   if (invalid.length > 0) {
     throw new CliError(
       `Invalid module(s): ${invalid.join(', ')}. Valid: ${[...validSlugs].join(', ')}`,
-      1,
+      2,
       'Check available modules with dino scan --verbose.',
+      undefined,
+      'usage',
     );
   }
   return modules;
@@ -258,21 +261,6 @@ export function createExecutor(
       })(),
     };
   };
-}
-
-/**
- * Global health score for CLI summaries. Inverted numericScore (100 = healthy, 0 = critical).
- * Different from catalog's per-operation computeHealthScore — this covers the entire run.
- * Extracted from watch.ts (#1013) so scan.ts can reuse it.
- */
-export function computeGlobalHealthScore(condensed: CondensedReport): number {
-  const allFindings = condensed.envelopes.flatMap((e) => e.findings);
-  const problemScore = calculateNumericScore(allFindings);
-  const score = 100 - Math.min(100, problemScore);
-  // Guard: if calculateNumericScore returned NaN (malformed input), default to 0
-  // so healthLabel shows "Critical (0)" rather than a misleading value.
-  if (!Number.isFinite(score)) return 0;
-  return Math.max(0, score);
 }
 
 /**

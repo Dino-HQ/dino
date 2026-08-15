@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { cosmiconfig } from 'cosmiconfig';
 import { z } from 'zod';
+import { CliError } from '../shared/errors';
 
 // B99 (#668): Zod schema for .dino.yml validation
 // #2160/#2161: auth is a union: none | header-token | oauth2 | legacy {enabled,role}
@@ -98,6 +99,62 @@ export interface DinoCliConfig {
   specUrl?: string | undefined;
 }
 
+const DINO_CONFIG_SEARCH_PLACES = [
+  'package.json',
+  '.dino.yml',
+  '.dino.yaml',
+  '.dinorc',
+  '.dinorc.json',
+  '.dinorc.yaml',
+  '.dinorc.yml',
+] as const;
+
+/**
+ * #2210 (completes D5): cosmiconfig throws an UNTYPED Error on a YAML syntax error;
+ * classify it as a config problem (exit 5), not a Dino crash (70). Bound the FINAL message
+ * (single-line, ≤200) so a large/multiline malformed file cannot dump. NOTE: slice the
+ * *composed* string, not the raw text — else the "Invalid .dino.yml: " prefix pushes it >200.
+ */
+function throwYamlParseCliError(err: unknown): never {
+  const raw = (err instanceof Error ? err.message : String(err)).replaceAll(/\s+/g, ' ').trim();
+  const message = `Invalid .dino.yml: ${raw}`.slice(0, 200);
+  throw new CliError(
+    message,
+    5,
+    'Fix the YAML syntax in .dino.yml (check indentation/quotes/brackets), or run dino init to regenerate it.',
+    err,
+    'config',
+  );
+}
+
+function assertTenantMatchesFlag(
+  options: LoadCliConfigOptions | undefined,
+  tenant: string | undefined,
+): void {
+  if (options?.tenantId != null && tenant != null && options.tenantId !== tenant) {
+    throw new CliError(
+      `Config tenant "${tenant}" does not match requested tenant "${options.tenantId}".`,
+      2,
+      `Use --tenant ${tenant}, or set the matching tenant in .dino.yml.`,
+      undefined,
+      'usage',
+    );
+  }
+}
+
+function stripAiKeyOutsideCwd(
+  filepath: string | undefined,
+  aiKey: string | undefined,
+): string | undefined {
+  if (!filepath) return aiKey;
+  const configDir = path.dirname(filepath);
+  const rel = path.relative(process.cwd(), configDir);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    return undefined;
+  }
+  return aiKey;
+}
+
 /**
  * Search for non-executable config from cwd upward.
  * Only YAML/JSON are allowed; dino.config.js and other executable files are excluded (#450).
@@ -107,49 +164,38 @@ export interface DinoCliConfig {
  */
 export async function loadCliConfig(options?: LoadCliConfigOptions): Promise<DinoCliConfig | null> {
   const explorer = cosmiconfig('dino', {
-    searchPlaces: [
-      'package.json',
-      '.dino.yml',
-      '.dino.yaml',
-      '.dinorc',
-      '.dinorc.json',
-      '.dinorc.yaml',
-      '.dinorc.yml',
-    ],
+    searchPlaces: [...DINO_CONFIG_SEARCH_PLACES],
   });
-  const result = await explorer.search();
+  let result;
+  try {
+    result = await explorer.search();
+  } catch (err) {
+    throwYamlParseCliError(err);
+  }
   if (!result?.config) return null;
 
   // B99 (#668): Validate config shape with Zod before using
   const parsed = DinoCliConfigSchema.safeParse(result.config);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ');
-    throw new Error(`Invalid .dino.yml config: ${issues}`);
-  }
-  const config = parsed.data;
-
-  const tenant = config.tenant;
-  if (options?.tenantId != null && tenant != null && options.tenantId !== tenant) {
-    throw new Error(
-      `Config tenant "${tenant}" does not match requested tenant "${options.tenantId}". Use --tenant ${tenant} or set tenant in config.`,
+    throw new CliError(
+      `Invalid .dino.yml config: ${issues}`,
+      5,
+      'Fix the reported field(s) in .dino.yml, or run dino init to regenerate it.',
+      parsed.error,
+      'config',
     );
   }
-
-  let aiKey = config.aiKey;
-  if (result.filepath) {
-    const configDir = path.dirname(result.filepath);
-    const rel = path.relative(process.cwd(), configDir);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      aiKey = undefined;
-    }
-  }
+  const config = parsed.data;
+  const tenant = config.tenant;
+  assertTenantMatchesFlag(options, tenant);
 
   return {
     tenant,
     environment: config.environment,
     format: config.format,
     snapshotDir: config.snapshotDir,
-    aiKey,
+    aiKey: stripAiKeyOutsideCwd(result.filepath, config.aiKey),
     autonomy: config.autonomy,
     // #2160: pass the auth union through verbatim (drop enabled-only narrowing)
     auth: config.auth,

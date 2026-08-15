@@ -13,6 +13,7 @@ import {
   readGlobalDinoConfigSync,
   setGlobalTelemetryLevel,
 } from '../config/global-dino-config';
+import { CliError } from '../shared/errors';
 
 function printTelemetryStatus(): void {
   const cfg = readGlobalDinoConfigSync();
@@ -45,8 +46,13 @@ export async function runConfigFromArgv(argv: string[]): Promise<number> {
   const action = argv.at(2);
 
   if (sub !== 'telemetry') {
-    console.error('Usage: dino config telemetry [off|crash|all]');
-    return 1;
+    throw new CliError(
+      'Usage: dino config telemetry [off|crash|all]',
+      2,
+      undefined,
+      undefined,
+      'usage',
+    );
   }
 
   if (action === undefined || action === '') {
@@ -60,9 +66,13 @@ export async function runConfigFromArgv(argv: string[]): Promise<number> {
   const mapped = lower === 'on' ? 'all' : lower;
 
   if (!isTelemetryLevel(mapped)) {
-    console.error(`Unknown telemetry level: "${action}"`);
-    console.error('Usage: dino config telemetry [off|crash|all]');
-    return 1;
+    throw new CliError(
+      `Unknown telemetry level: "${action}"`,
+      2,
+      'Usage: dino config telemetry [off|crash|all]',
+      undefined,
+      'usage',
+    );
   }
 
   setGlobalTelemetryLevel(mapped);

@@ -10,10 +10,12 @@ import {
   buildCatalog,
   renderCatalogMarkdown,
   renderCatalogJson,
-  safePath,
 } from '@dino/engine';
 import { buildAdHocOperationMappings } from './scan-helpers';
 import { discoverOperationsDetailed, withTracking } from '../shared/base-command';
+import { emitResult } from '../shared/emit-result';
+import { neutralizeCatalogCustomerFields } from '../shared/neutralize';
+import { safeUserPath } from '../shared/safe-user-path';
 import { detectUi, createSpinner } from '../shared/ui';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 
@@ -26,9 +28,11 @@ export interface DocsFlags extends CommonFlags {
 
 function formatCatalogOutput(catalog: ReturnType<typeof buildCatalog>, flags: DocsFlags): string {
   const format = flags.format ?? 'markdown';
+  const ctx = format === 'json' ? 'json' : 'markdown';
+  const safeCatalog = catalog.map((entry) => neutralizeCatalogCustomerFields(entry, ctx));
   if (format === 'json') {
     return JSON.stringify(
-      renderCatalogJson(catalog, {
+      renderCatalogJson(safeCatalog, {
         title: flags.title,
         includeAiDescriptions: flags.ai,
         healthScoreThreshold: flags.threshold,
@@ -37,7 +41,7 @@ function formatCatalogOutput(catalog: ReturnType<typeof buildCatalog>, flags: Do
       2,
     );
   }
-  return renderCatalogMarkdown(catalog, {
+  return renderCatalogMarkdown(safeCatalog, {
     title: flags.title ?? 'API Intelligence Report',
     includeAiDescriptions: flags.ai ?? false,
     healthScoreThreshold: flags.threshold,
@@ -78,11 +82,11 @@ async function executeDocsBody(context: CommandContext, flags: DocsFlags): Promi
   spinner.succeed('Docs generated');
 
   if (flags.output) {
-    const resolvedOutput = safePath(flags.output);
+    const resolvedOutput = safeUserPath(flags.output, '--output');
     await safeWriteFile(resolvedOutput, output, process.cwd());
   } else {
-    // #172: --quiet strips chrome only — the report always goes to stdout
-    console.info(output);
+    // #172: --quiet strips chrome only — the report always goes to stdout via emitResult (#2172)
+    emitResult(output, { format: flags.format === 'json' ? 'json' : 'markdown' });
   }
 
   return 0;

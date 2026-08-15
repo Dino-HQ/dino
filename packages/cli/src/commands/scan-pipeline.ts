@@ -1,6 +1,6 @@
-// @internal — extracted from (parent module) for max-lines compliance. Tested via (parent module).test.ts
+// @internal - extracted from (parent module) for max-lines compliance. Tested via (parent module).test.ts
 /**
- * @dino/cli — scan pipeline execution, catalog building, and output rendering.
+ * @dino/cli - scan pipeline execution, catalog building, and output rendering.
  * Extracted from scan-helpers.ts for max-lines compliance.
  */
 
@@ -10,12 +10,11 @@ import {
   hasOperationsFile,
   buildCatalog,
   renderCatalogMarkdown,
-  renderCatalogJson,
+  buildScanResultV1,
   summarizeCatalogHealth,
   buildSnapshot,
   saveSnapshot,
   runPipeline,
-  safePath,
   logger,
   type PipelineExecutor,
   type TokenResolver,
@@ -23,8 +22,13 @@ import {
 } from '@dino/engine';
 import { buildAdHocRegistry, buildAdHocOperationMappings } from './scan-helpers';
 import { shouldRenderInkView } from '../ink/InkRender';
+import { emitResult } from '../shared/emit-result';
+import { neutralizeCatalogCustomerFields } from '../shared/neutralize';
+import { resolveExitCode, type OutcomeKind } from '../shared/outcome';
 import { DEFAULT_REASONING_OPTS, perOpFindingsFromEnv } from '../shared/pipeline-helpers';
+import { safeUserPath } from '../shared/safe-user-path';
 import { detectUi } from '../shared/ui';
+import { CLI_VERSION } from '../version';
 import type { ScanFlags } from './scan';
 import type { CommandContext } from '../shared/base-command';
 import type { createRestExecutor, DefaultExpectationsMap, ExpectationsMap } from '@dino/agents';
@@ -119,7 +123,7 @@ function warnIfScanReportDegraded(result: ScanPipelineRunResult): void {
   }
 }
 
-function buildScanCatalogFromResult(params: {
+export function buildScanCatalogFromResult(params: {
   result: ScanPipelineRunResult;
   graphqlOps: GraphQLOperation[];
   context: CommandContext;
@@ -147,7 +151,7 @@ async function persistScanSnapshot(params: {
   context: CommandContext;
 }): Promise<void> {
   const { resolvedConfig, graphqlOps, context } = params;
-  const snapshotDir = safePath(resolvedConfig.snapshotDir);
+  const snapshotDir = safeUserPath(resolvedConfig.snapshotDir, '--snapshot-dir');
   const snapshot = buildSnapshot({
     introspection: graphqlOps,
     tenantId: context.tenantId,
@@ -160,7 +164,7 @@ async function persistScanSnapshot(params: {
   });
 }
 
-// #2143: the scan report is a QA artifact — title it accordingly. `dino docs`
+// #2143: the scan report is a QA artifact - title it accordingly. `dino docs`
 // keeps its own default (API documentation), so we thread the title here, not in
 // the shared renderer default.
 const SCAN_REPORT_TITLE = 'API Quality Report';
@@ -168,19 +172,28 @@ const SCAN_REPORT_TITLE = 'API Quality Report';
 /** #202: discovery fidelity threaded into the durable scan report */
 type ScanIntrospectionLevel = 'full' | 'shallow' | 'minimal';
 
+function isReducedCoverage(level?: ScanIntrospectionLevel): boolean {
+  return level === 'minimal' || level === 'shallow';
+}
+
 function formatScanCatalogForOutput(
   catalog: ReturnType<typeof buildCatalog>,
   format: ResolvedScanConfig['format'],
   introspectionLevel?: ScanIntrospectionLevel,
 ): string {
+  const ctx = format === 'json' ? 'json' : 'markdown';
+  const safeCatalog = catalog.map((entry) => neutralizeCatalogCustomerFields(entry, ctx));
   if (format === 'json') {
-    return JSON.stringify(
-      renderCatalogJson(catalog, { title: SCAN_REPORT_TITLE, introspectionLevel }),
-      null,
-      2,
-    );
+    // #2174: versioned ScanResultV1 — validate-before-emit; #2173 partial signal lives in builder.
+    const result = buildScanResultV1(safeCatalog, {
+      title: SCAN_REPORT_TITLE,
+      introspectionLevel,
+      toolVersion: CLI_VERSION,
+      evidence: 'none',
+    });
+    return JSON.stringify(result, null, 2);
   }
-  return renderCatalogMarkdown(catalog, { title: SCAN_REPORT_TITLE, introspectionLevel });
+  return renderCatalogMarkdown(safeCatalog, { title: SCAN_REPORT_TITLE, introspectionLevel });
 }
 
 async function tryRenderScanInkSummary(params: {
@@ -201,15 +214,18 @@ async function tryRenderScanInkSummary(params: {
     const { ScanView } = await import('../views/ScanView');
     // #2143 + #2139: the TTY summary MUST match the report. Health comes from the canonical
     // summarizeCatalogHealth (the same verdict the report prints); the operation count comes
-    // from the catalog (renderCatalogJson.operationCount) — never graphqlOps.length, which is
-    // 0 for a REST scan.
-    const reportStats = renderCatalogJson(catalog) as { operationCount: number };
+    // from the ScanResultV1 core (#2174) - never graphqlOps.length, which is 0 for a REST scan.
+    const reportStats = buildScanResultV1(catalog, {
+      title: SCAN_REPORT_TITLE,
+      introspectionLevel,
+      toolVersion: CLI_VERSION,
+    });
     const h = summarizeCatalogHealth(catalog);
     const findingCount = (result.condensed.envelopes ?? []).flatMap((e) => e.findings).length;
     const partial = introspectionLevel === 'minimal' || introspectionLevel === 'shallow';
     renderViewSafe(
       React.createElement(ScanView, {
-        operationCount: reportStats.operationCount,
+        operationCount: reportStats.core.operationCount,
         healthScore: h.score,
         healthVerdict: h.verdict,
         healthLevel: h.level,
@@ -223,7 +239,7 @@ async function tryRenderScanInkSummary(params: {
       }),
     );
   } catch (error_) {
-    // #2143: Ink render failure is internal — the markdown report already printed to stdout.
+    // #2143: Ink render failure is internal - the markdown report already printed to stdout.
     // Log at debug (surfaced only with --debug), off the user's default output.
     logger.debug(
       `[dino] Ink scan view failed: ${error_ instanceof Error ? error_.message : String(error_)}`,
@@ -293,17 +309,23 @@ async function outputScanResults(params: {
 
   await persistScanSnapshot({ resolvedConfig, graphqlOps, context });
 
-  // #2143: the report IS the result — always emit it to stdout, even with --quiet.
+  // #2143: the report IS the result - always emit it to stdout, even with --quiet.
   // `--quiet` suppresses chrome (spinner, notices, the Ink summary), never the result.
+  // #2172: sole stdout writer is emitResult (INV-1).
   const output = formatScanCatalogForOutput(catalog, resolvedConfig.format, introspectionLevel);
-  console.info(output);
+  emitResult(output, {
+    format: resolvedConfig.format === 'json' ? 'json' : 'markdown',
+  });
 
   // #2143: in a TTY, render the summary card (mirrors the report's op count + canonical
-  // health via summarizeCatalogHealth). No console footer — it was redundant with the report
+  // health via summarizeCatalogHealth). No console footer - it was redundant with the report
   // Summary and, on stdout, polluted `> report.md`.
   await tryRenderScanInkSummary({ flags, resolvedConfig, result, catalog, introspectionLevel });
 
-  return getScanExitCode(result, flags.failOnHigh);
+  return getScanExitCode(result, flags.failOnHigh === true, {
+    acceptPartial: flags.acceptPartial === true,
+    introspectionLevel,
+  });
 }
 
 export async function runPipelineCatalogSnapshotAndPrint(
@@ -322,14 +344,33 @@ export async function runPipelineCatalogSnapshotAndPrint(
   });
 }
 
-/** Exit code from pipeline result (#572, #1012). Exported for regression tests. */
+export interface ScanExitCodeOptions {
+  acceptPartial?: boolean;
+  introspectionLevel?: ScanIntrospectionLevel | undefined;
+}
+
+/** Exit code from pipeline result (#572, #1012, #2173). Exported for regression tests. */
 export function getScanExitCode(
   result: { report: { degraded?: boolean; envelopes?: ResultEnvelope[] } },
   failOnHigh: boolean = false,
+  options?: ScanExitCodeOptions,
 ): number {
-  if (result.report.degraded) return 1;
-  if (failOnHigh && hasHighOrCriticalFindings(result.report.envelopes)) return 1;
-  return 0;
+  const kinds: OutcomeKind[] = [];
+  const partial = result.report.degraded === true || isReducedCoverage(options?.introspectionLevel);
+  if (partial) kinds.push('partial');
+  if (failOnHigh && hasHighOrCriticalFindings(result.report.envelopes)) {
+    kinds.push('policy');
+  }
+  const first = kinds[0];
+  if (first === undefined) {
+    return resolveExitCode({ kind: 'clean' });
+  }
+  const rest = kinds.slice(1);
+  return resolveExitCode({
+    kind: first,
+    ...(rest.length > 0 ? { also: rest } : {}),
+    ...(options?.acceptPartial === true ? { acceptPartial: true } : {}),
+  });
 }
 
 function hasHighOrCriticalFindings(envelopes?: ResultEnvelope[]): boolean {

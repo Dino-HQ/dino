@@ -38,18 +38,19 @@ Common options:
   --version, -v       Show version number
 
 Scan options:
-  --fail-on-high          Exit 1 if HIGH or CRITICAL findings exist
+  --fail-on-high          Exit 3 if HIGH or CRITICAL findings exist
+  --accept-partial        Treat a reduced-coverage (partial) scan as success: exit 0 instead of 6
   --header <"Name: Value"> Send a static auth header (repeatable)
   --token <token>          Shortcut for --header "Authorization: Bearer <token>"
 
 Lint options:
-  --fail-on-undocumented  Exit 1 if new undocumented operations are found
+  --fail-on-undocumented  Exit 3 if new undocumented operations are found
 
 Diff options:
-  --fail-on-breaking      Exit 1 if breaking changes are detected
+  --fail-on-breaking      Exit 3 if breaking changes are detected
 
 Changelog options:
-  --fail-on-breaking      Exit 1 if breaking changes are detected
+  --fail-on-breaking      Exit 3 if breaking changes are detected
   --from <id>             Compare against a specific snapshot ID
 
 Watch options:

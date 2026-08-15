@@ -9,6 +9,7 @@ import { safePath, createTokenFactory, createAuthAdapter } from '@dino/engine';
 import { shouldRenderInkView } from '../ink/InkRender';
 import { getEndpoint } from '../shared/base-command';
 import { CliError } from '../shared/errors';
+import { outcomeKindFromIterationError } from '../shared/outcome';
 import {
   DEFAULT_REASONING_OPTS,
   validateTools,
@@ -76,8 +77,10 @@ function validateInterval(interval: number): void {
   if (!Number.isFinite(interval) || interval <= 0) {
     throw new CliError(
       `Invalid interval: ${interval}. Must be a positive number of seconds.`,
-      1,
+      2,
       'Use a positive number of seconds, e.g. --interval 300.',
+      undefined,
+      'usage',
     );
   }
 }
@@ -107,8 +110,10 @@ export function resolveMaxIterations(flags: WatchFlags): number {
     if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
       throw new CliError(
         `Invalid --iterations: "${flags.iterations}". Must be a positive integer.`,
-        1,
+        2,
         'Use a positive integer, e.g. --iterations 5.',
+        undefined,
+        'usage',
       );
     }
     return n;
@@ -121,8 +126,10 @@ export function buildReasoningConfig(reasoning: boolean | undefined, aiKey: stri
     if (aiKey === undefined) {
       throw new CliError(
         'Reasoning enabled but no API key provided. Set DINO_AI_KEY or pass --ai-key.',
-        1,
+        2,
         'Provide an Anthropic API key when using --reasoning.',
+        undefined,
+        'usage',
       );
     }
     return { ...DEFAULT_REASONING_OPTS, enabled: true as const, apiKey: aiKey };
@@ -165,7 +172,7 @@ export function buildDegradedEntry(iteration: number, context: CommandContext): 
     toolsCompleted: 0,
     toolsFailed: 0,
     degraded: true,
-    healthScore: 0,
+    healthScore: null,
     schemaChanges: { added: 0, removed: 0, modified: 0, breakingChanges: 0 },
   };
 }
@@ -183,8 +190,15 @@ export function throwIfCircuitBroken(
 ): void {
   if (!isCircuitBroken(consecutiveFailures, cfg)) return;
   const msg = iterError instanceof Error ? iterError.message : String(iterError);
+  const kind = outcomeKindFromIterationError(iterError);
+  const isTransient = kind === 'transient';
   throw new CliError(
     `[watch] ${consecutiveFailures} consecutive failures: exiting. Last error: ${msg}`,
+    isTransient ? 4 : 70,
+    undefined,
+    iterError,
+    isTransient ? 'transient' : 'crash',
+    isTransient ? 'transient' : 'permanent',
   );
 }
 
@@ -192,7 +206,7 @@ export interface IterationSummaryOpts {
   iteration: number;
   context: CommandContext;
   entry: WatchHistoryEntry;
-  healthScore: number;
+  healthScore: number | null;
   healthLevel: EnvelopeSeverityLevel;
   changes: { added: number; removed: number; modified: number; breakingChanges: number };
   result: { durationMs: number; metadata: { degraded: boolean } };
@@ -275,6 +289,10 @@ function validateWatchInputs(flags: WatchFlags, intervalSec: number, historyLimi
   if (!Number.isFinite(historyLimit) || historyLimit < 1 || !Number.isInteger(historyLimit)) {
     throw new CliError(
       `Invalid --history-limit: "${flags.historyLimit}". Must be a positive integer.`,
+      2,
+      'Use a positive integer, e.g. --history-limit 50.',
+      undefined,
+      'usage',
     );
   }
   const maxConsecutiveFailures = Number(
@@ -287,6 +305,10 @@ function validateWatchInputs(flags: WatchFlags, intervalSec: number, historyLimi
   ) {
     throw new CliError(
       `Invalid --max-consecutive-failures: "${flags.maxConsecutiveFailures}". Must be a positive integer.`,
+      2,
+      'Use a positive integer, e.g. --max-consecutive-failures 5.',
+      undefined,
+      'usage',
     );
   }
   return maxConsecutiveFailures;
@@ -327,6 +349,10 @@ export function validateAndBuildConfig(
   if (flags.reasoning && !aiKey) {
     throw new CliError(
       'AI reasoning requires an API key. Set DINO_AI_KEY env var or add aiKey to .dino.yml',
+      2,
+      'Provide an Anthropic API key when using --reasoning.',
+      undefined,
+      'usage',
     );
   }
 

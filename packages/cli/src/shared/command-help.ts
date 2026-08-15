@@ -4,6 +4,7 @@
  * Options here are verified against each command's own flag handling — not the top-level banner.
  */
 import { recordGet } from '@dino/core';
+import { emitResult } from './emit-result';
 
 interface CommandHelp {
   summary: string;
@@ -25,10 +26,11 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
       '--spec-url <url|path> OpenAPI spec: required when --protocol rest',
       '--header <"Name: Value">  Send a static auth header (repeatable)',
       '--token <token>        Shortcut for --header "Authorization: Bearer <token>"',
-      '--fail-on-high        Exit 1 if HIGH or CRITICAL findings exist',
+      '--fail-on-high        Exit 3 if HIGH or CRITICAL findings exist',
       '--tools <list>        Comma-separated tools to run (default: all)',
       '--modules <list>      Comma-separated modules to scan (default: all)',
       '--reasoning           Enable AI reasoning (requires an Anthropic API key)',
+      '--accept-partial      Treat a reduced-coverage (partial) scan as success: exit 0 instead of 6',
     ],
   },
   watch: {
@@ -49,18 +51,18 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
   diff: {
     summary: 'Compare the current schema against a saved snapshot.',
     usage: 'dino diff --tenant <id> [options]',
-    options: ['--fail-on-breaking    Exit 1 if breaking changes are detected'],
+    options: ['--fail-on-breaking    Exit 3 if breaking changes are detected'],
   },
   lint: {
     summary: 'Check schema descriptions (fails on new undocumented operations).',
     usage: 'dino lint --tenant <id> [options]',
-    options: ['--fail-on-undocumented   Exit 1 if new undocumented operations are found'],
+    options: ['--fail-on-undocumented   Exit 3 if new undocumented operations are found'],
   },
   changelog: {
     summary: 'Generate a changelog from schema snapshot diffs.',
     usage: 'dino changelog --tenant <id> [options]',
     options: [
-      '--fail-on-breaking    Exit 1 if breaking changes are detected',
+      '--fail-on-breaking    Exit 3 if breaking changes are detected',
       '--from <id>           Compare against a specific snapshot ID',
     ],
   },
@@ -102,8 +104,10 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   config: {
     summary: 'Configure CLI preferences (e.g. telemetry).',
-    usage: 'dino config [get|set] [key] [value]',
-    options: [],
+    usage: 'dino config telemetry [off|crash|all]',
+    options: [
+      'telemetry [off|crash|all]   Set the telemetry level (omit the level to show the current one)',
+    ],
   },
 };
 
@@ -116,6 +120,7 @@ export function printCommandHelp(command: string): boolean {
     lines.push('', 'Options:', ...help.options.map((o) => `  ${o}`));
   }
   lines.push('', COMMON_OPTIONS_HINT);
-  console.info(lines.join('\n'));
+  // #2172: command help is a requested stdout RESULT
+  emitResult(lines.join('\n'));
   return true;
 }

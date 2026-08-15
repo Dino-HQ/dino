@@ -16,8 +16,9 @@ import { buildAuthHeaders } from './auth-headers';
 import { CliError } from './errors';
 import { readIntrospectionLevel } from './introspection-level';
 import { oauth2DescriptorFromConfig, resolveAuthHeaders } from './oauth2-auth';
+import { boundErrorMessage } from './outcome';
+import { reportCaughtFailure } from './report-failure';
 import { requireStringFlag } from './require-string-flag';
-import { printError, detectUi } from './ui';
 import { getEffectiveTelemetryLevel, readGlobalDinoConfigSync } from '../config/global-dino-config';
 import { CLI_VERSION } from '../version';
 import type { OAuth2AuthDescriptor } from './oauth2-auth';
@@ -264,7 +265,7 @@ export interface WithTrackingOptions {
 
 /**
  * Wrap a command body with analytics tracking (invoked/completed/failed).
- * Returns the exit code from the body, or 1 on error.
+ * Returns the body's exit code on success; thrown errors resolve via reportCaughtFailure.
  */
 export async function withTracking(opts: WithTrackingOptions): Promise<number> {
   // `quiet` is accepted on the options for API symmetry but no longer gates error output
@@ -290,8 +291,6 @@ export async function withTracking(opts: WithTrackingOptions): Promise<number> {
     return exitCode;
   } catch (err) {
     const durationMs = Date.now() - startMs; // determinism:allowed
-    // B15 (#588): Read CliError.exitCode instead of hardcoding 1
-    const exitCode = err instanceof CliError ? err.exitCode : 1;
     context.tracker.track({
       type: 'cli.command.failed',
       timestamp: new Date().toISOString(), // determinism:allowed
@@ -299,23 +298,11 @@ export async function withTracking(opts: WithTrackingOptions): Promise<number> {
       properties: {
         command,
         durationMs,
-        error: sanitizeEventError(err instanceof Error ? err.message : String(err)),
+        error: sanitizeEventError(boundErrorMessage(err)),
         errorClass: err instanceof Error ? err.name : 'Unknown',
       },
     });
-    // #2143: errors are not chrome. `--quiet` suppresses progress (spinner, notices, logs),
-    // never the failure reason — a silent nonzero exit is undebuggable. Always surface the
-    // error on stderr (forced non-quiet ui so printError prints); stdout stays untouched.
-    const ui = detectUi({
-      quiet: false,
-      noColor: (flagsPayload as { noColor?: boolean }).noColor === true,
-    });
-    printError(
-      err instanceof Error ? err : new Error(String(err)),
-      ui,
-      Boolean((flagsPayload as { debug?: boolean }).debug),
-    );
-    return exitCode;
+    return reportCaughtFailure(err, flagsPayload);
   }
 }
 
@@ -339,8 +326,10 @@ function buildAdHocTenantConfig(
     if (specPath === undefined || specPath.trim() === '') {
       throw new CliError(
         'protocol: rest requires specUrl (a URL or file path to your OpenAPI spec).',
-        1,
+        2,
         'Add specUrl: <openapi-url-or-path> to your .dino.yml, or use protocol: graphql.',
+        undefined,
+        'usage',
       );
     }
     api = { name: 'default', type: 'rest', source: 'openapi', specPath };
@@ -427,8 +416,10 @@ export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): 
     throw new CliError(
       'tenant is required (--tenant <id> or set in .dino.yml). ' +
         'Or provide endpoint + protocol for an ad-hoc scan.',
-      1,
+      2,
       'Run dino init to create a .dino.yml config.',
+      undefined,
+      'usage',
     );
   }
   const tenantConfig = loadTenantById(tenantId);
