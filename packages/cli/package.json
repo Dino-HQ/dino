@@ -1,6 +1,6 @@
 {
   "name": "@dino-hq/cli",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "type": "module",
   "description": "The deterministic verification layer for APIs. An independent, reproducible verdict on whether an API change is correct, secure, and safe to ship — for AI agents, CI, and developers.",
   "license": "MIT",

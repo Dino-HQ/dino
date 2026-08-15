@@ -6,7 +6,8 @@
 import { loadCliConfig } from '../config/loader';
 import { shouldRenderInkView } from '../ink/InkRender';
 import { emitResult } from '../shared/emit-result';
-import { detectUi, colorize, createSpinner, printNotice } from '../shared/ui';
+import { reportCaughtFailure } from '../shared/report-failure';
+import { detectUi, createSpinner, printNotice } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { UiOptions } from '../shared/ui';
 
@@ -52,7 +53,8 @@ async function showValidateResult(
  * dino validate
  *
  * Validates .dino.yml against the Zod schema (same schema as loadCliConfig).
- * Prints field-level errors. Exit 0 = valid, exit 1 = invalid.
+ * Prints field-level errors. Exit 0 = valid; an invalid config exits 5 (config)
+ * with a stderr JSON envelope via the canonical failure emitter (#348).
  *
  * INV-2: Uses the same Zod schema as loadCliConfig() — no second source of truth.
  * INV-4: Does NOT load tenant config or make network calls.
@@ -79,11 +81,9 @@ export async function runValidate(_context: unknown, flags: ValidateFlags): Prom
     return 0;
   } catch (err) {
     spinner.fail('Config invalid');
-    if (err instanceof Error) {
-      console.error(colorize(`✗ ${err.message}`, 'red', ui));
-    } else {
-      console.error(colorize(`✗ Config validation failed: ${String(err)}`, 'red', ui));
-    }
-    return 1;
+    // #348: an invalid .dino.yml is a config error (exit 5 + stderr envelope), not a bare 1.
+    // loadCliConfig already throws CliError(kind:'config'); route it through the canonical
+    // emitter so validate matches `dino scan` and every other command (single source of truth).
+    return reportCaughtFailure(err, { noColor: flags.noColor === true });
   }
 }

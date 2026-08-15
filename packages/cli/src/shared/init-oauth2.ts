@@ -86,16 +86,20 @@ export function buildOAuth2AuthAnswers(answers: {
   };
 }
 
-export function appendOAuth2YamlLines(lines: string[], auth: InitOAuth2Answers): void {
+export function appendOAuth2YamlLines(
+  lines: string[],
+  auth: InitOAuth2Answers,
+  emitScalar: (value: string) => string = (v) => v,
+): void {
   lines.push(
     'auth:',
     '  type: oauth2',
-    `  tokenEndpoint: ${auth.tokenEndpoint}`,
-    `  clientIdEnv: ${auth.clientIdEnv}`,
-    `  clientSecretEnv: ${auth.clientSecretEnv}`,
+    `  tokenEndpoint: ${emitScalar(auth.tokenEndpoint)}`,
+    `  clientIdEnv: ${emitScalar(auth.clientIdEnv)}`,
+    `  clientSecretEnv: ${emitScalar(auth.clientSecretEnv)}`,
   );
   if (auth.scope && auth.scope.length > 0) {
-    lines.push(`  scope: ${auth.scope}`);
+    lines.push(`  scope: ${emitScalar(auth.scope)}`);
   }
 }
 
