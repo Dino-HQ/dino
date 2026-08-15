@@ -14,6 +14,7 @@ import { renderDiffJson } from '../formatters/json';
 import { renderDiffMarkdown } from '../formatters/markdown';
 import { shouldRenderInkView } from '../ink/InkRender';
 import { discoverOperationsDetailed, withTracking } from '../shared/base-command';
+import { emitResult } from '../shared/emit-result';
 import { detectUi, createSpinner, printNotice } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
@@ -114,8 +115,8 @@ async function executeDiffBody(context: CommandContext, flags: DiffFlags): Promi
   const format = flags.format ?? 'markdown';
   const markdownUi = format === 'json' ? undefined : ui;
   const output = format === 'json' ? renderDiffJson(diff) : renderDiffMarkdown(diff, markdownUi);
-  // #172: --quiet strips chrome only — the diff result always goes to stdout
-  console.info(output);
+  // #172: --quiet strips chrome only — the diff result always goes to stdout via emitResult (#2172)
+  emitResult(output, { format: format === 'json' ? 'json' : 'markdown' });
 
   let inkFooter = false;
   if (
@@ -130,7 +131,7 @@ async function executeDiffBody(context: CommandContext, flags: DiffFlags): Promi
     printNotice('Next: run dino watch --autonomy enforce to block breaking changes in CI.', ui);
   }
 
-  return flags.failOnBreaking && diff.summary.breakingChanges > 0 ? 1 : 0;
+  return flags.failOnBreaking && diff.summary.breakingChanges > 0 ? 3 : 0;
 }
 
 /**

@@ -29,7 +29,7 @@ const WatchHistoryEntrySchema = z.object({
   toolsCompleted: z.number(),
   toolsFailed: z.number(),
   degraded: z.boolean(),
-  healthScore: z.number(),
+  healthScore: z.number().nullable(),
   schemaChanges: z.object({
     added: z.number(),
     removed: z.number(),
@@ -53,7 +53,7 @@ export interface WatchHistoryEntry {
   toolsCompleted: number;
   toolsFailed: number;
   degraded: boolean;
-  healthScore: number;
+  healthScore: number | null;
   schemaChanges: {
     added: number;
     removed: number;

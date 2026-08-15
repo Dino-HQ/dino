@@ -76,19 +76,28 @@ function certificateIssuerFromApiHint(expectedIssuer: string | null | undefined)
 export async function runVerify(flags: Record<string, unknown>): Promise<number> {
   const scanId = verifyScanIdFrom(flags);
   if (!scanId) {
-    console.error(
+    throw new CliError(
       'Usage: dino verify <scan-id> --cloud-endpoint <url> --token <tenant-session-jwt>',
+      2,
+      undefined,
+      undefined,
+      'usage',
     );
-    return 1;
   }
 
   const cloudEndpoint = optionalNonEmptyString(flags['cloud-endpoint']);
   const token = optionalNonEmptyString(flags['token']);
   if (!cloudEndpoint) {
-    throw new CliError('--cloud-endpoint is required for verification');
+    throw new CliError(
+      '--cloud-endpoint is required for verification',
+      2,
+      undefined,
+      undefined,
+      'usage',
+    );
   }
   if (!token) {
-    throw new CliError('--token is required for verification');
+    throw new CliError('--token is required for verification', 2, undefined, undefined, 'usage');
   }
 
   const base = cloudEndpoint.replace(/\/$/, '');
@@ -100,7 +109,7 @@ export async function runVerify(flags: Record<string, unknown>): Promise<number>
     return 1;
   }
   if (loaded.kind === 'http_error') {
-    throw new CliError(`Failed to fetch attestation: HTTP ${String(loaded.status)}`);
+    throw new CliError(`Failed to fetch attestation: HTTP ${String(loaded.status)}`, 70);
   }
   if (loaded.kind === 'none') {
     console.info('Scan completed without attestation.');
@@ -109,7 +118,7 @@ export async function runVerify(flags: Record<string, unknown>): Promise<number>
 
   const dcgRes = await fetch(`${base}/v1/scans/${encodeURIComponent(scanId)}/dcg`, { headers }); // determinism:allowed
   if (!dcgRes.ok) {
-    throw new CliError(`Failed to fetch scan result: HTTP ${String(dcgRes.status)}`);
+    throw new CliError(`Failed to fetch scan result: HTTP ${String(dcgRes.status)}`, 70);
   }
   const resultJson = await dcgRes.text();
 

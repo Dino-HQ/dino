@@ -12,6 +12,7 @@ import ora from 'ora';
 import { healthVerdict } from '@dino/engine';
 import { DINO_ASCII, DINO_TAGLINE, DINO_BRAND_HEX } from './brand';
 import { CliError } from './errors';
+import { boundErrorMessage, isUpstreamClientError } from './outcome';
 import type { EnvelopeSeverityLevel } from '@dino/core';
 import type { Ora } from 'ora';
 
@@ -169,7 +170,8 @@ export function printError(err: Error, ui: UiOptions, debug?: boolean): void {
     console.error(colorize(`   ${hint}`, 'dim', ui));
   }
   if (debug && err.stack) {
-    console.error(colorize(err.stack, 'dim', ui));
+    const stackText = isUpstreamClientError(err) ? boundErrorMessage(err) : err.stack;
+    console.error(colorize(stackText, 'dim', ui));
   }
 }
 
@@ -244,7 +246,7 @@ export function humanizeError(err: unknown): string {
   if (message.includes('fetch failed')) {
     return "Couldn't reach the endpoint. Check the URL and your network.";
   }
-  return message;
+  return boundErrorMessage(err);
 }
 
 /**

@@ -22,9 +22,10 @@ import { loadCliConfig } from './config/loader';
 import { parseArgs, buildContext } from './shared/base-command';
 import { quickstartText, usageText } from './shared/cli-usage';
 import { printCommandHelp } from './shared/command-help';
+import { emitResult } from './shared/emit-result';
 import { CliError } from './shared/errors';
 import { runInitScanNow } from './shared/init-scan-now';
-import { printError, detectUi } from './shared/ui';
+import { reportCaughtFailure } from './shared/report-failure';
 import { CLI_VERSION } from './version';
 import type { CommandContext, MergedFlags } from './shared/base-command';
 
@@ -58,7 +59,7 @@ export {
   checkEndpoint,
   remainingInitPromptQuestions,
 } from './commands/init';
-export type { InitFlags } from './commands/init';
+export type { InitFlags, InitAuthAnswers } from './commands/init';
 export type { DinoCliConfig } from './config/loader';
 export type { CommonFlags, CommandContext, MergedFlags } from './shared/base-command';
 export {
@@ -84,27 +85,42 @@ export {
   printHeaderBanner,
 } from './shared/ui';
 export type { UiOptions, ChalkColor, HeaderBannerMeta } from './shared/ui';
-export { computeGlobalHealthScore, withStaticHeaders } from './shared/pipeline-helpers';
-
-// Ink design system (#1014)
-export { DINO_THEME } from './ink/theme';
-export type { DinoColor } from './ink/theme';
-export { DinoHeader } from './ink/DinoHeader';
-export { SummaryCard } from './ink/SummaryCard';
-export type { SummaryStat } from './ink/SummaryCard';
-export { HealthBadge } from './ink/HealthBadge';
-export { StatusIcon } from './ink/StatusIcon';
-export type { StatusKind } from './ink/StatusIcon';
-export { DinoSpinner } from './ink/DinoSpinner';
-export { ErrorPanel } from './ink/ErrorPanel';
-export { Divider } from './ink/Divider';
-export { ProgressBar } from './ink/ProgressBar';
-export { NextStep } from './ink/NextStep';
-export { FindingsTable } from './ink/FindingsTable';
-export type { FindingRow } from './ink/FindingsTable';
-export { DiffBadge } from './ink/DiffBadge';
-export type { DiffBadgeType } from './ink/DiffBadge';
-export { renderViewSafe, shouldRenderInkView } from './ink/InkRender';
+export { emitResult, setResultSink } from './shared/emit-result';
+export type { EmitResultOptions } from './shared/emit-result';
+export {
+  neutralize,
+  neutralizeCatalogCustomerFields,
+  stripControlsAndAnsi,
+} from './shared/neutralize';
+export type { NeutralizeContext } from './shared/neutralize';
+export {
+  resolveExitCode,
+  envelopeFor,
+  outcomeFromCaughtError,
+  outcomeFromRateLimitLegs,
+  outcomeKindFromIterationError,
+  isTransientError,
+  emitEnvelope,
+  boundErrorMessage,
+  isUpstreamClientError,
+} from './shared/outcome';
+export type { OutcomeKind, RuntimeOutcome, RuntimeOutcomeError } from './shared/outcome';
+export type { ContractFormat, LiveLeg, ContractVerdict } from './shared/output-contract';
+export {
+  checkJsonFraming,
+  detectLoggerEnvelopeLeak,
+  checkExitContract,
+  checkNoSecretLeak,
+  checkDeterministicCores,
+  judgeContract,
+} from './shared/output-contract';
+export { withStaticHeaders } from './shared/pipeline-helpers';
+// prettier-ignore
+export { buildScanSummarySection, buildPrComment, assertOutputClean, PR_COMMENT_MARKER, PR_COMMENT_MAX, type ScanSummaryInput, type PrCommentInput } from './shared/pr-summary';
+// prettier-ignore
+export { planScans, credentialPresent, STAGING_API_KEY_ENV, type ScanPlan } from './shared/live-scan-plan';
+// prettier-ignore
+export { DINO_THEME, DinoHeader, SummaryCard, HealthBadge, StatusIcon, DinoSpinner, ErrorPanel, Divider, ProgressBar, NextStep, FindingsTable, DiffBadge, renderViewSafe, shouldRenderInkView, type DinoColor, type SummaryStat, type StatusKind, type FindingRow, type DiffBadgeType } from './ink/index';
 
 /** Split comma-separated --tools and --modules into arrays (#573). Used by main() and tests. */
 export function normalizeToolsAndModules(flags: Record<string, unknown>): void {
@@ -117,8 +133,12 @@ export function normalizeToolsAndModules(flags: Record<string, unknown>): void {
 }
 
 function printUsage(opts?: { stream?: 'stdout' | 'stderr' }): void {
-  const writer = opts?.stream === 'stderr' ? console.error : console.info;
-  writer(usageText());
+  // #2172: explicit help is a stdout RESULT; error-path usage stays on stderr
+  if (opts?.stream === 'stderr') {
+    console.error(usageText());
+    return;
+  }
+  emitResult(usageText());
 }
 
 /** Check if argv requests version or help output. Returns exit code 0 if handled, null otherwise. */
@@ -134,7 +154,7 @@ function handleEarlyExit(
     command === '-v' ||
     command === 'version'
   ) {
-    console.info(CLI_VERSION);
+    emitResult(CLI_VERSION);
     return 0;
   }
   const helpRequested =
@@ -156,7 +176,7 @@ function handleEarlyExit(
   }
   if (!command) {
     // #2160: no-args → quickstart (explicit --help still uses full usage above)
-    console.info(quickstartText());
+    emitResult(quickstartText());
     return 0;
   }
   return null;
@@ -201,8 +221,6 @@ interface HandleCommandErrorOptions {
 function handleCommandError(opts: HandleCommandErrorOptions): number {
   const { err, context, command, startMs, flags } = opts;
   const durationMs = Date.now() - startMs; // determinism:allowed
-  // B15 (#588): Read CliError.exitCode instead of hardcoding 1
-  const exitCode = err instanceof CliError ? err.exitCode : 1;
   context.tracker.track({
     type: 'cli.command.failed',
     timestamp: new Date().toISOString(), // determinism:allowed
@@ -214,12 +232,7 @@ function handleCommandError(opts: HandleCommandErrorOptions): number {
       errorClass: err instanceof Error ? err.name : 'Unknown',
     },
   });
-  const ui = detectUi({
-    quiet: false,
-    noColor: flags.noColor === true,
-  });
-  printError(err instanceof Error ? err : new Error(String(err)), ui, flags.debug === true);
-  return exitCode;
+  return reportCaughtFailure(err, flags);
 }
 
 /**
@@ -248,9 +261,7 @@ async function runBareCommand(
   try {
     return await run();
   } catch (err) {
-    const ui = detectUi({ quiet: false, noColor: flags.noColor === true });
-    printError(err instanceof Error ? err : new Error(String(err)), ui, flags.debug === true);
-    return err instanceof CliError ? err.exitCode : 1;
+    return reportCaughtFailure(err, flags);
   }
 }
 
@@ -259,7 +270,7 @@ async function runWithoutTenantContext(
   flags: Record<string, unknown>,
 ): Promise<number | null> {
   if (command === 'runner') {
-    return runRunnerFromFlags(flags);
+    return runBareCommand(() => runRunnerFromFlags(flags), flags);
   }
   if (command === 'verify') {
     return runBareCommand(() => runVerify(flags), flags);
@@ -322,24 +333,16 @@ function buildTenantCliCommonFlags(
   };
 }
 
-/** Tenant-backed commands: config load, format coercion, tracker lifecycle. */
-async function runTenantBackedCommand(
+function usageFailure(message: string, flags: Record<string, unknown>): number {
+  return reportCaughtFailure(new CliError(message, 2, undefined, undefined, 'usage'), flags);
+}
+
+async function runStandaloneTenantCommand(
   argv: string[],
   command: string,
   flags: Record<string, unknown>,
-): Promise<number> {
-  const config = await loadCliConfig({
-    tenantId: typeof flags.tenant === 'string' ? flags.tenant : undefined,
-  });
-
-  const rawFormat = flags.format as string | undefined;
-  if (rawFormat !== undefined && !VALID_FORMATS.has(rawFormat)) {
-    console.error(`Invalid --format: "${rawFormat}". Valid: markdown, json`);
-    return 1;
-  }
-
-  const commonFlags = buildTenantCliCommonFlags(flags, config);
-
+  commonFlags: TenantCliCommonFlags,
+): Promise<number | null> {
   if (command === 'validate') {
     return runValidate(null, { quiet: commonFlags.quiet, noColor: commonFlags.noColor });
   }
@@ -351,23 +354,52 @@ async function runTenantBackedCommand(
     });
   }
   if (command === 'config') {
-    return runConfigFromArgv(argv);
+    return runBareCommand(() => runConfigFromArgv(argv), flags);
   }
+  return null;
+}
+
+/** Tenant-backed commands: config load, format coercion, tracker lifecycle. */
+async function runTenantBackedCommand(
+  argv: string[],
+  command: string,
+  flags: Record<string, unknown>,
+): Promise<number> {
+  let config: Awaited<ReturnType<typeof loadCliConfig>>;
+  try {
+    config = await loadCliConfig({
+      tenantId: typeof flags.tenant === 'string' ? flags.tenant : undefined,
+    });
+  } catch (err) {
+    return reportCaughtFailure(err, {
+      noColor: flags.noColor === true,
+      debug: flags.debug === true,
+    });
+  }
+
+  const rawFormat = flags.format as string | undefined;
+  if (rawFormat !== undefined && !VALID_FORMATS.has(rawFormat)) {
+    return usageFailure(`Invalid --format: "${rawFormat}". Valid: markdown, json`, flags);
+  }
+
+  const commonFlags = buildTenantCliCommonFlags(flags, config);
+  const standalone = await runStandaloneTenantCommand(argv, command, flags, commonFlags);
+  if (standalone !== null) return standalone;
 
   const handler = recordGet(COMMAND_HANDLERS, command);
   if (!handler) {
-    console.error(`Unknown command: ${command}`);
     printUsage({ stream: 'stderr' });
-    return 1;
+    return usageFailure(`Unknown command: ${command}`, flags);
   }
 
   let context: CommandContext;
   try {
     context = buildContext(commonFlags, config);
   } catch (err) {
-    const ui = detectUi({ quiet: false, noColor: commonFlags.noColor });
-    printError(err instanceof Error ? err : new Error(String(err)), ui, commonFlags.debug);
-    return err instanceof CliError ? err.exitCode : 1;
+    return reportCaughtFailure(err, {
+      noColor: commonFlags.noColor,
+      debug: commonFlags.debug,
+    });
   }
 
   return invokeTrackedPipelineCommand({

@@ -170,6 +170,10 @@ export function assertReasoningRequiresApiKey(flags: ScanFlags): void {
   if (flags.reasoning && !aiKey) {
     throw new CliError(
       'AI reasoning requires an API key. Set DINO_AI_KEY env var or add aiKey to .dino.yml',
+      2,
+      'Provide an Anthropic API key when using --reasoning.',
+      undefined,
+      'usage',
     );
   }
 }

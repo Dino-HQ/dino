@@ -5,6 +5,7 @@
 
 import { loadCliConfig } from '../config/loader';
 import { shouldRenderInkView } from '../ink/InkRender';
+import { emitResult } from '../shared/emit-result';
 import { detectUi, colorize, createSpinner, printNotice } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { UiOptions } from '../shared/ui';
@@ -64,12 +65,17 @@ export async function runValidate(_context: unknown, flags: ValidateFlags): Prom
   try {
     const config = await loadCliConfig();
     if (!config) {
-      spinner.succeed('No .dino.yml found - using smart defaults. Config is valid.');
-      await showValidateResult('No .dino.yml - smart defaults. Config is valid.', ui, flags);
+      const message = 'No .dino.yml found - using smart defaults. Config is valid.';
+      spinner.succeed(message);
+      // #2172: validate result is a stdout document (clig.dev); chrome stays on stderr
+      emitResult(message);
+      await showValidateResult(message, ui, flags);
       return 0;
     }
-    spinner.succeed('.dino.yml is valid');
-    await showValidateResult('.dino.yml is valid', ui, flags);
+    const message = '.dino.yml is valid';
+    spinner.succeed(message);
+    emitResult(message);
+    await showValidateResult(message, ui, flags);
     return 0;
   } catch (err) {
     spinner.fail('Config invalid');

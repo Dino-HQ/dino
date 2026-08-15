@@ -1,5 +1,5 @@
 /**
- * @dino/cli — dino watch (scheduled scans + Shadow Mode). Issue #309.
+ * @dino/cli - dino watch (scheduled scans + Shadow Mode). Issue #309.
  */
 
 import { createRestExecutor } from '@dino/agents';
@@ -12,10 +12,10 @@ import {
   loadLatestSnapshot,
   diffSnapshots,
   runPipeline,
-  determineOverallLevel,
+  summarizeCatalogHealth,
 } from '@dino/engine';
 import { buildAdHocRegistry } from './scan-helpers';
-import { shouldFallBackToAdHocRegistry } from './scan-pipeline';
+import { buildScanCatalogFromResult, shouldFallBackToAdHocRegistry } from './scan-pipeline';
 import {
   resolveMaxIterations,
   validateAndBuildConfig,
@@ -27,7 +27,12 @@ import {
 } from './watch-helpers';
 import { discoverOperationsDetailed, getEndpoint, withTracking } from '../shared/base-command';
 import { saveHistoryEntry } from '../shared/history';
-import { computeGlobalHealthScore, perOpFindingsFromEnv } from '../shared/pipeline-helpers';
+import {
+  outcomeKindFromIterationError,
+  resolveExitCode,
+  type OutcomeKind,
+} from '../shared/outcome';
+import { perOpFindingsFromEnv } from '../shared/pipeline-helpers';
 import { detectUi, createSpinner, printNotice } from '../shared/ui';
 import type { CommandContext } from '../shared/base-command';
 import type { WatchHistoryEntry } from '../shared/history';
@@ -73,7 +78,7 @@ type IterationOutcome = { kind: 'ok' } | { kind: 'degraded' } | { kind: 'enforce
 function buildWatchRestExecutor(
   context: CommandContext,
 ): ReturnType<typeof createRestExecutor> | undefined {
-  // Mirror scan.ts:119-150 — pin fetch; merge context.authHeaders (per-call headers win).
+  // Mirror scan.ts:119-150 - pin fetch; merge context.authHeaders (per-call headers win).
   const base = createRestExecutor({ fetch: createPinnedFetch() });
   const staticHeaders = context.authHeaders;
   if (staticHeaders === undefined || Object.keys(staticHeaders).length === 0) {
@@ -135,14 +140,21 @@ async function executeIterationPipeline(cfg: IterationConfig, quiet?: boolean, n
     restOperations: hasRest ? restOperations : undefined,
   });
 
-  return { ops, result };
+  const catalog = buildScanCatalogFromResult({
+    result,
+    graphqlOps: ops.graphqlOperations,
+    context,
+    useAdHocFallback: useAdHoc,
+    restOperations,
+  });
+  return { ops, result, catalog };
 }
 
 function buildIterationHistoryEntry(params: {
   ops: Awaited<ReturnType<typeof discoverOperationsDetailed>>;
   result: Awaited<ReturnType<typeof runPipeline>>;
   context: CommandContext;
-  healthScore: number;
+  healthScore: number | null;
   changes: { added: number; removed: number; modified: number; breakingChanges: number };
 }): WatchHistoryEntry {
   const { ops, result, context, healthScore, changes } = params;
@@ -173,7 +185,7 @@ async function runIteration(opts: RunIterationOptions): Promise<IterationOutcome
   const { cfg, iteration, quiet, noColor, nextSleepSec } = opts;
   const { context } = cfg;
 
-  const { ops, result } = await executeIterationPipeline(cfg, quiet, noColor);
+  const { ops, result, catalog } = await executeIterationPipeline(cfg, quiet, noColor);
 
   const restOperations = ops.discoveredOperations.filter((o) => o.type === 'rest');
   const snapshot = buildSnapshot({
@@ -191,8 +203,9 @@ async function runIteration(opts: RunIterationOptions): Promise<IterationOutcome
   const diff = prev ? diffSnapshots(prev, snapshot) : null;
   await saveSnapshot(snapshot, snapshotOpts);
 
-  const healthScore = computeGlobalHealthScore(result.condensed);
-  const healthLevel = determineOverallLevel(result.condensed.envelopes.flatMap((e) => e.findings));
+  const health = summarizeCatalogHealth(catalog);
+  const healthScore = health.score;
+  const healthLevel = health.level;
   const changes = diff?.summary ?? { added: 0, removed: 0, modified: 0, breakingChanges: 0 };
 
   const entry = buildIterationHistoryEntry({ ops, result, context, healthScore, changes });
@@ -214,7 +227,7 @@ async function runIteration(opts: RunIterationOptions): Promise<IterationOutcome
   if (cfg.autonomy === 'enforce' && diff && diff.summary.breakingChanges > 0) {
     const ui = detectUi({ quiet, noColor });
     printNotice(
-      `[enforce] ${diff.summary.breakingChanges} breaking change(s) detected: exiting with code 1`,
+      `[enforce] ${diff.summary.breakingChanges} breaking change(s) detected: exiting with code 3`,
       ui,
     );
     return { kind: 'enforce' };
@@ -246,17 +259,41 @@ async function handleIterationError(
 /*  Watch loop + public entry point                                    */
 /* ------------------------------------------------------------------ */
 
+interface WatchLoopState {
+  consecutiveFailures: number;
+  lastIterationOk: boolean;
+  lastFailureKind: OutcomeKind | null;
+}
+
+function applyIterationOutcome(state: WatchLoopState, outcome: IterationOutcome): number | null {
+  // enforce = policy breach (breaking changes) → exit 3, no envelope
+  if (outcome.kind === 'enforce') return resolveExitCode({ kind: 'policy' });
+  if (outcome.kind === 'ok') {
+    state.lastIterationOk = true;
+    state.lastFailureKind = null;
+    state.consecutiveFailures = 0;
+  } else {
+    // degraded → partial declared outcome (exit 6)
+    state.lastIterationOk = false;
+    state.lastFailureKind = 'partial';
+    state.consecutiveFailures = 0;
+  }
+  return null;
+}
+
 async function executeWatchLoop(
   cfg: IterationConfig,
   flags: WatchFlags,
   intervalSec: number,
 ): Promise<number> {
   const maxIterations = resolveMaxIterations(flags);
-
   let iteration = 0;
-  let consecutiveFailures = 0;
   let interrupted = false;
-  let lastIterationOk = true;
+  const state: WatchLoopState = {
+    consecutiveFailures: 0,
+    lastIterationOk: true,
+    lastFailureKind: null,
+  };
   let pendingSleep: { cancel: () => void } | null = null;
   const onShutdown = (): void => {
     interrupted = true;
@@ -279,14 +316,14 @@ async function executeWatchLoop(
           noColor: flags.noColor,
           nextSleepSec: willSleepAgain ? intervalSec : undefined,
         });
-        if (outcome.kind === 'enforce') return 1;
-        lastIterationOk = outcome.kind === 'ok';
-        consecutiveFailures = 0;
+        const early = applyIterationOutcome(state, outcome);
+        if (early !== null) return early;
       } catch (iterError) {
-        consecutiveFailures++;
-        lastIterationOk = false;
+        state.consecutiveFailures++;
+        state.lastIterationOk = false;
+        state.lastFailureKind = outcomeKindFromIterationError(iterError);
         await handleIterationError(iterError, iteration, cfg, flags.quiet);
-        throwIfCircuitBroken(consecutiveFailures, cfg, iterError);
+        throwIfCircuitBroken(state.consecutiveFailures, cfg, iterError);
       }
 
       if (!interrupted && iteration < maxIterations) {
@@ -296,7 +333,8 @@ async function executeWatchLoop(
         pendingSleep = null;
       }
     }
-    return lastIterationOk ? 0 : 1;
+    if (state.lastIterationOk) return 0;
+    return resolveExitCode({ kind: state.lastFailureKind ?? 'crash' });
   } finally {
     process.removeListener('SIGINT', onShutdown);
     process.removeListener('SIGTERM', onShutdown);

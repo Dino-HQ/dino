@@ -16,6 +16,7 @@ import { renderChangelogJson } from '../formatters/json';
 import { renderChangelogMarkdown } from '../formatters/markdown';
 import { shouldRenderInkView } from '../ink/InkRender';
 import { discoverOperationsDetailed, withTracking } from '../shared/base-command';
+import { emitResult } from '../shared/emit-result';
 import { CliError } from '../shared/errors';
 import { detectUi, createSpinner } from '../shared/ui';
 import { CLI_VERSION } from '../version';
@@ -128,13 +129,15 @@ async function executeChangelog(context: CommandContext, flags: ChangelogFlags):
   spinner.succeed('Changelog generated');
 
   const format = flags.format ?? 'markdown';
-  // #172: --quiet strips chrome only — the changelog always goes to stdout
-  console.info(formatChangelogOutput(changelog, format, ui));
+  // #172: --quiet strips chrome only — the changelog always goes to stdout via emitResult (#2172)
+  emitResult(formatChangelogOutput(changelog, format, ui), {
+    format: format === 'json' ? 'json' : 'markdown',
+  });
   if (!flags.quiet && shouldRenderInkView(ui, { format, quiet: flags.quiet })) {
     await tryRenderInkView(changelog, context);
   }
 
-  return flags.failOnBreaking && changelog.hasBreakingChanges ? 1 : 0;
+  return flags.failOnBreaking && changelog.hasBreakingChanges ? 3 : 0;
 }
 
 /**

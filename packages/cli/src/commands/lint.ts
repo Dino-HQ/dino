@@ -14,6 +14,7 @@ import { renderLintJson } from '../formatters/json';
 import { renderLintMarkdown } from '../formatters/markdown';
 import { shouldRenderInkView } from '../ink/InkRender';
 import { discoverOperationsDetailed, withTracking } from '../shared/base-command';
+import { emitResult } from '../shared/emit-result';
 import { detectUi, createSpinner } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
@@ -105,15 +106,15 @@ async function executeLintBody(context: CommandContext, flags: LintFlags): Promi
   const format = flags.format ?? 'markdown';
   const markdownUi = format === 'json' ? undefined : ui;
   const output = format === 'json' ? renderLintJson(audit) : renderLintMarkdown(audit, markdownUi);
-  // #172: --quiet strips chrome only — the audit report always goes to stdout
-  console.info(output);
+  // #172: --quiet strips chrome only — the audit report always goes to stdout via emitResult (#2172)
+  emitResult(output, { format: format === 'json' ? 'json' : 'markdown' });
 
   if (!flags.quiet && shouldRenderInkView(ui, { format, quiet: flags.quiet })) {
     await tryRenderLintInkView(audit, context, ui);
   }
 
   const regressions = audit.newUndocumented.length + audit.descriptionRemoved.length;
-  return flags.failOnUndocumented && regressions > 0 ? 1 : 0;
+  return flags.failOnUndocumented && regressions > 0 ? 3 : 0;
 }
 
 /**

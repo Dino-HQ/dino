@@ -19,6 +19,7 @@ import {
 } from './scan-helpers';
 import { ensureScanTelemetryConsent } from '../config/telemetry-consent';
 import { getEndpoint, discoverOperationsDetailed, withTracking } from '../shared/base-command';
+import { CliError } from '../shared/errors';
 import { detectUi, createSpinner, printNotice, printHeaderBanner } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { CommandContext, CommonFlags, MergedFlags } from '../shared/base-command';
@@ -39,11 +40,14 @@ export interface ScanFlags extends CommonFlags {
   endpoint?: string;
   protocol?: 'graphql' | 'rest';
   failOnHigh?: boolean;
+  /** Downgrade partial coverage (exit 6) to exit 0 (#2173 INV-1). */
+  acceptPartial?: boolean;
 }
 
 /**
  * Drop keys whose values are undefined so objects satisfy ScanFlags under exactOptionalPropertyTypes.
  * Safe cast — parseArgs (sole upstream) guarantees field types match ScanFlags via yargs type defs.
+ * #2173: coerce `--timeout` string → number; non-numeric → usage CliError (exit 2).
  */
 function normalizeScanFlags(f: MergedFlags): ScanFlags {
   const out: Record<string, unknown> = {};
@@ -52,7 +56,45 @@ function normalizeScanFlags(f: MergedFlags): ScanFlags {
       recordSet(out, key, value);
     }
   }
+  coerceTimeoutFlag(out);
   return out as ScanFlags;
+}
+
+function coerceTimeoutFlag(out: Record<string, unknown>): void {
+  if (out.timeout === undefined) return;
+  if (typeof out.timeout === 'number') {
+    if (!(Number.isFinite(out.timeout) && out.timeout > 0)) {
+      throw new CliError(
+        `Invalid --timeout: "${String(out.timeout)}" (expected a positive number of ms)`,
+        2,
+        'e.g. --timeout 60000',
+        undefined,
+        'usage',
+      );
+    }
+    return;
+  }
+  if (typeof out.timeout === 'string') {
+    const parsed = Number(out.timeout);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      recordSet(out, 'timeout', parsed);
+      return;
+    }
+    throw new CliError(
+      `Invalid --timeout: "${out.timeout}" (expected a positive number of ms)`,
+      2,
+      'e.g. --timeout 60000',
+      undefined,
+      'usage',
+    );
+  }
+  throw new CliError(
+    `Invalid --timeout: "${String(out.timeout)}" (expected a positive number of ms)`,
+    2,
+    'e.g. --timeout 60000',
+    undefined,
+    'usage',
+  );
 }
 
 /** #2143: reduced-fidelity product notice, read from the discovery raw introspection result. */

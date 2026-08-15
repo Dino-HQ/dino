@@ -34,6 +34,7 @@ import {
   type StateStorage,
 } from '../runner/state-store';
 import { maybeStartWakeServer } from '../runner/wake-server';
+import { CliError } from '../shared/errors';
 import { DEFAULT_REASONING_OPTS, perOpFindingsFromEnv } from '../shared/pipeline-helpers';
 import { CLI_VERSION } from '../version';
 import type { CommandContext } from '../shared/base-command';
@@ -287,10 +288,13 @@ export async function runRunnerRegister(
 
   const parsed = parseRegisterFlags(flags);
   if (!parsed) {
-    console.error(
+    throw new CliError(
       'Usage: dino runner register --token <admin-api-key> --name <name> --tenant <tenantId> [--endpoint <url>]',
+      2,
+      undefined,
+      undefined,
+      'usage',
     );
-    return 1;
   }
 
   const registerUrl = `${parsed.endpoint}/v1/runners/register`;
@@ -305,14 +309,17 @@ export async function runRunnerRegister(
       body: JSON.stringify({ name: parsed.name, tenantId: parsed.tenantId }),
     });
   } catch (e) {
-    console.error(`Registration request failed: ${e instanceof Error ? e.message : String(e)}`);
-    return 1;
+    throw new CliError(
+      `Registration request failed: ${e instanceof Error ? e.message : String(e)}`,
+      70,
+      undefined,
+      e,
+    );
   }
 
   if (!res.ok) {
     const detail = await formatRegisterError(res);
-    console.error(`Registration failed (HTTP ${String(res.status)})${detail}`);
-    return 1;
+    throw new CliError(`Registration failed (HTTP ${String(res.status)})${detail}`, 70);
   }
 
   const body = (await res.json()) as {
@@ -347,6 +354,18 @@ function createRunnerLogger() {
   };
 }
 
+function rethrowRunnerPollError(e: unknown): never {
+  if (e instanceof RunnerUnauthorizedError) {
+    throw new CliError(
+      'Runner revoked or token expired. Re-register with `dino runner register`.',
+      70,
+      undefined,
+      e,
+    );
+  }
+  throw e;
+}
+
 export async function runRunnerStart(
   _flags: Record<string, unknown>,
   deps: RunRunnerStartDeps = {},
@@ -360,10 +379,13 @@ export async function runRunnerStart(
 
   const state = await storage.read();
   if (!state) {
-    console.error(
+    throw new CliError(
       'Runner not registered. Run: dino runner register --token <admin-api-key> --name <name> --tenant <tenantId>',
+      2,
+      undefined,
+      undefined,
+      'usage',
     );
-    return 1;
   }
 
   const shutdown = installRunnerSignalHandlers(timer, {
@@ -397,11 +419,7 @@ export async function runRunnerStart(
   try {
     await startPollLoop(pollConfig);
   } catch (e) {
-    if (e instanceof RunnerUnauthorizedError) {
-      console.error('Runner revoked or token expired. Re-register with `dino runner register`.');
-      return 1;
-    }
-    throw e;
+    rethrowRunnerPollError(e);
   } finally {
     cleanupRunner(timer, shutdown, wakeServer);
   }
@@ -414,8 +432,7 @@ export async function runRunnerFromFlags(flags: Record<string, unknown>): Promis
   const sub = flags._1 as string | undefined;
   if (sub === 'register') return runRunnerRegister(flags);
   if (sub === 'start') return runRunnerStart(flags);
-  console.error('Usage: dino runner <register|start>');
-  return 1;
+  throw new CliError('Usage: dino runner <register|start>', 2, undefined, undefined, 'usage');
 }
 
 export async function runRunner(
