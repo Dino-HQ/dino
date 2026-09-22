@@ -43,3 +43,22 @@ export function isBlockedIPv4(octets: number[]): boolean {
   if (a >= 240) return true;
   return false;
 }
+
+/**
+ * Loopback and RFC1918 only — the two ranges a developer can legitimately ask Dino to scan.
+ *
+ * Deliberately NOT link-local (169.254.0.0/16, which carries the cloud metadata service), nor
+ * 0.x, TEST-NET, CGNAT or 240+/reserved: none of those is ever a real API under test, and the
+ * metadata address is the highest-value SSRF target there is. The same split our own cloud makes
+ * for Target Definitions — loopback and link-local can never be a legitimate destination, private
+ * addresses can (`assertTargetDestinationAdmissible`, DIN-1349/DIN-1256).
+ */
+export function isDeveloperReachableIPv4(octets: number[]): boolean {
+  const a = octets[0];
+  const b = octets[1];
+  if (a === undefined || b === undefined) return false;
+  if (a === 127) return true;
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return a === 192 && b === 168;
+}

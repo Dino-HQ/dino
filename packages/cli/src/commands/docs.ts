@@ -26,7 +26,17 @@ export interface DocsFlags extends CommonFlags {
   threshold?: number;
 }
 
-function formatCatalogOutput(catalog: ReturnType<typeof buildCatalog>, flags: DocsFlags): string {
+/** #2306 - discovery provenance so SDL-sourced docs are never presented as live-full. */
+interface DocsProvenance {
+  introspectionLevel?: 'full' | 'shallow' | 'minimal' | undefined;
+  structureSource?: 'live' | 'sdl' | undefined;
+}
+
+function formatCatalogOutput(
+  catalog: ReturnType<typeof buildCatalog>,
+  flags: DocsFlags,
+  provenance: DocsProvenance,
+): string {
   const format = flags.format ?? 'markdown';
   const ctx = format === 'json' ? 'json' : 'markdown';
   const safeCatalog = catalog.map((entry) => neutralizeCatalogCustomerFields(entry, ctx));
@@ -36,6 +46,8 @@ function formatCatalogOutput(catalog: ReturnType<typeof buildCatalog>, flags: Do
         title: flags.title,
         includeAiDescriptions: flags.ai,
         healthScoreThreshold: flags.threshold,
+        introspectionLevel: provenance.introspectionLevel,
+        structureSource: provenance.structureSource,
       }),
       null,
       2,
@@ -45,6 +57,8 @@ function formatCatalogOutput(catalog: ReturnType<typeof buildCatalog>, flags: Do
     title: flags.title ?? 'API Intelligence Report',
     includeAiDescriptions: flags.ai ?? false,
     healthScoreThreshold: flags.threshold,
+    introspectionLevel: provenance.introspectionLevel,
+    structureSource: provenance.structureSource,
   });
 }
 
@@ -54,10 +68,15 @@ async function executeDocsBody(context: CommandContext, flags: DocsFlags): Promi
   spinner.start();
   let graphqlOps;
   let restOperations;
+  let provenance: DocsProvenance;
   try {
     const detailed = await discoverOperationsDetailed(context);
     graphqlOps = detailed.graphqlOperations;
     restOperations = detailed.discoveredOperations.filter((op) => op.type === 'rest');
+    provenance = {
+      introspectionLevel: detailed.introspectionLevel,
+      structureSource: detailed.structureSource,
+    };
     spinner.text = 'Building documentation…';
   } catch (err) {
     spinner.fail('Docs failed');
@@ -78,7 +97,7 @@ async function executeDocsBody(context: CommandContext, flags: DocsFlags): Promi
     timestamp: new Date().toISOString(), // determinism:allowed
   });
 
-  const output = formatCatalogOutput(catalog, flags);
+  const output = formatCatalogOutput(catalog, flags, provenance);
   spinner.succeed('Docs generated');
 
   if (flags.output) {

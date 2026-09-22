@@ -53,6 +53,8 @@ export interface OperationParameter {
   required?: boolean;
   description?: string;
   schema?: Record<string, unknown>;
+  /** OpenAPI parameter-level deprecation flag. */
+  deprecated?: boolean;
 }
 
 export interface OperationRequestBody {

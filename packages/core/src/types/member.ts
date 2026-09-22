@@ -89,11 +89,6 @@ export const DINO_PERMISSIONS = [
   'settings:read',
   'settings:ai:update',
   'settings:ai:delete',
-  'sentinel:configure',
-  'sentinel:acknowledge',
-  'sentinel:dismiss',
-  'sentinel:snooze',
-  'sentinel:feedback',
   'member:remove',
   'member:invite',
   'member:role_change',
@@ -106,7 +101,6 @@ export const DINO_PERMISSIONS = [
   'finding:share',
   'intelligence:query',
   'test_connection:trigger',
-  'sentinel:configure:elevated',
 ] as const;
 export type DinoPermission = (typeof DINO_PERMISSIONS)[number];
 
@@ -115,7 +109,6 @@ const OWNER_ONLY: readonly DinoPermission[] = [
   'member:remove',
   'member:role_change',
   'runner:managed:delete',
-  'sentinel:configure:elevated',
 ];
 
 const ADMIN_PLUS: readonly DinoPermission[] = [
@@ -128,11 +121,6 @@ const ADMIN_PLUS: readonly DinoPermission[] = [
   'settings:read',
   'settings:ai:update',
   'settings:ai:delete',
-  'sentinel:configure',
-  'sentinel:acknowledge',
-  'sentinel:dismiss',
-  'sentinel:snooze',
-  'sentinel:feedback',
   'runner:register',
   'runner:managed:create',
   'runner:managed:control',
@@ -151,10 +139,6 @@ const DEVELOPER_PERMS: readonly DinoPermission[] = [
   'scan:retry',
   'scan:cancel',
   'settings:read',
-  'sentinel:acknowledge',
-  'sentinel:dismiss',
-  'sentinel:snooze',
-  'sentinel:feedback',
   'finding:share',
   'intelligence:query',
   'test_connection:trigger',

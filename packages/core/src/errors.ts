@@ -60,8 +60,16 @@ export type DinoErrorCode =
   | 'RETRY_LIMIT_EXCEEDED'
   | 'API_CONTEXT_SNAPSHOT_NOT_COMPLETE'
   | 'SNAPSHOT_VERSION_UNSUPPORTED'
+  // Idempotency (409) — a Bootstrap Request identity (principal+org+action+key) was reused with
+  // DIFFERENT normalized request semantics. Per ADR-0056 (Idempotency Identity), "same key + different
+  // semantics" is a typed conflict, never a silent last-write-win or a new canonical version. Distinct
+  // from ALREADY_EXISTS (a canonical artifact with that name already exists under a *different* request).
+  | 'IDEMPOTENCY_CONFLICT'
   // Rate limit (429)
   | 'RATE_LIMITED'
+  // Upstream/provider rate limit (429) — the SECRET CUSTODIAN throttled Dino (distinct from
+  // `RATE_LIMITED`, which is Dino throttling the tenant). Same HTTP status, separable source (F01c AC5).
+  | 'PROVIDER_RATE_LIMITED'
   // Service unavailable (503)
   | 'SERVICE_UNAVAILABLE'
   // Quota (402)
@@ -235,6 +243,7 @@ export type ConflictErrorCode = Extract<
   | 'RETRY_LIMIT_EXCEEDED'
   | 'API_CONTEXT_SNAPSHOT_NOT_COMPLETE'
   | 'SNAPSHOT_VERSION_UNSUPPORTED'
+  | 'IDEMPOTENCY_CONFLICT'
 >;
 
 /** Codes valid for 502-class errors. */

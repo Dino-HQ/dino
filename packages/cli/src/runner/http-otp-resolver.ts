@@ -12,7 +12,7 @@ export type OtpReadResult = {
 
 /** Poll-safe HTTP client for GET /v1/runners/:id/otp. */
 export interface OtpHttpClient {
-  readOtp(address: string): Promise<OtpReadResult | null>;
+  readOtp(address: string, signal?: AbortSignal): Promise<OtpReadResult | null>;
 }
 
 export function createHttpOtpResolver(opts: {
@@ -24,13 +24,15 @@ export function createHttpOtpResolver(opts: {
   pollIntervalMs?: number;
   /** INV-3: reject OTP messages received before this timestamp (ms). Set at resolve() if omitted. */
   windowStartMs?: number;
+  /** #2388 Task 7: the rbac lease signal; aborts the in-flight read and ends polling. */
+  signal?: AbortSignal;
 }): OtpResolver {
   let windowStart = opts.windowStartMs;
 
   const inner = new CfInboxOtpResolver({
     address: opts.address,
     readOtp: async (addr) => {
-      const msg = await opts.otpClient.readOtp(addr);
+      const msg = await opts.otpClient.readOtp(addr, opts.signal);
       if (msg === null) {
         return null;
       }
@@ -44,6 +46,7 @@ export function createHttpOtpResolver(opts: {
     ...(opts.pollIntervalMs === undefined ? {} : { pollIntervalMs: opts.pollIntervalMs }),
     now: opts.now,
     sleep: opts.sleep,
+    ...(opts.signal === undefined ? {} : { signal: opts.signal }),
   });
 
   return {

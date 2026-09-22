@@ -12,7 +12,7 @@ import ora from 'ora';
 import { healthVerdict } from '@dino/engine';
 import { DINO_ASCII, DINO_TAGLINE, DINO_BRAND_HEX } from './brand';
 import { CliError } from './errors';
-import { boundErrorMessage, isUpstreamClientError } from './outcome';
+import { boundErrorMessage, isUpstreamClientError, isSsrfBlockedError } from './outcome';
 import type { EnvelopeSeverityLevel } from '@dino/core';
 import type { Ora } from 'ora';
 
@@ -119,31 +119,37 @@ function clampHealthScore(score: number): number {
   return Math.max(0, Math.min(100, rounded));
 }
 
+/** The canonical health triple a host prints: `verdict.health` of a DinoResult (or a catalog's health). */
+export interface HealthView {
+  verdict: string;
+  level: EnvelopeSeverityLevel;
+  score: number | null;
+}
+
+function healthColor(level: EnvelopeSeverityLevel): ChalkColor {
+  if (level === 'CRITICAL') return 'redBold';
+  if (level === 'HIGH') return 'red';
+  if (level === 'MEDIUM' || level === 'LOW') return 'yellow';
+  if (level === 'CLEAN') return 'green';
+  return 'dim';
+}
+
 /**
- * Severity-gated health label. UX Language §4.1: "The number supports the verdict — never IS the verdict."
- * Verdict comes from healthVerdict(level); score is optional display support (null → no number).
+ * Health label for a supplied verdict (Cleanup V2 task 4c): the verdict is printed as given, never
+ * regenerated from the level. UX Language §4.1: the number supports the verdict, it never IS the verdict.
  */
+export function healthVerdictLabel(health: HealthView, ui: UiOptions): string {
+  const text = health.score === null ? health.verdict : `${health.verdict} (${clampHealthScore(health.score)})`;
+  return colorize(text, healthColor(health.level), ui);
+}
+
+/** Severity-gated health label for callers that own only a level (catalog/docs); derives the verdict once. */
 export function healthLabel(
   score: number | null,
   level: EnvelopeSeverityLevel,
   ui: UiOptions,
 ): string {
-  const verdict = healthVerdict(level);
-  let color: ChalkColor;
-  if (level === 'CRITICAL') {
-    color = 'redBold';
-  } else if (level === 'HIGH') {
-    color = 'red';
-  } else if (level === 'MEDIUM' || level === 'LOW') {
-    color = 'yellow';
-  } else if (level === 'CLEAN') {
-    color = 'green';
-  } else {
-    color = 'dim';
-  }
-
-  const text = score === null ? verdict : `${verdict} (${clampHealthScore(score)})`;
-  return colorize(text, color, ui);
+  return healthVerdictLabel({ verdict: healthVerdict(level), level, score }, ui);
 }
 
 /** Format milliseconds as human-readable duration. */
@@ -205,6 +211,26 @@ function humanizeEndpointValidationError(message: string): string | undefined {
   return undefined;
 }
 
+/** Known node/network failure signatures → product text; undefined when none matches. */
+function humanizeNetworkError(haystack: string, name: string, message: string): string | undefined {
+  if (haystack.includes('ECONNRESET') || message.includes('socket hang up')) {
+    return 'The connection to the API was closed unexpectedly. Check the endpoint and your network.';
+  }
+  if (haystack.includes('ENOTFOUND')) {
+    return "Couldn't resolve the endpoint host. Check the URL.";
+  }
+  if (haystack.includes('ECONNREFUSED')) {
+    return 'The endpoint refused the connection. Is it running and reachable?';
+  }
+  if (haystack.includes('ETIMEDOUT') || name === 'AbortError' || haystack.includes('AbortError')) {
+    return 'The request timed out. The endpoint may be slow or unreachable.';
+  }
+  if (message.includes('fetch failed')) {
+    return "Couldn't reach the endpoint. Check the URL and your network.";
+  }
+  return undefined;
+}
+
 /**
  * #174/#201: map known node/network and endpoint-validation errors to clean product text.
  * Default arm keeps the original `.message`. Never interpolates the raw error
@@ -222,30 +248,19 @@ export function humanizeError(err: unknown): string {
   }
   const haystack = `${code} ${name} ${message}`;
 
-  const endpointMsg = humanizeEndpointValidationError(message);
-  if (endpointMsg !== undefined) return endpointMsg;
+  // #193: single-source with classifyCaughtKind - prefix/class only (not message substring).
+  if (isSsrfBlockedError(err)) {
+    const endpointMsg = humanizeEndpointValidationError(message);
+    if (endpointMsg !== undefined) return endpointMsg;
+  }
 
   // #201: node's own malformed-URL TypeError. Anchor on the stable ERR_INVALID_URL code,
   // not a message substring, so a target API's error text can't false-match.
   if (code === 'ERR_INVALID_URL') {
     return "That endpoint URL isn't valid. Example: https://api.example.com/graphql";
   }
-
-  if (haystack.includes('ECONNRESET') || message.includes('socket hang up')) {
-    return 'The connection to the API was closed unexpectedly. Check the endpoint and your network.';
-  }
-  if (haystack.includes('ENOTFOUND')) {
-    return "Couldn't resolve the endpoint host. Check the URL.";
-  }
-  if (haystack.includes('ECONNREFUSED')) {
-    return 'The endpoint refused the connection. Is it running and reachable?';
-  }
-  if (haystack.includes('ETIMEDOUT') || name === 'AbortError' || haystack.includes('AbortError')) {
-    return 'The request timed out. The endpoint may be slow or unreachable.';
-  }
-  if (message.includes('fetch failed')) {
-    return "Couldn't reach the endpoint. Check the URL and your network.";
-  }
+  const network = humanizeNetworkError(haystack, name, message);
+  if (network !== undefined) return network;
   return boundErrorMessage(err);
 }
 

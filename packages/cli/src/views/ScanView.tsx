@@ -6,20 +6,23 @@ import { ProgressBar } from '../ink/ProgressBar';
 import { SummaryCard } from '../ink/SummaryCard';
 import { DINO_THEME } from '../ink/theme';
 import type { EnvelopeSeverityLevel } from '@dino/core';
-import type { HealthVerdict } from '@dino/engine';
+import type { HealthVerdictLabel as HealthVerdict } from '../ink/HealthBadge';
 
 export interface ScanViewProps {
-  operationCount: number;
+  /** `verdict.operationCount` — `null` under an UNKNOWN scope prints `?`, never 0. */
+  operationCount: number | null;
   healthScore: number | null;
   healthVerdict?: HealthVerdict | undefined;
   healthLevel?: EnvelopeSeverityLevel | undefined;
   findingCount: number;
   toolsRun: number;
-  breakingChanges: number;
+  /** #196 — from the single derived tool ledger (INV-6). */
+  toolsExcluded?: number | undefined;
+  toolsUnavailable?: number | undefined;
   durationMs: number;
   degraded: boolean;
   colored?: boolean;
-  /** #202: true when discovery fidelity was minimal/shallow */
+  /** `verdict.coverage === 'partial'`: the verification was incomplete for any of the verdict's reasons. */
   partial?: boolean | undefined;
 }
 
@@ -34,27 +37,26 @@ function formatDuration(ms: number): string {
 }
 
 function buildScanStats(opts: {
-  operationCount: number;
+  operationCount: number | null;
   findingCount: number;
   toolsRun: number;
-  breakingChanges: number;
+  toolsExcluded: number;
+  toolsUnavailable: number;
   durationMs: number;
-  colored: boolean;
 }): Array<{ label: string; value: string | number; color?: string | undefined }> {
-  const breaking: { label: string; value: string | number; color?: string | undefined } = {
-    label: 'BREAKING',
-    value: opts.breakingChanges,
-  };
-  if (opts.colored && opts.breakingChanges > 0) {
-    breaking.color = DINO_THEME.error;
-  }
-  return [
-    { label: 'OPERATIONS', value: opts.operationCount },
+  const stats: Array<{ label: string; value: string | number; color?: string | undefined }> = [
+    { label: 'OPERATIONS', value: opts.operationCount ?? '?' },
     { label: 'FINDINGS', value: opts.findingCount },
     { label: 'TOOLS RUN', value: opts.toolsRun },
-    breaking,
     { label: 'DURATION', value: formatDuration(opts.durationMs) },
   ];
+  if (opts.toolsExcluded > 0 || opts.toolsUnavailable > 0) {
+    stats.push({
+      label: 'TOOLS SKIPPED',
+      value: `${opts.toolsExcluded} excluded, ${opts.toolsUnavailable} unavailable`,
+    });
+  }
+  return stats;
 }
 
 export function ScanView({
@@ -64,7 +66,8 @@ export function ScanView({
   healthLevel,
   findingCount,
   toolsRun,
-  breakingChanges,
+  toolsExcluded = 0,
+  toolsUnavailable = 0,
   durationMs,
   degraded,
   colored = true,
@@ -74,9 +77,9 @@ export function ScanView({
     operationCount,
     findingCount,
     toolsRun,
-    breakingChanges,
+    toolsExcluded,
+    toolsUnavailable,
     durationMs,
-    colored,
   });
   const progress = degraded ? 0 : toolsRun > 0 ? 1 : 0;
   const spinnerText = degraded ? 'All agents failed' : 'Test complete';
@@ -97,7 +100,7 @@ export function ScanView({
       />
       {partial && (
         <Box marginTop={1}>
-          <Text dimColor={colored}>Partial coverage: limited schema access</Text>
+          <Text dimColor={colored}>Partial coverage: verification was incomplete</Text>
         </Box>
       )}
       {degraded && (

@@ -18,6 +18,7 @@ export function isTelemetryLevel(value: string): value is TelemetryLevel {
 export type DinoGlobalConfig = {
   readonly telemetry?: boolean | TelemetryLevel;
   readonly anonymousId?: string;
+  readonly telemetryNoticeShownAt?: string;
 };
 
 /**
@@ -30,7 +31,7 @@ export function getEffectiveTelemetryLevel(config: DinoGlobalConfig): TelemetryL
     return 'off';
   }
   const val = config.telemetry;
-  if (val === undefined) return 'off';
+  if (val === undefined) return 'all';
   if (val === true) return 'all';
   if (val === false) return 'off';
   if (isTelemetryLevel(val)) return val;
@@ -101,6 +102,31 @@ export function setGlobalTelemetryLevel(
         : random.uuid();
     writeGlobalDinoConfigSync({ telemetry: level, anonymousId });
   }
+}
+
+function persistAnonymousId(anonymousId: string): boolean {
+  try {
+    writeGlobalDinoConfigSync({ anonymousId });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return stored anonymousId, creating and persisting a UUID if absent. Idempotent.
+ * Returns null when persistence fails — callers must treat that as fail-open (noop adapter).
+ */
+export function ensureAnonymousId(random: RandomSource = SystemRandom): string | null {
+  const prev = readGlobalDinoConfigSync();
+  if (typeof prev.anonymousId === 'string' && prev.anonymousId.length > 0) {
+    return prev.anonymousId;
+  }
+  const anonymousId = random.uuid();
+  if (!persistAnonymousId(anonymousId)) {
+    return null;
+  }
+  return anonymousId;
 }
 
 /** @deprecated Use setGlobalTelemetryLevel. Kept for backward compat. */

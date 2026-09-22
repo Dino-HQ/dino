@@ -20,6 +20,8 @@ export interface OAuth2AuthContext {
   authHeaders?: Record<string, string> | undefined;
   oauth2Auth?: OAuth2AuthDescriptor | undefined;
   fetchImpl?: typeof fetch | undefined;
+  /** A token endpoint on the operator's own machine is the ordinary case when scanning locally. */
+  allowPrivateTarget: boolean;
 }
 
 export function oauth2DescriptorFromConfig(
@@ -76,6 +78,7 @@ export async function resolveAuthHeaders(
       tokenEndpoint: oauth2.tokenEndpoint,
       clientId,
       clientSecret,
+      allowPrivateTarget: context.allowPrivateTarget,
       ...(oauth2.scope ? { scope: oauth2.scope } : {}),
       ...(context.fetchImpl ? { fetchImpl: context.fetchImpl } : {}),
     });
@@ -84,6 +87,7 @@ export async function resolveAuthHeaders(
   } catch (err: unknown) {
     if (err instanceof CliError) throw err;
     const msg = err instanceof Error ? err.message : 'OAuth2 token acquisition failed';
-    throw new CliError(msg, 1, 'Check tokenEndpoint and client credentials env vars, then re-run.');
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
+    throw new CliError(msg, 1, 'Check tokenEndpoint and client credentials env vars, then re-run.', err);
   }
 }

@@ -210,7 +210,9 @@
       "description": "Schema version (SchemaVer: MODEL-REVISION-ADDITION).",
       "oneOf": [
         { "const": "1-0-0", "type": "string" },
-        { "const": "1-0-1", "type": "string" }
+        { "const": "1-0-1", "type": "string" },
+        { "const": "1-0-2", "type": "string" },
+        { "const": "1-1-0", "type": "string" }
       ],
       "type": "string"
     },
@@ -370,11 +372,12 @@
       "additionalProperties": false,
       "properties": {
         "confidence": {
-          "description": "Overall confidence score; derived from sample-count-weighted provenance.",
+          "description": "Versioned confidence: historical legacy semantics in 1-0-x; verification-completeness-v1 in 1-1-0, not pass-rate or API health.",
           "maximum": 1,
           "minimum": 0,
           "type": "number"
         },
+        "confidenceMethod": { "const": "verification-completeness-v1", "type": "string" },
         "generated": {
           "format": "date-time",
           "type": "string"
@@ -775,6 +778,20 @@
   "required": [
     "dcg",
     "info"
+  ],
+  "anyOf": [
+    {
+      "properties": {
+        "dcg": { "enum": ["1-0-0", "1-0-1", "1-0-2"] },
+        "info": { "not": { "required": ["confidenceMethod"] } }
+      }
+    },
+    {
+      "properties": {
+        "dcg": { "const": "1-1-0" },
+        "info": { "required": ["confidenceMethod"] }
+      }
+    }
   ],
   "title": "Dino Context Graph v1.0.0",
   "type": "object"

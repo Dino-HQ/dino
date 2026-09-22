@@ -4,32 +4,33 @@
 
 import { createRestExecutor } from '@dino/agents';
 import { createTracker, createNoopAdapter } from '@dino/analytics';
-import {
-  buildRunnerDcgPayload,
-  buildSnapshot,
-  type ToolName,
-  type PipelineOptions,
-  type runPipeline,
-  type Timer,
-} from '@dino/engine';
+import type { AttestationSigner, ToolName, PipelineOptions, Timer } from '@dino/engine';
+import { attestCanonicalResult } from './runner-attestation';
+import { buildCompletedRunnerResult, buildRunnerSchemaSnapshot } from './runner-scan-result';
 import { startCancelWatch } from './cancel-watch';
 import { createScanLogEmitter } from './log-emitter';
 import { resolveRunnerRestSpec } from './runner-rest-spec';
 import { wireRunnerScanAuth } from './runner-scan-auth-wiring';
 import { buildAdHocRegistry } from '../commands/scan';
 import { discoverOperationsDetailed } from '../shared/base-command';
+import { discoveryRead } from '../shared/introspection-level';
 import { createExecutor, VALID_TOOL_NAMES } from '../shared/pipeline-helpers';
 import { CLI_VERSION } from '../version';
 import type { RunnerRbacWire } from './runner-scan-auth-wiring';
 import type { AcquiredScanAuth } from './scan-auth';
 import type { RunnerState } from './state-store';
 import type { CommandContext } from '../shared/base-command';
-import type { GraphQLOperation, RunnerJob, RunnerResult } from '@dino/core';
+import { resolveVerificationTarget, type DinoResult, type RunnerJob, type RunnerResult, type VerificationTarget, STRICT_DESTINATION } from '@dino/core';
+
+/** The engine boundary the runner drives: options in, the canonical `DinoResult` out (Cleanup V2 task 4c). */
+export type PipelineRunner = (options: PipelineOptions) => Promise<DinoResult>;
 
 type ScanExecuteDeps = {
   state: RunnerState;
   assignment: RunnerJob;
   fetchImpl: typeof fetch;
+  /** `null` = no signing identity (tests, unconfigured hosts); `undefined` = resolve at run time. */
+  attestationSigner?: AttestationSigner | null;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   rand: () => number;
@@ -37,6 +38,7 @@ type ScanExecuteDeps = {
   cloudHttpClient: (url: string, init?: RequestInit) => Promise<Response>;
   timer: Timer;
   buildPipelineOptions: (args: {
+    selectedTarget: VerificationTarget;
     state: RunnerState;
     assignment: RunnerJob;
     registry: Record<string, string[]>;
@@ -47,6 +49,7 @@ type ScanExecuteDeps = {
     restExecutor: PipelineOptions['restExecutor'];
     restOps: PipelineOptions['restOperations'];
     discoveryRaw: unknown;
+    discovery: PipelineOptions['discovery'];
     rbacRoles?: PipelineOptions['rbacRoles'];
     rbacExpectations?: PipelineOptions['rbacExpectations'];
     rbacDefaultExpectations?: PipelineOptions['rbacDefaultExpectations'];
@@ -75,20 +78,35 @@ export function withRunnerScanAuth(
   getAuth: () => AcquiredScanAuth,
 ): PipelineOptions['executor'] {
   return async (document, variables, options) => {
-    const auth = getAuth();
-    const token = options?.authToken ?? (auth.authFailed ? undefined : auth.authToken);
-    // #1981 — non-bearer auth (api_key / basic_auth / cookie- or header-based login_flow) is carried
-    // ONLY by `injections` / `cookieHeader`. R4 threaded the bearer token but dropped these, so those
-    // profiles authenticated successfully and then scanned unauthenticated — a silent false-CLEAN.
-    // A failed acquisition contributes nothing (never a fabricated credential), matching the token rule.
-    const injections = auth.authFailed ? undefined : auth.injections;
-    const cookieHeader = auth.authFailed ? undefined : auth.cookieHeader;
+    // The anonymous cell is the control every other cell is compared against: it gets none of the
+    // acquired credential, in any of its forms.
+    if (options?.unauthenticated === true) return executor(document, variables, options);
     return executor(document, variables, {
       ...options,
-      ...(token === undefined ? {} : { authToken: token }),
-      ...(injections === undefined || injections.length === 0 ? {} : { injections }),
-      ...(cookieHeader === undefined || cookieHeader === '' ? {} : { cookieHeader }),
+      ...acquiredCredential(getAuth(), options?.authToken),
     });
+  };
+}
+
+/**
+ * The acquired credential in every form it can take, or nothing at all.
+ *
+ * #1981 — non-bearer auth (api_key / basic_auth / cookie- or header-based login_flow) is carried
+ * ONLY by `injections` / `cookieHeader`. R4 threaded the bearer token but dropped these, so those
+ * profiles authenticated successfully and then scanned unauthenticated — a silent false-CLEAN.
+ * A failed acquisition contributes nothing (never a fabricated credential).
+ */
+function acquiredCredential(
+  auth: AcquiredScanAuth,
+  callerToken: string | undefined,
+): Partial<{ authToken: string; injections: AcquiredScanAuth['injections']; cookieHeader: string }> {
+  const token = callerToken ?? (auth.authFailed ? undefined : auth.authToken);
+  if (auth.authFailed) return token === undefined ? {} : { authToken: token };
+  const { injections, cookieHeader } = auth;
+  return {
+    ...(token === undefined ? {} : { authToken: token }),
+    ...(injections === undefined || injections.length === 0 ? {} : { injections }),
+    ...(cookieHeader === undefined || cookieHeader === '' ? {} : { cookieHeader }),
   };
 }
 
@@ -146,21 +164,32 @@ export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
       restSpec.restConfig,
     );
     const tracker = createTracker({ adapter: createNoopAdapter(), tenantId: state.tenantId });
+    // A customer-supplied target on the pool runner: admitted under the strict policy, always.
+    const selectedTarget = resolveVerificationTarget(
+      { url: assignment.targetUrl },
+      STRICT_DESTINATION,
+    );
     const context: CommandContext = {
+      selectedTarget,
       tenantConfig,
       tenantId: state.tenantId,
       environment: 'cloud',
       tracker,
+      // The pool runner scans customer-controlled targets: the widened policy can never apply.
+      allowPrivateTarget: false,
     };
     const discoveryMeta = await discoverOperationsDetailed(context);
     const registry = buildAdHocRegistry(discoveryMeta.graphqlOperations, state.tenantId);
     // #1850 — the pool runner hits customer-controlled targets; pass the (pinned in prod) fetchImpl so the
     // GraphQL executor's connection is pinned to the validated IP. In tests deps.fetchImpl is the injected mock.
-    const executor = createExecutor(assignment.targetUrl, deps.fetchImpl);
+    const executor = createExecutor(selectedTarget.url, deps.fetchImpl, {
+      // A customer-controlled target on the pool runner: never the operator's widened policy.
+      allowPrivateTarget: false,
+    });
     const effectiveTools = resolveBaseEffectiveTools(assignment.agentSet);
     const restOps = discoveryMeta.discoveredOperations.filter((op) => op.type === 'rest');
     const hasRest = restOps.length > 0;
-    return { tracker, registry, executor, effectiveTools, restOps, hasRest, discoveryMeta };
+    return { tracker, registry, executor, effectiveTools, restOps, hasRest, discoveryMeta, selectedTarget };
   } finally {
     await restSpec.cleanup();
   }
@@ -260,75 +289,6 @@ export function rbacPipelineFields(
   return { effectiveTools: [] as ToolName[] };
 }
 
-function buildCompletedRunnerResult(opts: {
-  assignment: RunnerJob;
-  result: Awaited<ReturnType<typeof runPipeline>>;
-  restWire: Extract<ResolvedRestExecutor, { ok: true }>;
-  cancelObserved: boolean;
-  schemaSnapshot?: unknown;
-}): RunnerResult {
-  const { assignment, result, restWire, cancelObserved, schemaSnapshot } = opts;
-  // Terminal cancel (Spec B INV-4): ONLY when the cloud's cancelRequested flag was actually
-  // observed AND the pipeline abort path ran — never fabricated from an abort alone.
-  if (cancelObserved && result.metadata.cancelled) {
-    const rotated = restWire.rotatedRefreshToken();
-    return {
-      scanId: assignment.scanId,
-      status: 'cancelled',
-      toolsCompletedCount: result.metadata.toolsCompleted.length,
-      ...(rotated === undefined ? {} : { rotatedRefreshToken: rotated }),
-    };
-  }
-
-  if (restWire.authLost()) {
-    const rotated = restWire.rotatedRefreshToken();
-    return {
-      scanId: assignment.scanId,
-      status: 'failed',
-      error: 'auth_lost',
-      failureType: 'auth_lost',
-      ...(rotated === undefined ? {} : { rotatedRefreshToken: rotated }),
-    };
-  }
-
-  const rotated = restWire.rotatedRefreshToken();
-  return {
-    scanId: assignment.scanId,
-    status: 'completed',
-    dcg: buildRunnerDcgPayload(result.condensed, CLI_VERSION),
-    attestation: result.attestation,
-    result,
-    ...(rotated === undefined ? {} : { rotatedRefreshToken: rotated }),
-    ...(schemaSnapshot === undefined ? {} : { schemaSnapshot }),
-  };
-}
-
-/** Build a SchemaSnapshot when GraphQL ops exist; omit for REST-only (#2110). */
-export function buildRunnerSchemaSnapshot(opts: {
-  graphqlOperations: readonly GraphQLOperation[];
-  tenantId: string;
-}): unknown | undefined {
-  if (opts.graphqlOperations.length === 0) {
-    return undefined;
-  }
-  try {
-    return buildSnapshot({
-      introspection: opts.graphqlOperations,
-      tenantId: opts.tenantId,
-      environment: 'cloud',
-    });
-  } catch (e) {
-    console.error(
-      JSON.stringify({
-        message: 'runner_schema_snapshot_build_failed',
-        tenant_id: opts.tenantId,
-        detail: e instanceof Error ? e.message : String(e),
-      }),
-    );
-    return undefined;
-  }
-}
-
 type LiveScanWires = {
   emitter: ReturnType<typeof createScanLogEmitter>;
   watch: { stop: () => void };
@@ -348,6 +308,7 @@ function startLiveScanWires(opts: ScanExecuteDeps): LiveScanWires {
     runnerToken: opts.state.token,
     capabilityToken: opts.assignment.capabilityToken,
     scanId: opts.assignment.scanId,
+    attemptId: opts.assignment.attemptId,
     httpClient: opts.cloudHttpClient,
     timer: opts.timer,
   };
@@ -389,6 +350,7 @@ function assemblePipelineArgs(
   return {
     state: opts.state,
     assignment: opts.assignment,
+    selectedTarget: prepared.selectedTarget,
     registry: prepared.registry,
     executor: authedExecutor,
     effectiveTools,
@@ -400,6 +362,8 @@ function assemblePipelineArgs(
       : { rbacRestExecutor: restWire.rbacRestExecutor }),
     restOps: prepared.restOps,
     discoveryRaw: prepared.discoveryMeta.discoveryRaw,
+    // Read only by the shadow DinoResult constructor (Cleanup V2 task 2); tool inputs are unchanged.
+    discovery: { graphqlOperations: prepared.discoveryMeta.graphqlOperations, introspectionLevel: prepared.discoveryMeta.introspectionLevel, read: discoveryRead({ structureSource: prepared.discoveryMeta.structureSource, hasRest: prepared.hasRest }) },
     ...(rbacFields.rbacRoles === undefined
       ? {}
       : {
@@ -418,7 +382,7 @@ function assemblePipelineArgs(
 }
 
 export async function executeRunnerAssignment(
-  opts: ScanExecuteDeps & { pipelineRunner: typeof runPipeline },
+  opts: ScanExecuteDeps & { pipelineRunner: PipelineRunner },
 ): Promise<RunnerResult> {
   const { assignment, pipelineRunner } = opts;
   const prepared = await prepareRunnerScanContext(opts);
@@ -426,6 +390,7 @@ export async function executeRunnerAssignment(
   if (!restWire.ok) {
     return {
       scanId: assignment.scanId,
+      attemptId: assignment.attemptId,
       status: 'failed',
       error: 'auth_failed',
       failureType: 'auth_failed',
@@ -443,12 +408,16 @@ export async function executeRunnerAssignment(
       graphqlOperations: prepared.discoveryMeta.graphqlOperations,
       tenantId: opts.state.tenantId,
     });
-    return buildCompletedRunnerResult({
+    const signer = opts.attestationSigner ?? null;
+    return await buildCompletedRunnerResult({
       assignment,
       result,
-      restWire,
+      cliVersion: CLI_VERSION,
+      rotatedRefreshToken: restWire.rotatedRefreshToken(),
+      authLost: restWire.authLost(),
       cancelObserved: wires.cancelObserved(),
       schemaSnapshot,
+      attest: (r) => (signer === null ? Promise.resolve(undefined) : attestCanonicalResult({ result: r, scanId: assignment.scanId, agentVersion: CLI_VERSION, signer })),
     });
   } finally {
     wires.watch.stop();

@@ -70,8 +70,6 @@ export interface ResolvedScanConfig {
   snapshotDir: string;
   /** Auth configuration (undefined = no auth = skip RBAC) */
   auth?: { enabled: boolean; role?: string | undefined } | undefined;
-  /** AI API key for reasoning */
-  aiKey?: string | undefined;
   /** Watch interval in seconds */
   watchInterval: number;
   /** Watch autonomy level */

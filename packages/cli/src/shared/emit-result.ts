@@ -6,7 +6,8 @@
 import { stripControlsAndAnsi } from './neutralize';
 
 export interface EmitResultOptions {
-  format?: 'markdown' | 'json';
+  /** `canonical` = the exact `DinoResult` bytes: never control-stripped (digest-stable), only newline-terminated. */
+  format?: 'markdown' | 'json' | 'canonical';
   /** Override TTY detection (defaults to process.stdout.isTTY - same seam as detectUi). */
   tty?: boolean;
 }
@@ -38,7 +39,7 @@ export function setResultSink(sink: ((s: string) => void) | null): void {
 export function emitResult(document: string, opts?: EmitResultOptions): void {
   const tty = opts?.tty ?? process.stdout.isTTY === true;
   let out = document;
-  if (!tty || opts?.format === 'json') {
+  if (opts?.format !== 'canonical' && (!tty || opts?.format === 'json')) {
     out = stripControlsAndAnsi(out);
   }
   if (!out.endsWith('\n')) {

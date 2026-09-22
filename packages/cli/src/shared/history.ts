@@ -24,7 +24,7 @@ const WatchHistoryEntrySchema = z.object({
   environment: z.string(),
   trigger: z.literal('watch'),
   durationMs: z.number(),
-  operationCount: z.number(),
+  operationCount: z.number().nullable(),
   toolsRun: z.number(),
   toolsCompleted: z.number(),
   toolsFailed: z.number(),
@@ -48,7 +48,8 @@ export interface WatchHistoryEntry {
   environment: string;
   trigger: 'watch';
   durationMs: number;
-  operationCount: number;
+  /** `verdict.operationCount`: null under an UNKNOWN scope (never a discovered-array length). */
+  operationCount: number | null;
   toolsRun: number;
   toolsCompleted: number;
   toolsFailed: number;
@@ -84,7 +85,7 @@ async function migrateLegacyIfNeeded(dir: string, historyDir: string): Promise<v
       const ndjsonPath = path.join(dir, 'history.ndjson');
       await safeWriteFile(ndjsonPath, ndjson, historyDir);
     }
-    await fs.unlink(legacyPath).catch(() => {}); // eslint-disable-line security/detect-non-literal-fs-filename
+    await fs.unlink(legacyPath).catch(() => undefined); // eslint-disable-line security/detect-non-literal-fs-filename
   } catch (err) {
     const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : '';
     const isNotFound =
@@ -147,7 +148,7 @@ export async function loadHistory(options: {
 }): Promise<WatchHistoryEntry[]> {
   const historyRoot = path.resolve(options.historyDir);
   const dir = resolveHistoryDir(options.historyDir, options.tenantId, options.environment);
-  await migrateLegacyIfNeeded(dir, options.historyDir).catch(() => {});
+  await migrateLegacyIfNeeded(dir, options.historyDir).catch(() => undefined);
 
   const filepath = resolveFilepath(options.historyDir, options.tenantId, options.environment);
   const safeFilepath = safePath(filepath, historyRoot);

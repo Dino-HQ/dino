@@ -2,15 +2,9 @@
  * Cloud assignment polling loop (Issue #1150).
  */
 
-import {
-  asScanId,
-  asTenantId,
-  type RunnerJob,
-  type RunnerResult,
-  type SentinelScanCommand,
-} from '@dino/core';
+import { asScanId, asTenantId, type RunnerJob, type RunnerResult } from '@dino/core';
 import { SystemTimer } from '@dino/engine';
-import type { ScanReporter } from './inngest-reporter';
+import type { ScanReporter, TerminalReportExtras } from './inngest-reporter';
 import type { RunnerState } from './state-store';
 import type { Timer } from '@dino/engine';
 
@@ -91,32 +85,6 @@ async function waitMs(timer: Timer, ms: number, signal: AbortSignal): Promise<vo
   });
 }
 
-function isSentinelScanCommand(value: unknown): value is SentinelScanCommand {
-  if (value === null || typeof value !== 'object') return false;
-  const o = value as Record<string, unknown>;
-  const scope = o.scope;
-  const context = o.context;
-  if (typeof o.tenantId !== 'string' || typeof o.apiId !== 'string') return false;
-  if (scope === null || typeof scope !== 'object') return false;
-  const s = scope as Record<string, unknown>;
-  if (!Array.isArray(s.agents) || typeof s.depth !== 'string') return false;
-  if (context === null || typeof context !== 'object') return false;
-  const ctx = context as Record<string, unknown>;
-  return (
-    ctx.trigger === 'sentinel' && Array.isArray(ctx.triggerClasses) && Array.isArray(ctx.signalIds)
-  );
-}
-
-function parseOptionalCommand(commandRaw: unknown): SentinelScanCommand | undefined {
-  if (commandRaw === undefined) {
-    return undefined;
-  }
-  if (isSentinelScanCommand(commandRaw)) {
-    return commandRaw;
-  }
-  return undefined;
-}
-
 function parseOptionalNonBlankString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
@@ -143,9 +111,8 @@ function parseOptionalStringArray(value: unknown): string[] | undefined {
 
 function assembleRunnerJob(
   o: Record<string, unknown>,
-  ids: { scanId: string; tenantId: string; targetUrl: string },
+  ids: { scanId: string; attemptId: string; tenantId: string; targetUrl: string },
 ): RunnerJob {
-  const command = parseOptionalCommand(o.command);
   const authProfileId = parseOptionalNonBlankString(o.authProfileId);
   const capabilityToken = parseOptionalNonBlankString(o.capabilityToken);
   const protocol = parseOptionalProtocol(o.protocol);
@@ -155,9 +122,9 @@ function assembleRunnerJob(
   const agentSet = parseOptionalStringArray(o.agentSet);
   return {
     scanId: asScanId(ids.scanId),
+    attemptId: ids.attemptId,
     tenantId: asTenantId(ids.tenantId),
     targetUrl: ids.targetUrl,
-    ...(command === undefined ? {} : { command }),
     ...(authProfileId === undefined ? {} : { authProfileId }),
     ...(capabilityToken === undefined ? {} : { capabilityToken }),
     ...(protocol === undefined ? {} : { protocol }),
@@ -173,10 +140,19 @@ export function parseAssignment(json: unknown): RunnerJob | null {
   if (json === null || typeof json !== 'object') return null;
   const o = json as Record<string, unknown>;
   const scanId = o.scanId;
+  // Required (#scan-attempt-identity): fail closed rather than read it optionally — an attempt-less
+  // job from an older cloud would report terminally with no attempt to bind the report to.
+  const attemptId = o.attemptId;
   const tenantId = o.tenantId;
   const targetUrl = o.targetUrl;
-  if (typeof scanId === 'string' && typeof tenantId === 'string' && typeof targetUrl === 'string') {
-    return assembleRunnerJob(o, { scanId, tenantId, targetUrl });
+  if (
+    typeof scanId === 'string' &&
+    typeof attemptId === 'string' &&
+    attemptId.trim() !== '' &&
+    typeof tenantId === 'string' &&
+    typeof targetUrl === 'string'
+  ) {
+    return assembleRunnerJob(o, { scanId, attemptId, tenantId, targetUrl });
   }
   return null;
 }
@@ -191,23 +167,33 @@ function formatPollThrown(reason: unknown): string {
   return 'unexpected_poll_error';
 }
 
-/** Shared optional extras every terminal report carries (Spec B): rotated RT + pool capability. */
-function terminalExtras(result: RunnerResult, assignment: RunnerJob): Record<string, string> {
-  const extras: Record<string, string> = {};
-  if (result.rotatedRefreshToken !== undefined)
-    extras.rotatedRefreshToken = result.rotatedRefreshToken;
-  // Pool identity: the results POST needs the scan-bound capability or the cloud 401s it (Spec B).
-  if (assignment.capabilityToken !== undefined) extras.capabilityToken = assignment.capabilityToken;
-  return extras;
+/**
+ * Shared extras every terminal report carries: the attempt this report belongs to (required — the
+ * cloud rejects a report from a superseded attempt) plus the rotated RT + pool capability (Spec B).
+ */
+function terminalExtras(result: RunnerResult, assignment: RunnerJob): TerminalReportExtras {
+  return {
+    attemptId: result.attemptId,
+    ...(result.rotatedRefreshToken === undefined
+      ? {}
+      : { rotatedRefreshToken: result.rotatedRefreshToken }),
+    // Pool identity: the results POST needs the scan-bound capability or the cloud 401s it (Spec B).
+    ...(assignment.capabilityToken === undefined
+      ? {}
+      : { capabilityToken: assignment.capabilityToken }),
+  };
 }
 
 async function handleAssignment(config: PollLoopConfig, assignment: RunnerJob): Promise<void> {
   const result = await config.executeScan(assignment);
   const extras = terminalExtras(result, assignment);
   if (result.status === 'completed') {
-    await config.reporter.reportCompleted(result.scanId, result.dcg, {
+    await config.reporter.reportCompleted(result.scanId, {
+      dcg: result.dcg,
+      dinoResult: result.dinoResult,
+      dinoResultDigest: result.dinoResultDigest,
       ...(result.attestation === undefined ? {} : { attestation: result.attestation }),
-      ...(result.result === undefined ? {} : { pipelineResult: result.result }),
+      ...(result.schemaSnapshot === undefined ? {} : { schemaSnapshot: result.schemaSnapshot }),
       ...extras,
     });
   } else if (result.status === 'cancelled') {
@@ -339,6 +325,7 @@ function handlePollError(e: unknown, logger: PollLogger): 'break' | 'backoff' {
   return 'backoff';
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: pre-existing poll/backoff loop; unchanged by the SentinelScanCommand removal
 export async function startPollLoop(config: PollLoopConfig): Promise<void> {
   const pollIntervalMs = config.pollIntervalMs ?? 5_000;
   const maxBackoffMs = config.maxBackoffMs ?? 60_000;

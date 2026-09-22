@@ -9,9 +9,8 @@ import { safePath, createTokenFactory, createAuthAdapter } from '@dino/engine';
 import { shouldRenderInkView } from '../ink/InkRender';
 import { getEndpoint } from '../shared/base-command';
 import { CliError } from '../shared/errors';
-import { outcomeKindFromIterationError } from '../shared/outcome';
+import { EXIT_CODE, outcomeKindFromIterationError } from '../shared/outcome';
 import {
-  DEFAULT_REASONING_OPTS,
   validateTools,
   validateModules,
   createExecutor,
@@ -20,11 +19,11 @@ import {
   validateRbacRoles,
   validateConfigConsistency,
 } from '../shared/pipeline-helpers';
-import { detectUi, healthLabel, durationLabel, colorize, printNotice } from '../shared/ui';
+import { detectUi, healthVerdictLabel, durationLabel, colorize, printNotice } from '../shared/ui';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 import type { WatchHistoryEntry } from '../shared/history';
 import type { UiOptions } from '../shared/ui';
-import type { EnvelopeSeverityLevel } from '@dino/core';
+import type { DinoResult } from '@dino/core';
 import type { TokenResolver } from '@dino/engine';
 
 export interface WatchFlags extends CommonFlags {
@@ -36,8 +35,6 @@ export interface WatchFlags extends CommonFlags {
   snapshotDir?: string | undefined;
   tools?: string[] | undefined;
   modules?: string[] | undefined;
-  reasoning?: boolean | undefined;
-  aiKey?: string | undefined;
   timeout?: number | undefined;
   auth?: { enabled: boolean; role?: string | undefined } | undefined;
   maxConsecutiveFailures?: number | undefined;
@@ -58,7 +55,6 @@ export interface IterationConfig {
   autonomy: AutonomyLevel;
   validatedTools?: ReturnType<typeof validateTools> | undefined;
   validatedModules?: string[] | undefined;
-  reasoningConfig: ReturnType<typeof buildReasoningConfig>;
   snapshotDir: string;
   timeoutMs: number;
   historyDir: string;
@@ -66,11 +62,6 @@ export interface IterationConfig {
   maxConsecutiveFailures: number;
   /** Seconds until next iteration (for Ink countdown when another loop is scheduled). */
   intervalSec: number;
-  // B102 (#671) + B103 (#672): Shared across iterations so watch mode preserves state
-  // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- inline import() required: top-level @dino/reasoning import is restricted (CLI bundle)
-  circuitBreaker?: import('@dino/reasoning').CircuitBreaker | undefined;
-  // eslint-disable-next-line @typescript-eslint/consistent-type-imports -- inline import() required: top-level @dino/reasoning import is restricted (CLI bundle)
-  reasoningCache?: import('@dino/reasoning').ReasoningCache | undefined;
 }
 
 function validateInterval(interval: number): void {
@@ -121,34 +112,23 @@ export function resolveMaxIterations(flags: WatchFlags): number {
   return Infinity;
 }
 
-export function buildReasoningConfig(reasoning: boolean | undefined, aiKey: string | undefined) {
-  if (reasoning) {
-    if (aiKey === undefined) {
-      throw new CliError(
-        'Reasoning enabled but no API key provided. Set DINO_AI_KEY or pass --ai-key.',
-        2,
-        'Provide an Anthropic API key when using --reasoning.',
-        undefined,
-        'usage',
-      );
-    }
-    return { ...DEFAULT_REASONING_OPTS, enabled: true as const, apiKey: aiKey };
-  }
-  return { ...DEFAULT_REASONING_OPTS, enabled: false as const, apiKey: null };
-}
-
 function buildExecutor(
   context: CommandContext,
   auth: WatchFlags['auth'] | undefined,
   ui: UiOptions,
 ): { executor: ReturnType<typeof createExecutor>; tokenResolver?: TokenResolver } {
   const endpoint = getEndpoint(context);
-  const base = createExecutor(endpoint);
+  const base = createExecutor(endpoint, undefined, {
+    allowPrivateTarget: context.allowPrivateTarget === true,
+  });
   if (auth?.enabled && context.tenantConfig.auth) {
     const tokenFactory = createTokenFactory({
       endpoint,
       tenantId: context.tenantId,
-      adapter: createAuthAdapter(context.tenantConfig.auth),
+      allowPrivateTarget: context.allowPrivateTarget,
+      adapter: createAuthAdapter(context.tenantConfig.auth, {
+        allowPrivateTarget: context.allowPrivateTarget,
+      }),
       refreshBufferMs: (context.tenantConfig.auth?.tokenRefresh?.expiryBuffer ?? 60) * 1000,
     });
     const executor = withAuth(base, tokenFactory, auth.role ?? 'USER');
@@ -167,7 +147,7 @@ export function buildDegradedEntry(iteration: number, context: CommandContext): 
     environment: context.environment,
     trigger: 'watch',
     durationMs: 0,
-    operationCount: 0,
+    operationCount: null,
     toolsRun: 0,
     toolsCompleted: 0,
     toolsFailed: 0,
@@ -191,14 +171,14 @@ export function throwIfCircuitBroken(
   if (!isCircuitBroken(consecutiveFailures, cfg)) return;
   const msg = iterError instanceof Error ? iterError.message : String(iterError);
   const kind = outcomeKindFromIterationError(iterError);
-  const isTransient = kind === 'transient';
+  const exitCode = EXIT_CODE.get(kind) ?? 70;
   throw new CliError(
     `[watch] ${consecutiveFailures} consecutive failures: exiting. Last error: ${msg}`,
-    isTransient ? 4 : 70,
+    exitCode,
     undefined,
     iterError,
-    isTransient ? 'transient' : 'crash',
-    isTransient ? 'transient' : 'permanent',
+    kind,
+    kind === 'transient' ? 'transient' : 'permanent',
   );
 }
 
@@ -206,18 +186,18 @@ export interface IterationSummaryOpts {
   iteration: number;
   context: CommandContext;
   entry: WatchHistoryEntry;
-  healthScore: number | null;
-  healthLevel: EnvelopeSeverityLevel;
+  /** `verdict.health`, copied: both presentation paths print this verdict, neither re-derives it. */
+  health: DinoResult['verdict']['health'];
   changes: { added: number; removed: number; modified: number; breakingChanges: number };
-  result: { durationMs: number; metadata: { degraded: boolean } };
+  /** Copied from the canonical result (`verification.durationMs`, `verdict.degraded`). */
+  result: { durationMs: number; degraded: boolean };
   noColor?: boolean | undefined;
   quiet?: boolean | undefined;
   nextSleepSec?: number | undefined;
 }
 
 async function tryRenderInkIterationView(opts: IterationSummaryOpts): Promise<boolean> {
-  const { iteration, context, entry, healthScore, changes, result, noColor, quiet, nextSleepSec } =
-    opts;
+  const { iteration, context, entry, health, changes, result, noColor, quiet, nextSleepSec } = opts;
   const summaryUi = detectUi({ quiet, noColor });
   if (!shouldRenderInkView(summaryUi, { quiet })) return false;
   try {
@@ -231,14 +211,16 @@ async function tryRenderInkIterationView(opts: IterationSummaryOpts): Promise<bo
         tenant: context.tenantId,
         environment: context.environment,
         iteration,
-        healthScore,
+        healthScore: health.score,
+        healthVerdict: health.verdict,
+        healthLevel: health.level,
         operationCount: entry.operationCount,
         toolsRun: entry.toolsRun,
         toolsCompleted: entry.toolsCompleted,
         toolsFailed: entry.toolsFailed,
         breakingChanges: changes.breakingChanges,
         durationMs: result.durationMs,
-        degraded: Boolean(result.metadata.degraded),
+        degraded: result.degraded,
         nextScanInSec: nextSleepSec,
         colored: summaryUi.colored,
       }),
@@ -257,8 +239,7 @@ export async function showIterationSummary(opts: IterationSummaryOpts): Promise<
   const inkShown = await tryRenderInkIterationView(opts);
   if (inkShown) return;
 
-  const { iteration, context, entry, healthScore, healthLevel, changes, result, noColor, quiet } =
-    opts;
+  const { iteration, context, entry, health, changes, result, noColor, quiet } = opts;
   const summaryUi = detectUi({ quiet, noColor });
   const lines = [
     '',
@@ -267,13 +248,13 @@ export async function showIterationSummary(opts: IterationSummaryOpts): Promise<
       'dim',
       summaryUi,
     ),
-    `  Health:     ${healthLabel(healthScore, healthLevel, summaryUi)}`,
-    `  Operations: ${entry.operationCount}`,
+    `  Health:     ${healthVerdictLabel(health, summaryUi)}`,
+    `  Operations: ${entry.operationCount ?? '?'}`,
     `  Tools:      ${entry.toolsRun} run, ${entry.toolsCompleted} completed, ${entry.toolsFailed} failed`,
     `  Breaking:   ${changes.breakingChanges > 0 ? colorize(String(changes.breakingChanges) + ' breaking', 'redBold', summaryUi) : colorize('0', 'green', summaryUi)}`,
     `  Duration:   ${colorize(durationLabel(result.durationMs), 'dim', summaryUi)}`,
   ];
-  if (result.metadata.degraded) {
+  if (result.degraded) {
     const degradedMsg = 'Degraded: all tools failed. Health score may be unreliable.';
     lines.push(`  ${colorize(degradedMsg, 'yellow', summaryUi)}`);
   }
@@ -345,17 +326,6 @@ export function validateAndBuildConfig(
   const validatedModules = flags.modules
     ? validateModules(flags.modules, context.tenantId)
     : undefined;
-  const aiKey = flags.aiKey ?? process.env.DINO_AI_KEY;
-  if (flags.reasoning && !aiKey) {
-    throw new CliError(
-      'AI reasoning requires an API key. Set DINO_AI_KEY env var or add aiKey to .dino.yml',
-      2,
-      'Provide an Anthropic API key when using --reasoning.',
-      undefined,
-      'usage',
-    );
-  }
-
   const { executor, tokenResolver } = buildExecutor(context, flags.auth, ui);
   const rbacRoles = resolveWatchRbacRoles(context, ui);
 
@@ -367,7 +337,6 @@ export function validateAndBuildConfig(
     autonomy,
     validatedTools,
     validatedModules,
-    reasoningConfig: buildReasoningConfig(flags.reasoning, aiKey),
     snapshotDir: flags.snapshotDir ? safePath(flags.snapshotDir) : DEFAULT_SNAPSHOT_DIR,
     timeoutMs: flags.timeout ?? 300_000,
     historyDir: path.join(process.cwd(), DEFAULT_HISTORY_DIR),

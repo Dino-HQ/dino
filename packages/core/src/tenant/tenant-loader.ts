@@ -13,14 +13,57 @@ import {
   isAllowedEndpointUrl,
   isBlockedIPv4,
   resolveAndValidateDNS,
-  ENDPOINT_REJECT_MESSAGES,
 } from './endpoint-validator';
 import { unsupportedProtocolMessage, type TenantConfig } from './tenant-config';
+import { TenantEndpointSchema } from './verification-target';
+import { TenantConfigError } from './tenant-config-error';
+import { sanitizeErrorMessage } from '../utils/error-sanitizer';
 import { safeExistsSync, safeReadFileSync } from '../utils/safe-fs';
 
 // Re-export for barrel consumers and tests
 export { resolveAndValidateDNS } from './endpoint-validator';
 export type { DNSValidationResult } from './endpoint-validator';
+
+function boundedConfigIoReason(err: unknown): string {
+  const code =
+    err !== null && typeof err === 'object' && 'code' in err
+      ? (err as { code?: unknown }).code
+      : undefined;
+  if (typeof code === 'string' && code.length > 0) {
+    // EACCES / EISDIR / ENOENT race — never echo Node's path-bearing message
+    return code;
+  }
+  // YAMLParseError / other non-fs: bounded credential-sanitize + light path scrub
+  // (defense-in-depth only — not a guarantee for all path shapes)
+  const raw = err instanceof Error ? err.message : String(err);
+  const oneLine = sanitizeErrorMessage(raw.replaceAll(/\s+/g, ' ').trim());
+  const noAbs = oneLine
+    .replaceAll(/\/(?:Users|home|private|tmp|var)\/\S+/g, '[path]')
+    .replaceAll(/[A-Za-z]:\\[^\s]+/g, '[path]');
+  return noAbs.length > 120 ? `${noAbs.slice(0, 120)}…` : noAbs;
+}
+
+function throwConfigReadParseError(resolvedBase: string, cause: unknown): never {
+  const code =
+    cause !== null && typeof cause === 'object' && 'code' in cause
+      ? (cause as { code?: unknown }).code
+      : undefined;
+  if (code === 'ENOENT') {
+    // Genuinely absent file — a usage error (exit 2), same message as before the preflight
+    // was removed. Only ENOENT is usage; every other read error (EACCES, EISDIR) or a parse
+    // failure is a config error (exit 5) below. This split is why the existence preflight was
+    // dropped: fs.existsSync collapsed ENOENT and EACCES into one `false`.
+    throw new TenantConfigError(
+      `Tenant config file not found (${resolvedBase}). Run dino init or dino validate.`,
+      'usage',
+    );
+  }
+  const reason = boundedConfigIoReason(cause);
+  throw new TenantConfigError(
+    `Tenant config (${resolvedBase}) could not be read or parsed: ${reason}. Run dino validate.`,
+    'config',
+  );
+}
 
 // --- Zod schemas ---
 
@@ -65,14 +108,8 @@ const AuthConfigSchema = z
     path: ['roles'],
   });
 
-const EndpointUrlSchema = z.string().superRefine((url, ctx) => {
-  const result = checkEndpointUrl(url);
-  if (result.allowed) return;
-  ctx.addIssue(ENDPOINT_REJECT_MESSAGES[result.reason]);
-});
-
 const EnvironmentConfigSchema = z.object({
-  endpoints: z.record(z.string(), EndpointUrlSchema),
+  endpoints: z.record(z.string(), TenantEndpointSchema),
   timeout: z.number().int().positive(),
   retries: z.number().int().min(0),
 });
@@ -89,6 +126,7 @@ const GraphQLApiConfigSchema = z
     name: z.string().min(1),
     type: z.literal('graphql'),
     source: z.string().min(1),
+    schemaPath: SpecPathSchema.optional(),
   })
   .strict();
 
@@ -155,15 +193,23 @@ export function loadTenantConfig(filePath: string): TenantConfig {
   const resolvedDir = path.dirname(resolvedPath);
   const resolvedBase = path.basename(resolvedPath);
 
-  if (!safeExistsSync(resolvedBase, resolvedDir)) {
-    throw new Error(`Tenant config file not found: ${resolvedPath}`);
+  // No fs.existsSync preflight: it collapses ENOENT (genuinely absent → usage/2) and EACCES
+  // (config behind a non-traversable dir → config/5) into one `false`, so a permission-blocked
+  // config misreported as "not found. Run dino init" at exit 2 (#241 follow-up, PR #2302 review).
+  // Let the read throw and classify by error code; safeReadFileSync still enforces the path guard.
+  let parsed: unknown;
+  try {
+    const raw = safeReadFileSync(resolvedBase, resolvedDir);
+    parsed = parseYaml(raw);
+  } catch (err: unknown) {
+    throwConfigReadParseError(resolvedBase, err);
   }
 
-  const raw = safeReadFileSync(resolvedBase, resolvedDir);
-  const parsed = parseYaml(raw);
-
   if (!parsed || typeof parsed !== 'object') {
-    throw new Error(`Tenant config file is empty or not a valid YAML object: ${resolvedPath}`);
+    throw new TenantConfigError(
+      `Tenant config file is empty or not a valid YAML object (${resolvedBase}). Run dino validate.`,
+      'config',
+    );
   }
 
   return validateTenantConfig(parsed);
@@ -184,7 +230,7 @@ function rejectUnsupportedApiProtocols(raw: unknown): void {
     if (api === null || typeof api !== 'object') continue;
     const msg = unsupportedProtocolMessage((api as { type?: unknown }).type);
     if (msg !== null) {
-      throw new Error(`Tenant config validation failed:\n  - apis: ${msg}`);
+      throw new TenantConfigError(`Tenant config validation failed:\n  - apis: ${msg}`, 'config');
     }
   }
 }
@@ -198,15 +244,16 @@ export function validateTenantConfig(raw: unknown): TenantConfig {
     const issues = result.error.issues
       .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)
       .join('\n');
-    throw new Error(`Tenant config validation failed:\n${issues}`);
+    throw new TenantConfigError(`Tenant config validation failed:\n${issues}`, 'config');
   }
 
   // Validate defaultEnvironment exists in environments
   const config = result.data;
   if (!(config.defaultEnvironment in config.environments)) {
-    throw new Error(
+    throw new TenantConfigError(
       `defaultEnvironment "${config.defaultEnvironment}" not found in environments. ` +
-        `Available: ${Object.keys(config.environments).join(', ')}`,
+        `Available: ${Object.keys(config.environments).join(', ')}. Run dino validate.`,
+      'config',
     );
   }
 
@@ -279,14 +326,22 @@ function findProjectRoot(startDir: string): string {
  */
 export function loadTenantById(tenantId: string, tenantsDir?: string): TenantConfig {
   if (!/^[a-z0-9-]+$/.test(tenantId)) {
-    throw new Error(
+    throw new TenantConfigError(
       `Invalid tenant ID "${tenantId}". Must be lowercase alphanumeric with hyphens only.`,
+      'usage',
     );
   }
 
-  const dir = tenantsDir ?? path.join(findProjectRoot(process.cwd()), 'tenants');
+  const dir = resolveTenantConfigDir(tenantsDir);
   const filePath = path.join(dir, `${tenantId}.yml`);
   return loadTenantConfig(filePath);
+}
+
+/**
+ * Resolve the tenant config directory (same root `loadTenantById` uses). #2306
+ */
+export function resolveTenantConfigDir(tenantsDir?: string): string {
+  return tenantsDir ?? path.join(findProjectRoot(process.cwd()), 'tenants');
 }
 
 /** Test-only access to SSRF helpers (not part of the public package API). */

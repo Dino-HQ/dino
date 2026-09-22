@@ -44,7 +44,9 @@ export interface OpenAPIDiscoveryPluginDeps {
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'] as const;
 type HttpMethod = (typeof HTTP_METHODS)[number];
 
-const noop = (): void => {};
+const noop = (): void => {
+  // No logger supplied: discovery is silent rather than throwing on a missing sink.
+};
 
 function pickDescription(op: OpenAPIOperationSource): string | undefined {
   if (typeof op.description === 'string' && op.description.trim().length > 0) {
@@ -102,6 +104,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function applyOpenApiParameterFields(
+  param: OperationParameter,
+  raw: {
+    required?: boolean;
+    description?: string;
+    schema?: Record<string, unknown>;
+    deprecated?: boolean;
+  },
+): void {
+  if (raw.required === true) param.required = true;
+  if (typeof raw.description === 'string') param.description = raw.description;
+  if (isRecord(raw.schema)) param.schema = raw.schema;
+  if (raw.deprecated === true) param.deprecated = true;
+}
+
+/**
+ * Merge path-item shared parameters with an operation's own (#2319).
+ * OpenAPI: path-level parameters apply to every operation on the path; an operation-level
+ * parameter with the same (name, in) OVERRIDES the path-level one.
+ */
+function mergeParameterSources(
+  pathParams: OpenAPIPathItemSource['parameters'],
+  opParams: OpenAPIOperationSource['parameters'],
+): OpenAPIOperationSource['parameters'] {
+  if (!Array.isArray(pathParams) || pathParams.length === 0) return opParams;
+  const own = Array.isArray(opParams) ? opParams : [];
+  const opKeys = new Set(
+    own
+      .filter(isRecord)
+      .filter((p) => typeof p.name === 'string' && typeof p.in === 'string')
+      .map((p) => `${String(p.name)} ${String(p.in)}`),
+  );
+  // #2319: the spec is dereferenced without schema validation, so a path-item `parameters` array
+  // may contain malformed entries (e.g. a null YAML list item). Guard as records with string
+  // name/in BEFORE dereferencing — mirrors the op-level `isRecord` tolerance — so one bad entry
+  // does not abort discovery for the whole document.
+  const inherited = pathParams
+    .filter(isRecord)
+    .filter((p) => typeof p.name === 'string' && typeof p.in === 'string')
+    .filter((p) => !opKeys.has(`${String(p.name)} ${String(p.in)}`));
+  return [...inherited, ...own];
+}
+
 function extractParameters(op: OpenAPIOperationSource): OperationParameter[] | undefined {
   if (!Array.isArray(op.parameters) || op.parameters.length === 0) return undefined;
   const out: OperationParameter[] = [];
@@ -115,9 +160,7 @@ function extractParameters(op: OpenAPIOperationSource): OperationParameter[] | u
       name,
       in: inVal as OperationParameter['in'],
     };
-    if (raw.required === true) param.required = true;
-    if (typeof raw.description === 'string') param.description = raw.description;
-    if (isRecord(raw.schema)) param.schema = raw.schema;
+    applyOpenApiParameterFields(param, raw);
     out.push(param);
   }
   return out.length > 0 ? out : undefined;
@@ -221,13 +264,56 @@ function pathModuleFallback(path: string): string | undefined {
   return candidate !== undefined && candidate.length > 0 ? candidate : undefined;
 }
 
-function toOperation(method: HttpMethod, path: string, op: OpenAPIOperationSource): Operation {
+/**
+ * Resolve whether the spec says this operation needs authentication.
+ *
+ * OpenAPI resolution order: the operation's own `security` wins, otherwise the document's. An empty
+ * array at either level explicitly means "no authentication", which is NOT the same as absent — so
+ * the distinction has to survive into `Operation.auth`. Without it, tools cannot tell a public
+ * endpoint from one whose requirement simply was not documented, and treat a health check answering
+ * 200 anonymously as an auth bypass.
+ */
+function resolveAuthRequirement(
+  op: OpenAPIOperationSource,
+  documentSecurity: Array<Record<string, string[]>> | undefined,
+): Operation['auth'] {
+  // OpenAPI: absent at BOTH levels means no security requirement, exactly as an empty array does.
+  // We report the spec's contract, not a guess about it — an endpoint whose spec never claims to
+  // need credentials has no authentication contract to verify, so demanding a 401 from it would be
+  // Dino inventing a requirement. An API that does require auth without documenting it is still
+  // caught: the response validator flags the undeclared 401.
+  const effective = op.security ?? documentSecurity ?? [];
+  // An EMPTY requirement object is OpenAPI's way of spelling "anonymous access is also allowed", so
+  // `security: [{}, { apiKey: [] }]` documents optional auth, not mandatory auth. Counting the array
+  // made that operation `required: true`, and every probe then read its legitimate 200 for an
+  // anonymous request as a missing-authentication finding on an endpoint that is public by design.
+  const optionalAllowed = effective.some((requirement) => Object.keys(requirement).length === 0);
+  return { required: effective.length > 0 && !optionalAllowed };
+}
+
+/** One operation's discovery inputs: its own source plus the two things it inherits from above. */
+interface OperationSourceContext {
+  method: HttpMethod;
+  path: string;
+  op: OpenAPIOperationSource;
+  pathParams?: OpenAPIPathItemSource['parameters'] | undefined;
+  documentSecurity?: Array<Record<string, string[]>> | undefined;
+}
+
+function toOperation(source: OperationSourceContext): Operation {
+  const { method, path, op, pathParams, documentSecurity } = source;
   const rawId = op.operationId;
   const resolvedName =
     typeof rawId === 'string' && rawId.trim() !== '' ? rawId : generateOperationName(method, path);
-  const parameters = extractParameters(op);
+  // #2319: fold path-item shared parameters in (op-level overrides) so deprecated shared params
+  // are not missed.
+  const mergedParams = mergeParameterSources(pathParams, op.parameters);
+  const parameters = extractParameters(
+    mergedParams === undefined ? op : { ...op, parameters: mergedParams },
+  );
   const requestBody = extractRequestBody(op);
   const responseSchemas = extractResponseSchemas(op);
+  const auth = resolveAuthRequirement(op, documentSecurity);
   const tagModule =
     Array.isArray(op.tags) && typeof op.tags[0] === 'string' && op.tags[0].trim() !== ''
       ? op.tags[0].trim()
@@ -240,6 +326,7 @@ function toOperation(method: HttpMethod, path: string, op: OpenAPIOperationSourc
     path,
     description: pickDescription(op),
     deprecated: op.deprecated ?? false,
+    ...(auth === undefined ? {} : { auth }),
     ...(module === undefined ? {} : { module }),
     ...(parameters === undefined ? {} : { parameters }),
     ...(requestBody === undefined ? {} : { requestBody }),
@@ -276,6 +363,35 @@ function collectNameCollisions(operations: Operation[]): DiscoveryWarning[] {
   return out;
 }
 
+/** Walk every path item into operations; returns how many malformed path items were skipped. */
+function collectPathOperations(
+  api: OpenAPIDocumentSource,
+  operations: Operation[],
+): number {
+  let skipped = 0;
+  for (const [path, pathItemRaw] of Object.entries(api.paths ?? {})) {
+    if (pathItemRaw == null || typeof pathItemRaw !== 'object') {
+      skipped++;
+      continue;
+    }
+    const pathItem: OpenAPIPathItemSource = pathItemRaw;
+    for (const method of HTTP_METHODS) {
+      const op = operationForMethod(pathItem, method);
+      if (op)
+        operations.push(
+          toOperation({
+            method,
+            path,
+            op,
+            pathParams: pathItem.parameters,
+            documentSecurity: api.security,
+          }),
+        );
+    }
+  }
+  return skipped;
+}
+
 async function discoverOperations(
   deps: OpenAPIDiscoveryPluginDeps,
   options: DiscoveryOptions,
@@ -295,19 +411,7 @@ async function discoverOperations(
   let skippedPathItems = 0;
 
   if (api.paths) {
-    for (const [path, pathItemRaw] of Object.entries(api.paths)) {
-      if (pathItemRaw == null || typeof pathItemRaw !== 'object') {
-        skippedPathItems++;
-        continue;
-      }
-      const pathItem: OpenAPIPathItemSource = pathItemRaw;
-      for (const method of HTTP_METHODS) {
-        const op = operationForMethod(pathItem, method);
-        if (op) {
-          operations.push(toOperation(method, path, op));
-        }
-      }
-    }
+    skippedPathItems = collectPathOperations(api, operations);
   }
 
   if (skippedPathItems > 0) {

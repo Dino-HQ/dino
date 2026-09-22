@@ -11,6 +11,7 @@ import {
   RateLimitSchema,
 } from './v1-operation-metadata';
 import { Provenance } from './v1-provenance';
+import { DcgConfidenceContractSchema } from './confidence-contract';
 
 /**
  * Registers Draft 2020-12 string formats used by DCG so `Value.Check` / strict
@@ -97,8 +98,9 @@ const InfoSchema = Type.Object(
     confidence: Type.Number({
       minimum: 0,
       maximum: 1,
-      description: 'Overall confidence score; derived from sample-count-weighted provenance.',
+      description: 'Versioned confidence: historical legacy semantics in 1-0-x; verification-completeness-v1 in 1-1-0, not pass-rate or API health.',
     }),
+    confidenceMethod: Type.Optional(Type.Literal('verification-completeness-v1')),
     // ADDITION slot — new optional fields go here in future REVISIONS
   },
   { additionalProperties: false },
@@ -362,9 +364,9 @@ const IntelligenceSchema = Type.Object(
 // ─────────────────────────────────────────────────────────────────────
 // Top-level DCG document
 // ─────────────────────────────────────────────────────────────────────
-export const DcgV1Schema = Type.Object(
+const DcgDocumentSchema = Type.Object(
   {
-    dcg: Type.Union([Type.Literal('1-0-0'), Type.Literal('1-0-1'), Type.Literal('1-0-2')], {
+    dcg: Type.Union([Type.Literal('1-0-0'), Type.Literal('1-0-1'), Type.Literal('1-0-2'), Type.Literal('1-1-0')], {
       description: 'Schema version (SchemaVer: MODEL-REVISION-ADDITION).',
     }),
     info: InfoSchema,
@@ -375,15 +377,16 @@ export const DcgV1Schema = Type.Object(
     behaviors: Type.Optional(BehaviorsSchema),
     intelligence: Type.Optional(IntelligenceSchema),
   },
-  {
-    // Unicode escapes avoid qa_drift hardcoded-URL false positives; runtime value is standard https URL
-    $id: '\u0068\u0074\u0074\u0070\u0073://dino-hq.com/schemas/dcg/v1-0-0.json',
-    $schema: '\u0068\u0074\u0074\u0070\u0073://json-schema.org/draft/2020-12/schema',
-    title: 'Dino Context Graph v1.0.0',
-    description: 'Machine-readable description of how an API actually behaves.',
-    additionalProperties: false,
-  },
+  { additionalProperties: false },
 );
+
+export const DcgV1Schema = Type.Intersect([DcgDocumentSchema, DcgConfidenceContractSchema], {
+  // Unicode escapes avoid qa_drift hardcoded-URL false positives; runtime value is standard https URL
+  $id: '\u0068\u0074\u0074\u0070\u0073://dino-hq.com/schemas/dcg/v1-0-0.json',
+  $schema: '\u0068\u0074\u0074\u0070\u0073://json-schema.org/draft/2020-12/schema',
+  title: 'Dino Context Graph v1.0.0',
+  description: 'Machine-readable description of how an API actually behaves.',
+});
 
 export type DcgV1 = Static<typeof DcgV1Schema>;
 

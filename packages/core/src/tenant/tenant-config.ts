@@ -10,6 +10,9 @@
  * exactOptionalPropertyTypes — explicit `undefined` assignments require the union.
  */
 
+import { TenantConfigError } from './tenant-config-error';
+import type { VerificationTargetConfig } from './verification-target';
+
 export interface TenantConfig {
   /** Schema version for forward compatibility */
   schemaVersion: number;
@@ -57,8 +60,8 @@ export interface GraphQLApiConfig {
   name: string;
   type: 'graphql';
   source: string;
-  /** Forbidden for GraphQL. Type guarantees absence; Zod rejects if present. */
-  specPath?: never;
+  /** Optional GraphQL SDL file path (relative to tenant config dir). #2306 */
+  schemaPath?: string | undefined;
 }
 
 export interface RestApiConfig {
@@ -71,7 +74,7 @@ export interface RestApiConfig {
 
 export interface EnvironmentConfig {
   /** Map of API name → endpoint URL */
-  endpoints: Record<string, string>;
+  endpoints: Record<string, VerificationTargetConfig>;
 
   /** Request timeout in milliseconds */
   timeout: number;
@@ -147,14 +150,20 @@ export function toTargetAuthConfig(auth: AuthConfig): TargetAuthConfig | null {
     case 'jwt': {
       const signingKey = auth.adapterConfig.signingKey;
       if (typeof signingKey !== 'string' || signingKey.length === 0) {
-        throw new Error('auth.adapterConfig.signingKey is required for jwt adapter');
+        throw new TenantConfigError(
+          'auth.adapterConfig.signingKey is required for jwt adapter',
+          'config',
+        );
       }
       return { adapter: 'jwt', signingKey, roles: auth.roles, tokenRefresh: auth.tokenRefresh };
     }
     case 'oauth2': {
       const tokenEndpoint = auth.adapterConfig.tokenEndpoint;
       if (typeof tokenEndpoint !== 'string' || tokenEndpoint.length === 0) {
-        throw new Error('auth.adapterConfig.tokenEndpoint is required for oauth2 adapter');
+        throw new TenantConfigError(
+          'auth.adapterConfig.tokenEndpoint is required for oauth2 adapter',
+          'config',
+        );
       }
       const scopeRaw = auth.adapterConfig.scope;
       const scope = typeof scopeRaw === 'string' && scopeRaw.length > 0 ? scopeRaw : undefined;

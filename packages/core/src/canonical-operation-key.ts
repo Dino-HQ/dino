@@ -29,3 +29,19 @@ export function operationExpectationKey(op: {
   }
   return op.name;
 }
+
+/**
+ * The SINGLE REST finding/coverage key policy (DIN-1460 + DIN-1461, #2346).
+ * Canonical METHOD+path when both are present (matches apiOperations.operationKey); otherwise
+ * FAIL CLOSED to the `rest:` namespace — never the bare name, which is the GraphQL keyspace and
+ * would mis-attach the REST finding to a same-named GraphQL operation on the cloud exact-join.
+ */
+export function restFindingKey(op: {
+  operation: string;
+  method?: string | undefined;
+  path?: string | undefined;
+}): string {
+  return op.method === undefined || op.path === undefined
+    ? `rest:${op.operation}`
+    : operationExpectationKey({ name: op.operation, method: op.method, path: op.path });
+}

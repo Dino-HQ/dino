@@ -4,9 +4,15 @@
  */
 
 import { applyInjections, type TemplateResolver } from '@dino/auth';
-import { resolveAndValidateDNS } from '@dino/core';
-import { getModuleSlugs, logger, safeEndpointUrl } from '@dino/engine';
-import { CliError } from './errors';
+import {
+  ExecutorBlockedError,
+  ExecutorHttpError,
+  createObservedNativeFetch,
+  observeTransport,
+  type ObservedRequestInit,
+  isTenantConfigError,
+  resolveAndValidateDNS,
+} from '@dino/core';
 import type {
   AccountRole,
   PipelineExecutor,
@@ -14,6 +20,8 @@ import type {
   TokenResolver,
   ToolName,
 } from '@dino/engine';
+import { getModuleSlugs, hasOperationsFile, logger, safeEndpointUrl } from '@dino/engine';
+import { CliError } from './errors';
 
 /** Wraps createExecutor with automatic token injection - reuses existing auth logic */
 export function withAuth(
@@ -33,6 +41,9 @@ export function withStaticHeaders(
   headers: Record<string, string>,
 ): PipelineExecutor {
   return async (document, variables, options) => {
+    // A cell that declares itself unauthenticated gets none of them — otherwise the credential the
+    // run was given is merged into the very request whose purpose is to carry none.
+    if (options?.unauthenticated === true) return executor(document, variables, options);
     return executor(document, variables, {
       ...options,
       headers: { ...headers, ...options?.headers },
@@ -51,13 +62,6 @@ export const VALID_TOOL_NAMES: ReadonlySet<string> = new Set<ToolName>([
   'rest-fuzzer',
 ]);
 
-export const DEFAULT_REASONING_OPTS = {
-  model: 'claude-sonnet-4-5-20250514',
-  maxCostPerRunUsd: 1,
-  cacheTtlMs: 3600000,
-  timeoutMs: 30_000,
-} as const;
-
 export function validateTools(tools: string[]): ToolName[] {
   const invalid = tools.filter((t) => !VALID_TOOL_NAMES.has(t));
   if (invalid.length > 0) {
@@ -74,6 +78,18 @@ export function validateTools(tools: string[]): ToolName[] {
 
 // B42 (#608): tenantId used to be a single hardcoded tenant — SaaS landmine. Now required as parameter.
 export function validateModules(modules: string[], tenantId: string): string[] {
+  // Modules are defined by a tenant's operations file. An ad-hoc scan has none, and reading it
+  // anyway surfaced the missing file as a crash (exit 70) — Dino blaming itself for a flag the
+  // user cannot use in this mode.
+  if (!hasOperationsFile(tenantId)) {
+    throw new CliError(
+      `--modules needs a tenant configuration, and none is available for "${tenantId}".`,
+      2,
+      'Run dino init to configure a tenant, or drop --modules to scan every operation.',
+      undefined,
+      'usage',
+    );
+  }
   const validSlugs = getModuleSlugs(tenantId);
   const invalid = modules.filter((m) => !validSlugs.has(m));
   if (invalid.length > 0) {
@@ -98,16 +114,19 @@ export function buildTokenResolver(
   tokenFactory: TokenFactory,
   log: { warn: (msg: string) => void } = logger,
 ): TokenResolver {
-  return async (role: string): Promise<string | null> => {
+  return async (role: string, signal?: AbortSignal): Promise<string | null> => {
     if (role === 'UNAUTHENTICATED') return null;
     try {
-      return await tokenFactory.getToken({ role });
+      return await tokenFactory.getToken({ role, ...(signal ? { signal } : {}) });
     } catch (err) {
       let message = 'unknown error';
       if (err instanceof Error) message = err.message;
       else if (typeof err === 'string') message = err;
       log.warn(`[Auth] Failed to authenticate as ${role}: ${message}`);
-      throw new Error(`Auth failure for role "${role}": ${message}`, { cause: err });
+      if (isTenantConfigError(err)) throw err;
+      throw new Error(`Auth failure for role "${role}": ${message}`, {
+        cause: err,
+      });
     }
   };
 }
@@ -172,10 +191,31 @@ const IDENTITY_RESOLVER: TemplateResolver = { resolve: (template) => template };
 // (tests/contract/cli/auth-application.boundary.test.ts). This is the pure request-assembly seam
 // where #1981 lived (non-bearer creds dropped on the GraphQL path); testing it directly asserts the
 // final outgoing HTTP without a live endpoint / DNS round-trip.
+/** Drop every credential a header map can carry, whichever wrapper put it there. */
+function withoutCredentialHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => {
+      const lower = name.toLowerCase();
+      return lower !== 'authorization' && lower !== 'cookie';
+    }),
+  );
+}
+
 export function buildExecutorRequest(
   endpoint: string,
   options: Parameters<PipelineExecutor>[2],
 ): { headers: Record<string, string>; url: string } {
+  // A probe that declares itself unauthenticated must reach the wire with NOTHING, from any of the
+  // four sources: its own token, a header merged upstream, a resolved injection, or a cookie. The
+  // REST builder already did this; here only the token was ever absent, so a wrapper that merged an
+  // API-key injection or a session cookie - the pool runner's `withRunnerScanAuth` does both -
+  // sent the "anonymous" RBAC cell authenticated, and it answered 200 like the authorized cell.
+  if (options?.unauthenticated === true) {
+    return {
+      headers: { 'Content-Type': 'application/json', ...withoutCredentialHeaders(options.headers ?? {}) },
+      url: endpoint,
+    };
+  }
   let headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...options?.headers,
@@ -203,37 +243,44 @@ export function buildExecutorRequest(
  */
 export function createExecutor(
   endpoint: string,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch = createObservedNativeFetch(),
+  /** Operator opt-in for a loopback / RFC1918 target; omitted, the strict policy stands. */
+  policy: { allowPrivateTarget: boolean },
 ): PipelineExecutor {
   return async (document, variables, options) => {
-    const dnsCheck = await resolveAndValidateDNS(endpoint);
+    observeTransport(options, 'not-attempted');
+    const dnsCheck = await resolveAndValidateDNS(endpoint, undefined, policy);
     if (!dnsCheck.allowed) {
-      throw new CliError(
+      throw new ExecutorBlockedError(
         `SSRF blocked: endpoint failed DNS validation (${dnsCheck.reason})`,
-        1,
-        'Ensure your endpoint uses a public hostname, not a private IP.',
       );
     }
 
     const { headers, url } = buildExecutorRequest(endpoint, options);
 
-    const res = await fetchImpl(url, {
+    const init: ObservedRequestInit = {
       // determinism:allowed
       method: 'POST',
       headers,
       body: JSON.stringify({ query: document, variables: variables ?? null }),
-    });
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      onTransportState: options?.onTransportState,
+      beforeTransport: options?.beforeTransport,
+    };
+    options?.beforeTransport?.();
+    const res = await fetchImpl(url, init);
 
+    // B47 (#612): Use forEach instead of entries() for broader compatibility
+    const responseHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      responseHeaders[k] = v; // eslint-disable-line security/detect-object-injection
+    });
     const contentType = res.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
-      if (!res.ok) {
-        throw new CliError(
-          `API request failed: HTTP ${res.status} ${res.statusText} from ${safeEndpointUrl(endpoint)}`,
-        );
-      }
-      throw new CliError(
-        `API returned unexpected content-type: ${contentType} (expected application/json)`,
-      );
+      const message = res.ok
+        ? `API returned unexpected content-type: ${contentType} (expected application/json)`
+        : `API request failed: HTTP ${res.status} ${res.statusText} from ${safeEndpointUrl(endpoint)}`;
+      throw new ExecutorHttpError(message, { status: res.status, headers: responseHeaders });
     }
 
     let body: {
@@ -242,23 +289,17 @@ export function createExecutor(
     };
     try {
       body = (await res.json()) as typeof body;
-    } catch {
-      throw new CliError(
+    } catch (error_) {
+      throw new ExecutorHttpError(
         `API returned invalid JSON (HTTP ${res.status}) from ${safeEndpointUrl(endpoint)}`,
+        { status: res.status, headers: responseHeaders, cause: error_ },
       );
     }
     return {
       data: body.data ?? null,
       errors: body.errors ?? null,
       status: res.status,
-      // B47 (#612): Use forEach instead of entries() for broader compatibility
-      headers: (() => {
-        const h: Record<string, string> = {};
-        res.headers.forEach((v, k) => {
-          h[k] = v; // eslint-disable-line security/detect-object-injection
-        });
-        return h;
-      })(),
+      headers: responseHeaders,
     };
   };
 }
@@ -269,6 +310,3 @@ export function createExecutor(
  * reads env for this flag; a conformance test asserts every site calls this helper
  * so no entry point can silently stay on the legacy finding shape.
  */
-export function perOpFindingsFromEnv(): boolean {
-  return process.env.PER_OP_FINDINGS === 'true';
-}
