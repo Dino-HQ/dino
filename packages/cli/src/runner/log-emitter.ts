@@ -46,6 +46,8 @@ export type CreateScanLogEmitterOptions = {
   /** Pool identity: sent as x-dino-scan-capability on every POST. */
   capabilityToken?: string | undefined;
   scanId: string;
+  /** The execution these events belong to: the ingest gate rejects a batch that names another (PR3). */
+  attemptId: string;
   httpClient: (url: string, init?: RequestInit) => Promise<Response>;
   timer: Timer;
   /** Injected for determinism; default crypto.randomUUID. */
@@ -122,7 +124,7 @@ async function postBatch(state: EmitterState, batch: PendingBatch): Promise<void
   const res = await state.opts.httpClient(state.url, {
     method: 'POST',
     headers: emitterHeaders(state),
-    body: JSON.stringify({ events: batch.events, batchId: batch.batchId }),
+    body: JSON.stringify({ attemptId: state.opts.attemptId, events: batch.events, batchId: batch.batchId }),
   });
   if (res.status === 401 || res.status === 404 || res.status === 409) {
     disable(state, 'rejected', { status: res.status });
@@ -163,6 +165,7 @@ async function flushOnce(state: EmitterState): Promise<void> {
 function scheduleTick(state: EmitterState): void {
   if (state.stopped || state.disabled) return;
   state.tickHandle = state.opts.timer.setTimeout(() => {
+    // biome-ignore lint/complexity/noVoid: fire-and-forget by design — emission is best-effort (INV-1)
     void flushOnce(state).finally(() => {
       scheduleTick(state);
     });

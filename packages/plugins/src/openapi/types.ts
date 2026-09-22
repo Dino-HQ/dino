@@ -28,6 +28,9 @@ export interface OpenAPIDocumentSource {
   /** Path items keyed by URL template. May be absent in edge-case specs. */
   paths?: Record<string, OpenAPIPathItemSource> | undefined;
 
+  /** Document-level security requirements; an operation without its own `security` inherits these. */
+  security?: Array<Record<string, string[]>> | undefined;
+
   /** Server URLs from the spec. Used by the executor (Spec 4) to resolve base URLs. */
   servers?:
     | Array<{
@@ -49,6 +52,16 @@ export interface OpenAPIPathItemSource {
   delete?: OpenAPIOperationSource | undefined;
   head?: OpenAPIOperationSource | undefined;
   options?: OpenAPIOperationSource | undefined;
+  /** Path-level shared parameters — apply to every operation on this path (OpenAPI §Path Item),
+      unless an operation declares a same-(name,in) parameter that overrides them (#2319). */
+  parameters?: Array<{
+    name: string;
+    in: string;
+    required?: boolean;
+    description?: string;
+    schema?: Record<string, unknown>;
+    deprecated?: boolean;
+  }>;
 }
 
 /**
@@ -65,6 +78,11 @@ export interface OpenAPIOperationSource {
   tags?: string[] | undefined;
   /** Whether this operation is deprecated. */
   deprecated?: boolean | undefined;
+  /**
+   * OpenAPI security requirements. Absent inherits the document's; an EMPTY ARRAY is the spec's
+   * explicit way to say this operation needs no authentication, which is not the same as absent.
+   */
+  security?: Array<Record<string, string[]>> | undefined;
   /** Declared operation parameters. */
   parameters?: Array<{
     name: string;
@@ -72,6 +90,7 @@ export interface OpenAPIOperationSource {
     required?: boolean;
     description?: string;
     schema?: Record<string, unknown>;
+    deprecated?: boolean;
   }>;
   /** Declared request body. */
   requestBody?: {

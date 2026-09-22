@@ -1,40 +1,39 @@
 // @internal - extracted from (parent module) for max-lines compliance. Tested via (parent module).test.ts
 /**
- * @dino/cli - scan pipeline execution, catalog building, and output rendering.
- * Extracted from scan-helpers.ts for max-lines compliance.
+ * @dino/cli - scan pipeline execution and output rendering over the canonical `DinoResult`
+ * (Cleanup V2 task 4c): the engine returns the result, the CLI copies its fields into the report,
+ * the TTY card and the exit code — nothing is recomputed from a catalog rebuild.
  */
 
 import {
   loadOperationRegistry,
-  getAllOperations,
   hasOperationsFile,
-  buildCatalog,
-  renderCatalogMarkdown,
-  buildScanResultV1,
-  summarizeCatalogHealth,
   buildSnapshot,
   saveSnapshot,
   runPipeline,
+  createFuzzerProjectionContext,
+  exitCodeFor,
   logger,
   type PipelineExecutor,
   type TokenResolver,
   type ToolName,
 } from '@dino/engine';
-import { buildAdHocRegistry, buildAdHocOperationMappings } from './scan-helpers';
+import { buildAdHocRegistry } from './scan-helpers';
+import { formatScanResultForOutput } from './scan-pipeline-format';
 import { shouldRenderInkView } from '../ink/InkRender';
 import { emitResult } from '../shared/emit-result';
-import { neutralizeCatalogCustomerFields } from '../shared/neutralize';
-import { resolveExitCode, type OutcomeKind } from '../shared/outcome';
-import { DEFAULT_REASONING_OPTS, perOpFindingsFromEnv } from '../shared/pipeline-helpers';
+import { findingMass } from '../shared/finding-mass';
+import { discoveryRead, type ScanStructureSource } from '../shared/introspection-level';
 import { safeUserPath } from '../shared/safe-user-path';
 import { detectUi } from '../shared/ui';
-import { CLI_VERSION } from '../version';
 import type { ScanFlags } from './scan';
+import type { ScanIntrospectionLevel } from './scan-pipeline-format';
 import type { CommandContext } from '../shared/base-command';
+import type { ScanViewProps } from '../views/ScanView';
 import type { createRestExecutor, DefaultExpectationsMap, ExpectationsMap } from '@dino/agents';
-import type { ResolvedScanConfig, GraphQLOperation, Operation, ResultEnvelope } from '@dino/core';
+import type { DinoResult, ResolvedScanConfig, GraphQLOperation, Operation } from '@dino/core';
 
-export type ScanPipelineRunResult = Awaited<ReturnType<typeof runPipeline>>;
+export type ScanPipelineRunResult = DinoResult;
 
 export function shouldFallBackToAdHocRegistry(context: CommandContext): boolean {
   return context.tenantId === 'adhoc' || !hasOperationsFile(context.tenantId);
@@ -42,7 +41,7 @@ export function shouldFallBackToAdHocRegistry(context: CommandContext): boolean 
 
 function logAdHocRegistryHintIfNeeded(context: CommandContext, useAdHocFallback: boolean): void {
   if (useAdHocFallback && context.tenantId !== 'adhoc') {
-    // #2143: internal detail \u2014 engine logger (stderr, hidden until --verbose), off the stdout report.
+    // #2143: internal detail — engine logger (stderr, hidden until --verbose), off the stdout report.
     logger.info(
       `No operations file found for "${context.tenantId}": auto-generating from introspection.`,
     );
@@ -51,7 +50,6 @@ function logAdHocRegistryHintIfNeeded(context: CommandContext, useAdHocFallback:
 
 type ScanPipelinePhaseParams = {
   context: CommandContext;
-  flags: ScanFlags;
   resolvedConfig: ResolvedScanConfig;
   graphqlOps: GraphQLOperation[];
   executor: PipelineExecutor;
@@ -66,14 +64,14 @@ type ScanPipelinePhaseParams = {
   restBaseUrl: string | undefined;
   openApiSpec: unknown;
   restOperations: Operation[] | undefined;
+  introspectionLevel?: ScanIntrospectionLevel | undefined;
+  structureSource?: ScanStructureSource | undefined;
+  rateLimitBurst?: number | undefined;
 };
 
-async function runScanPipelinePhase(
-  params: ScanPipelinePhaseParams,
-): Promise<ScanPipelineRunResult> {
+async function runScanPipelinePhase(params: ScanPipelinePhaseParams): Promise<DinoResult> {
   const {
     context,
-    flags,
     resolvedConfig,
     graphqlOps,
     executor,
@@ -88,8 +86,12 @@ async function runScanPipelinePhase(
     restBaseUrl,
     openApiSpec,
     restOperations,
+    introspectionLevel,
+    structureSource,
+    rateLimitBurst,
   } = params;
   return runPipeline({
+    targets: { graphql: context.selectedTarget, rest: context.selectedTarget },
     tenantId: context.tenantId,
     environment: context.environment,
     trigger: 'manual',
@@ -103,46 +105,16 @@ async function runScanPipelinePhase(
     rbacDefaultExpectations,
     tools: effectiveTools,
     modules: validatedModules,
-    perOpFindings: perOpFindingsFromEnv(),
-    reasoningConfig: flags.reasoning
-      ? undefined
-      : { ...DEFAULT_REASONING_OPTS, enabled: false, apiKey: null },
     tracker: context.tracker,
     timeoutMs: resolvedConfig.timeoutMs,
     restExecutor,
     restBaseUrl,
     openApiSpec,
     restOperations,
-  });
-}
-
-function warnIfScanReportDegraded(result: ScanPipelineRunResult): void {
-  if ('degraded' in result.report && result.report.degraded) {
-    // #2143: user-relevant \u2014 product voice on stderr (no log prefix, no em-dash).
-    console.error('!  All agents failed. No test data was produced for this run.');
-  }
-}
-
-export function buildScanCatalogFromResult(params: {
-  result: ScanPipelineRunResult;
-  graphqlOps: GraphQLOperation[];
-  context: CommandContext;
-  useAdHocFallback: boolean;
-  restOperations?: Operation[] | undefined;
-}) {
-  const { result, graphqlOps, context, useAdHocFallback, restOperations } = params;
-  return buildCatalog({
-    introspection: graphqlOps,
-    report: {
-      ...result.report,
-      envelopes: result.envelopesForCatalog ?? result.report.envelopes,
-    },
-    registry: useAdHocFallback
-      ? buildAdHocOperationMappings(graphqlOps, context.tenantId)
-      : getAllOperations(context.tenantId),
-    timestamp: new Date().toISOString(), // determinism:allowed
-    restOperations,
-  });
+    ...(rateLimitBurst === undefined ? {} : { rateLimitBurst }),
+    ...(introspectionLevel === undefined ? {} : { introspectionLevel }),
+    discovery: { graphqlOperations: graphqlOps, introspectionLevel, read: discoveryRead({ structureSource, hasRest: restOperations !== undefined }) },
+  }, createFuzzerProjectionContext());
 }
 
 async function persistScanSnapshot(params: {
@@ -164,46 +136,33 @@ async function persistScanSnapshot(params: {
   });
 }
 
-// #2143: the scan report is a QA artifact - title it accordingly. `dino docs`
-// keeps its own default (API documentation), so we thread the title here, not in
-// the shared renderer default.
-const SCAN_REPORT_TITLE = 'API Quality Report';
-
-/** #202: discovery fidelity threaded into the durable scan report */
-type ScanIntrospectionLevel = 'full' | 'shallow' | 'minimal';
-
-function isReducedCoverage(level?: ScanIntrospectionLevel): boolean {
-  return level === 'minimal' || level === 'shallow';
+/** The TTY card is a pure projection of the canonical result (Cleanup V2 task 4c): every number is copied or summed. */
+export function scanViewProps(result: DinoResult, colored: boolean): ScanViewProps {
+  const { verdict, verification, findings } = result;
+  const records = verification.tools;
+  return {
+    operationCount: verdict.operationCount,
+    healthScore: verdict.health.score,
+    healthVerdict: verdict.health.verdict,
+    healthLevel: verdict.health.level,
+    findingCount: findingMass(findings),
+    toolsRun: records.filter((t) => t.status === 'ran').length,
+    toolsExcluded: records.filter((t) => t.status === 'excluded').length,
+    toolsUnavailable: records.filter((t) => t.status === 'unavailable').length,
+    durationMs: verification.durationMs,
+    degraded: verdict.degraded,
+    colored,
+    partial: verdict.coverage === 'partial',
+  };
 }
 
-function formatScanCatalogForOutput(
-  catalog: ReturnType<typeof buildCatalog>,
-  format: ResolvedScanConfig['format'],
-  introspectionLevel?: ScanIntrospectionLevel,
-): string {
-  const ctx = format === 'json' ? 'json' : 'markdown';
-  const safeCatalog = catalog.map((entry) => neutralizeCatalogCustomerFields(entry, ctx));
-  if (format === 'json') {
-    // #2174: versioned ScanResultV1 — validate-before-emit; #2173 partial signal lives in builder.
-    const result = buildScanResultV1(safeCatalog, {
-      title: SCAN_REPORT_TITLE,
-      introspectionLevel,
-      toolVersion: CLI_VERSION,
-      evidence: 'none',
-    });
-    return JSON.stringify(result, null, 2);
-  }
-  return renderCatalogMarkdown(safeCatalog, { title: SCAN_REPORT_TITLE, introspectionLevel });
-}
-
-async function tryRenderScanInkSummary(params: {
+/** #2269: exported for cross-surface INV-2 tests: the TTY card copies the same result the report printed. */
+export async function tryRenderScanInkSummary(params: {
   flags: ScanFlags;
   resolvedConfig: ResolvedScanConfig;
-  result: ScanPipelineRunResult;
-  catalog: ReturnType<typeof buildCatalog>;
-  introspectionLevel?: ScanIntrospectionLevel | undefined;
+  result: DinoResult;
 }): Promise<void> {
-  const { flags, resolvedConfig, result, catalog, introspectionLevel } = params;
+  const { flags, resolvedConfig, result } = params;
   const uiSummary = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
   if (!shouldRenderInkView(uiSummary, { format: resolvedConfig.format, quiet: flags.quiet })) {
     return;
@@ -212,35 +171,9 @@ async function tryRenderScanInkSummary(params: {
     const React = await import('react');
     const { renderViewSafe } = await import('../ink/InkRender');
     const { ScanView } = await import('../views/ScanView');
-    // #2143 + #2139: the TTY summary MUST match the report. Health comes from the canonical
-    // summarizeCatalogHealth (the same verdict the report prints); the operation count comes
-    // from the ScanResultV1 core (#2174) - never graphqlOps.length, which is 0 for a REST scan.
-    const reportStats = buildScanResultV1(catalog, {
-      title: SCAN_REPORT_TITLE,
-      introspectionLevel,
-      toolVersion: CLI_VERSION,
-    });
-    const h = summarizeCatalogHealth(catalog);
-    const findingCount = (result.condensed.envelopes ?? []).flatMap((e) => e.findings).length;
-    const partial = introspectionLevel === 'minimal' || introspectionLevel === 'shallow';
-    renderViewSafe(
-      React.createElement(ScanView, {
-        operationCount: reportStats.core.operationCount,
-        healthScore: h.score,
-        healthVerdict: h.verdict,
-        healthLevel: h.level,
-        findingCount,
-        toolsRun: result.metadata.toolsRun.length,
-        breakingChanges: 0,
-        durationMs: result.durationMs,
-        degraded: Boolean(result.report.degraded),
-        colored: uiSummary.colored,
-        partial,
-      }),
-    );
+    renderViewSafe(React.createElement(ScanView, scanViewProps(result, uiSummary.colored)));
   } catch (error_) {
     // #2143: Ink render failure is internal - the markdown report already printed to stdout.
-    // Log at debug (surfaced only with --debug), off the user's default output.
     logger.debug(
       `[dino] Ink scan view failed: ${error_ instanceof Error ? error_.message : String(error_)}`,
     );
@@ -265,115 +198,60 @@ export interface PipelineCatalogOptions {
   restOperations: Operation[] | undefined;
   /** #202: discovery fidelity for durable report disclosure */
   introspectionLevel?: ScanIntrospectionLevel | undefined;
+  /** #2306: structure provenance for report meta */
+  structureSource?: 'live' | 'sdl' | undefined;
 }
 
-async function runPipelineAndBuildCatalog(options: PipelineCatalogOptions) {
+/** #2269: exported for cross-surface tests: the one place the report, the card and the exit code read the result. */
+export async function outputScanResult(params: {
+  flags: ScanFlags;
+  resolvedConfig: ResolvedScanConfig;
+  context: CommandContext;
+  graphqlOps: GraphQLOperation[];
+  result: DinoResult;
+}): Promise<number> {
+  const { flags, resolvedConfig, context, graphqlOps, result } = params;
+  await persistScanSnapshot({ resolvedConfig, graphqlOps, context });
+
+  if (result.verdict.degraded) {
+    // #2143: user-relevant — product voice on stderr (no log prefix, no em-dash).
+    console.error('!  All agents failed. No test data was produced for this run.');
+  }
+  // #2143: the report IS the result - always emit it to stdout, even with --quiet.
+  // #2172: sole stdout writer is emitResult (INV-1). JSON is the canonical bytes, verbatim.
+  const output = formatScanResultForOutput(result, resolvedConfig.format);
+  emitResult(output, { format: resolvedConfig.format === 'json' ? 'canonical' : 'markdown' });
+
+  await tryRenderScanInkSummary({ flags, resolvedConfig, result });
+
+  // The exit code is owned by the engine (spec §9.4): transient > policy > partial > clean.
+  return exitCodeFor(result, { failOnHigh: flags.failOnHigh === true, acceptPartial: flags.acceptPartial === true });
+}
+
+export async function runPipelineCatalogSnapshotAndPrint(
+  options: PipelineCatalogOptions,
+): Promise<number> {
   const { context, flags, resolvedConfig, graphqlOps, restOperations, ...pipelineParams } = options;
   const useAdHocFallback = shouldFallBackToAdHocRegistry(context);
   logAdHocRegistryHintIfNeeded(context, useAdHocFallback);
 
   const result = await runScanPipelinePhase({
     context,
-    flags,
     resolvedConfig,
     graphqlOps,
     useAdHocFallback,
     restOperations,
+    ...(flags.burst === undefined ? {} : { rateLimitBurst: flags.burst }),
     ...pipelineParams,
   });
 
-  warnIfScanReportDegraded(result);
-
-  const catalog = buildScanCatalogFromResult({
-    result,
-    graphqlOps,
+  return outputScanResult({
+    flags,
+    resolvedConfig,
     context,
-    useAdHocFallback,
-    restOperations,
-  });
-
-  return { result, catalog };
-}
-
-async function outputScanResults(params: {
-  flags: ScanFlags;
-  resolvedConfig: ResolvedScanConfig;
-  context: CommandContext;
-  graphqlOps: GraphQLOperation[];
-  result: ScanPipelineRunResult;
-  catalog: ReturnType<typeof buildCatalog>;
-  introspectionLevel?: ScanIntrospectionLevel | undefined;
-}): Promise<number> {
-  const { flags, resolvedConfig, context, graphqlOps, result, catalog, introspectionLevel } =
-    params;
-
-  await persistScanSnapshot({ resolvedConfig, graphqlOps, context });
-
-  // #2143: the report IS the result - always emit it to stdout, even with --quiet.
-  // `--quiet` suppresses chrome (spinner, notices, the Ink summary), never the result.
-  // #2172: sole stdout writer is emitResult (INV-1).
-  const output = formatScanCatalogForOutput(catalog, resolvedConfig.format, introspectionLevel);
-  emitResult(output, {
-    format: resolvedConfig.format === 'json' ? 'json' : 'markdown',
-  });
-
-  // #2143: in a TTY, render the summary card (mirrors the report's op count + canonical
-  // health via summarizeCatalogHealth). No console footer - it was redundant with the report
-  // Summary and, on stdout, polluted `> report.md`.
-  await tryRenderScanInkSummary({ flags, resolvedConfig, result, catalog, introspectionLevel });
-
-  return getScanExitCode(result, flags.failOnHigh === true, {
-    acceptPartial: flags.acceptPartial === true,
-    introspectionLevel,
-  });
-}
-
-export async function runPipelineCatalogSnapshotAndPrint(
-  options: PipelineCatalogOptions,
-): Promise<number> {
-  const { result, catalog } = await runPipelineAndBuildCatalog(options);
-
-  return outputScanResults({
-    flags: options.flags,
-    resolvedConfig: options.resolvedConfig,
-    context: options.context,
-    graphqlOps: options.graphqlOps,
+    graphqlOps,
     result,
-    catalog,
-    introspectionLevel: options.introspectionLevel,
   });
 }
 
-export interface ScanExitCodeOptions {
-  acceptPartial?: boolean;
-  introspectionLevel?: ScanIntrospectionLevel | undefined;
-}
-
-/** Exit code from pipeline result (#572, #1012, #2173). Exported for regression tests. */
-export function getScanExitCode(
-  result: { report: { degraded?: boolean; envelopes?: ResultEnvelope[] } },
-  failOnHigh: boolean = false,
-  options?: ScanExitCodeOptions,
-): number {
-  const kinds: OutcomeKind[] = [];
-  const partial = result.report.degraded === true || isReducedCoverage(options?.introspectionLevel);
-  if (partial) kinds.push('partial');
-  if (failOnHigh && hasHighOrCriticalFindings(result.report.envelopes)) {
-    kinds.push('policy');
-  }
-  const first = kinds[0];
-  if (first === undefined) {
-    return resolveExitCode({ kind: 'clean' });
-  }
-  const rest = kinds.slice(1);
-  return resolveExitCode({
-    kind: first,
-    ...(rest.length > 0 ? { also: rest } : {}),
-    ...(options?.acceptPartial === true ? { acceptPartial: true } : {}),
-  });
-}
-
-function hasHighOrCriticalFindings(envelopes?: ResultEnvelope[]): boolean {
-  if (!envelopes) return false;
-  return envelopes.some((e) => e.severity.level === 'CRITICAL' || e.severity.level === 'HIGH');
-}
+export { formatScanResultForOutput } from './scan-pipeline-format';

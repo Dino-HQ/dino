@@ -2,16 +2,16 @@
  * Multi-role RBAC wire helpers (#1859).
  */
 
-import { buildRoleTokenResolver } from './runner-role-token-resolver';
+import { buildRoleTokenResolver, type RoleTokenDeps } from './runner-role-token-resolver';
 import { validateRbacExpectations } from '../shared/rbac-expectations-read';
-import type { AcquiredScanAuth, HydratedProfile } from './scan-auth';
+import type { HydratedProfile } from './scan-auth';
 import type { DefaultExpectationsMap, ExpectationsMap } from '@dino/agents';
 
 export type RunnerRbacWire = {
   rbacRoles: string[];
   rbacExpectations?: ExpectationsMap;
   rbacDefaultExpectations?: DefaultExpectationsMap;
-  tokenResolver: (role: string) => Promise<string | null>;
+  tokenResolver: (role: string, signal?: AbortSignal) => Promise<string | null>;
   skippedRoles: string[];
 };
 
@@ -65,12 +65,10 @@ function parseHydratedRbacJson(raw: string | null | undefined): {
   return { expectations: parsed };
 }
 
+/** Role credentials are not acquired here: `tokenResolver(role, signal)` acquires lazily under the rbac lease. */
 export async function wireMultiRoleRbac(
   hydratedProfile: HydratedProfile,
-  deps: {
-    hydrateProfile: (authProfileId: string) => Promise<HydratedProfile | null>;
-    acquire: (profile: HydratedProfile, profileId: string) => Promise<AcquiredScanAuth>;
-  },
+  deps: RoleTokenDeps,
 ): Promise<RunnerRbacWire | undefined> {
   const bindings = hydratedProfile.tokenFactory?.bindings ?? [];
   if (bindings.length === 0) {
@@ -86,10 +84,7 @@ export async function wireMultiRoleRbac(
     parseHydratedRbacJson(hydratedProfile.tokenFactory?.rbacExpectationsJson),
   );
 
-  const { tokenResolver, skipped } = await buildRoleTokenResolver(bindings, {
-    hydrateProfile: deps.hydrateProfile,
-    acquire: (profile, authProfileId) => deps.acquire(profile, authProfileId),
-  });
+  const { tokenResolver, skipped } = await buildRoleTokenResolver(bindings, deps);
 
   return {
     rbacRoles,

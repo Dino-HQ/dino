@@ -31,7 +31,6 @@ export interface UserConfigInput {
   environment?: string | undefined;
   format?: ('json' | 'markdown') | undefined;
   snapshotDir?: string | undefined;
-  aiKey?: string | undefined;
   autonomy?: { level: 'observe' | 'enforce' } | undefined;
   auth?: { enabled: boolean; role?: string | undefined } | undefined;
   timeout?: number | undefined;
@@ -75,7 +74,6 @@ export function resolveConfig(
     outputDir: defaults.outputDir,
     snapshotDir: user.snapshotDir ?? defaults.snapshotDir,
     auth: user.auth?.enabled ? { enabled: true, role: user.auth.role } : undefined,
-    aiKey: user.aiKey,
     watchInterval: defaults.watchInterval,
     watchAutonomy: user.autonomy?.level ?? defaults.watchAutonomy,
     requestTimeoutMs: defaults.requestTimeoutMs,

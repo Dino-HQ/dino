@@ -3,28 +3,44 @@
  * Spec: docs/CLI_SPEC.md §2–4
  */
 
+import os from 'node:os';
+import ci from 'ci-info';
 import {
   createTracker,
   createNoopAdapter,
   createPostHogAdapter,
+  createConsoleAdapter,
   sanitizeEventError,
   sanitizeCliFlags,
 } from '@dino/analytics';
-import { loadTenantById, recordGet } from '@dino/core';
-import { createDiscoveryBridge, logger as engineLogger } from '@dino/engine';
+import { loadTenantById, recordGet, type ApiConfig, type GraphQLOperation, type Operation, type TenantConfig, type VerificationTarget } from '@dino/core';
+import { resolveSelectedTarget } from './selected-target';
+import { logger as engineLogger } from '@dino/engine';
 import { buildAuthHeaders } from './auth-headers';
-import { CliError } from './errors';
-import { readIntrospectionLevel } from './introspection-level';
+import {
+  CliError,
+  buildIntrospectionTimeoutError,
+  isIntrospectionTimeout,
+  isOpenApiSpecLoadError,
+  toGraphqlIntrospectionCliError,
+  toOpenApiSpecLoadCliError,
+  throwTenantConfigCliError,
+} from './errors';
+import { readDiscoveryProvenance } from './introspection-level';
 import { oauth2DescriptorFromConfig, resolveAuthHeaders } from './oauth2-auth';
-import { boundErrorMessage } from './outcome';
+import { boundErrorMessage, isUpstreamClientError } from './outcome';
 import { reportCaughtFailure } from './report-failure';
-import { requireStringFlag } from './require-string-flag';
-import { getEffectiveTelemetryLevel, readGlobalDinoConfigSync } from '../config/global-dino-config';
+import { requireTargetFlagValues } from './require-string-flag';
+import { createTenantDiscoveryBridge } from './tenant-discovery-bridge';
+import {
+  getEffectiveTelemetryLevel,
+  readGlobalDinoConfigSync,
+  ensureAnonymousId,
+} from '../config/global-dino-config';
 import { CLI_VERSION } from '../version';
 import type { OAuth2AuthDescriptor } from './oauth2-auth';
 import type { DinoCliConfig } from '../config/loader';
 import type { AnalyticsAdapter, Tracker } from '@dino/analytics';
-import type { TenantConfig, ApiConfig, GraphQLOperation, Operation } from '@dino/core';
 
 export { buildAuthHeaders, parseHeaderArg } from './auth-headers';
 export { parseArgs } from './parse-args';
@@ -38,16 +54,50 @@ const CRASH_LEVEL_EVENTS = new Set([
   'pipeline.run.failed',
 ]);
 
+export interface MachineInfo {
+  os: NodeJS.Platform;
+  arch: string;
+  cpuCount: number;
+  nodeVersion: string;
+  isCI: boolean;
+  ciName: string | null;
+}
+
+export interface MachineInfoDeps {
+  os?: Pick<typeof os, 'platform' | 'arch' | 'cpus'>;
+  ci?: Pick<typeof ci, 'isCI' | 'name'>;
+}
+
+export function collectMachineInfo(deps?: MachineInfoDeps): MachineInfo {
+  const osDeps = deps?.os ?? os;
+  const ciDeps = deps?.ci ?? ci;
+  return {
+    os: osDeps.platform(),
+    arch: osDeps.arch(),
+    cpuCount: osDeps.cpus().length,
+    nodeVersion: process.version,
+    isCI: ciDeps.isCI,
+    ciName: ciDeps.name ?? null,
+  };
+}
+
 function createCliAnalyticsAdapter(): AnalyticsAdapter {
   const g = readGlobalDinoConfigSync();
   const level = getEffectiveTelemetryLevel(g);
   if (level === 'off') return createNoopAdapter();
+  let distinctId: string | null;
+  try {
+    distinctId = ensureAnonymousId();
+  } catch {
+    distinctId = null;
+  }
+  if (!distinctId) return createNoopAdapter();
+  if (process.env.DINO_TELEMETRY_DEBUG === '1') {
+    return createConsoleAdapter();
+  }
   const key =
     typeof process.env.POSTHOG_API_KEY === 'string' ? process.env.POSTHOG_API_KEY.trim() : '';
   if (!key) return createNoopAdapter();
-  const distinctId =
-    typeof g.anonymousId === 'string' && g.anonymousId.length > 0 ? g.anonymousId : '';
-  if (!distinctId) return createNoopAdapter();
   const inner = createPostHogAdapter({ apiKey: key, distinctId });
 
   // 'all' sends everything; 'crash' filters to error events only
@@ -82,6 +132,12 @@ export interface CommonFlags {
   specUrl?: string | undefined;
   /** #2160: static auth header(s), repeatable (`"Name: Value"`) */
   header?: string | string[] | undefined;
+  /**
+   * Permit a loopback / RFC1918 target. Command line ONLY — never read from `.dino.yml` or a
+   * tenant file, because in CI that config is attacker-controllable through a pull request while
+   * a typed flag is the operator's own decision.
+   */
+  allowPrivateTarget?: boolean | undefined;
   /** #2160: shortcut for Authorization: Bearer <token> */
   token?: string | undefined;
 }
@@ -91,6 +147,7 @@ export type MergedFlags = CommonFlags & Record<string, unknown>;
 
 /** Context assembled before command execution */
 export interface CommandContext {
+  selectedTarget: VerificationTarget | undefined;
   tenantConfig: TenantConfig;
   tenantId: string;
   environment: string;
@@ -101,40 +158,36 @@ export interface CommandContext {
   oauth2Auth?: OAuth2AuthDescriptor | undefined;
   /** Test seam: override fetch for OAuth2 token acquisition (#2161) */
   fetchImpl?: typeof fetch | undefined;
+  /**
+   * The operator's private-target opt-in, carried beside the target it admitted, so a command
+   * cannot admit a loopback endpoint at selection and then build an executor that refuses it.
+   *
+   * Required: this is where the chain begins, and an optional field here is one more hop that can
+   * be dropped in silence.
+   */
+  allowPrivateTarget: boolean;
+}
+
+/** Project the already-selected target URL. Shared by scan, docs, and diff commands. */
+export function getEndpoint(context: CommandContext): string {
+  if (context.selectedTarget === undefined) {
+    throwTenantConfigCliError('No verification target selected', 'config');
+  }
+  return context.selectedTarget.url;
 }
 
 /**
- * Resolve the API endpoint from tenant config.
- * Shared by scan, docs, and diff commands.
+ * True when getEndpoint would succeed; null when getEndpoint would throw CliError (#2268).
+ * Single-sourced against getEndpoint's five unresolvable states - never a parallel predicate.
+ * Non-CliError failures are rethrown (do not mask real bugs as "needs endpoint").
  */
-export function getEndpoint(context: CommandContext): string {
-  if (!context.tenantConfig.environments) {
-    throw new CliError(
-      'Tenant has no environments configuration',
-      1,
-      'Check your tenant YAML has an environments: section.',
-    );
+export function resolveEndpointOrNull(context: CommandContext): string | null {
+  try {
+    return getEndpoint(context);
+  } catch (e) {
+    if (e instanceof CliError) return null;
+    throw e;
   }
-  const envConfig = recordGet(context.tenantConfig.environments, context.environment);
-  if (!envConfig) {
-    throw new CliError(
-      `Environment "${context.environment}" not found. Available: ${Object.keys(context.tenantConfig.environments).join(', ')}`,
-      1,
-      'Run dino validate to check your config.',
-    );
-  }
-  const apiName = context.tenantConfig.apis[0]?.name;
-  if (!apiName) throw new CliError('Tenant has no apis[].name');
-  if (!envConfig.endpoints) {
-    throw new CliError(`API endpoints not configured for environment "${context.environment}"`);
-  }
-  const endpoint = recordGet(envConfig.endpoints, apiName);
-  if (!endpoint) {
-    throw new CliError(
-      `API "${apiName}" not found in environment "${context.environment}". Keys: ${Object.keys(envConfig.endpoints).join(', ')}`,
-    );
-  }
-  return endpoint;
 }
 
 /** Full discovery slice for scan (GraphQL catalog + REST pipeline wiring, Spec 8). */
@@ -142,26 +195,24 @@ export interface DiscoverOperationsResult {
   graphqlOperations: GraphQLOperation[];
   discoveredOperations: Operation[];
   discoveryRaw: unknown;
-  /** #202: discovery fidelity for durable report disclosure */
   introspectionLevel?: 'full' | 'shallow' | 'minimal' | undefined;
+  structureSource?: 'live' | 'sdl' | undefined;
 }
 
 async function runPluginDiscovery(context: CommandContext) {
   const endpoint = getEndpoint(context);
   const envConfig = recordGet(context.tenantConfig.environments, context.environment);
-  if (!envConfig) {
-    throw new Error(`Environment '${context.environment}' not found in tenant config`);
-  }
-  const plugin = createDiscoveryBridge({
-    tenant: context.tenantConfig,
-    environment: context.environment,
-  });
+  if (!envConfig) throw new Error('Invariant: environment missing after getEndpoint');
+  const plugin = createTenantDiscoveryBridge(
+    context.tenantConfig,
+    context.environment,
+    context.allowPrivateTarget,
+    context.selectedTarget,
+  );
 
-  // REST APIs need specPath from tenant config for OpenAPI discovery
   const api = context.tenantConfig.apis[0];
   const specPath = api && 'specPath' in api ? (api as { specPath?: string }).specPath : undefined;
 
-  // #2161: async oauth2 acquisition at the discovery boundary (buildContext stays sync)
   const authHeaders = await resolveAuthHeaders(context);
 
   try {
@@ -179,18 +230,25 @@ async function runPluginDiscovery(context: CommandContext) {
     if (isIntrospectionTimeout(err)) {
       throw buildIntrospectionTimeoutError(endpoint, envConfig.timeout, err);
     }
+    if (isUpstreamClientError(err)) {
+      throw toGraphqlIntrospectionCliError(err, endpoint);
+    }
     throw err;
   }
 }
 
-/**
- * Discovery with GraphQL operations (for catalog) plus universal `Operation[]` (REST/OpenAPI).
- * @internal Exported for `dino scan` REST wiring; other commands use {@link discoverOperations}.
- */
 export async function discoverOperationsDetailed(
   context: CommandContext,
 ): Promise<DiscoverOperationsResult> {
-  const discoveryResult = await runPluginDiscovery(context);
+  let discoveryResult;
+  try {
+    discoveryResult = await runPluginDiscovery(context);
+  } catch (err: unknown) {
+    if (isOpenApiSpecLoadError(err)) {
+      throw toOpenApiSpecLoadCliError(err);
+    }
+    throw err;
+  }
 
   if (!discoveryResult.operations || discoveryResult.operations.length === 0) {
     throw new CliError(
@@ -216,42 +274,13 @@ export async function discoverOperationsDetailed(
     graphqlOperations,
     discoveredOperations: discoveryResult.operations,
     discoveryRaw: raw,
-    introspectionLevel: readIntrospectionLevel(raw),
+    ...readDiscoveryProvenance(raw),
   };
 }
 
-/**
- * Run introspection discovery and return validated GraphQL operations.
- * Shared by scan, docs, and diff commands.
- * For REST-only tenants returns an empty array (catalog has no GraphQL operations).
- */
 export async function discoverOperations(context: CommandContext): Promise<GraphQLOperation[]> {
   const d = await discoverOperationsDetailed(context);
   return d.graphqlOperations;
-}
-
-/** Detect the AbortController timeout signature from plugin.discover. INV-UX-1. */
-function isIntrospectionTimeout(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  // AbortError or timeout message; unparenthesized || is intentional (Prettier / Maciver LOW).
-  return err.name === 'AbortError' || err.message.includes('aborted due to timeout');
-}
-
-/** Build the actionable CliError for a timeout. INV-UX-2, INV-UX-3. */
-function buildIntrospectionTimeoutError(
-  endpoint: string,
-  timeoutMs: number,
-  cause: unknown,
-): CliError {
-  const message = `Introspection timed out after ${timeoutMs}ms.\nEndpoint: ${endpoint}`;
-  const hint = [
-    'Common causes:',
-    '  • Endpoint does not support GraphQL introspection at this path',
-    `  • Path suffix missing - try ${endpoint.replace(/\/?$/, '/graphql')}`,
-    '  • Authentication required but not configured (run: dino init)',
-    '  • Endpoint unreachable from this network',
-  ].join('\n');
-  return new CliError(message, 1, hint, cause);
 }
 
 /** Options for withTracking. */
@@ -316,7 +345,7 @@ export async function withTracking(opts: WithTrackingOptions): Promise<number> {
  * so the spec is mandatory — a missing spec is a config error, not a silent empty scan.
  */
 function buildAdHocTenantConfig(
-  endpoint: string,
+  target: VerificationTarget,
   protocol: 'graphql' | 'rest',
   requestTimeoutMs: number,
   specPath?: string,
@@ -343,7 +372,7 @@ function buildAdHocTenantConfig(
     apis: [api],
     environments: {
       default: {
-        endpoints: { default: endpoint },
+        endpoints: { default: target },
         timeout: requestTimeoutMs,
         retries: 0,
       },
@@ -366,46 +395,55 @@ function withOptionalAuth(
   };
 }
 
+function createPipelineTracker(tenantId: string): Tracker {
+  return createTracker({
+    adapter: createCliAnalyticsAdapter(),
+    tenantId,
+    staticProperties: { ...collectMachineInfo() },
+  });
+}
+
 /**
  * Build CommandContext from flags + optional config. Flags take precedence over config.
  */
+function selectTenantTarget(tenantConfig: TenantConfig, flags: CommonFlags, config: DinoCliConfig | null, endpointFlag: string | undefined) {
+  const environment = flags.env ?? config?.environment ?? tenantConfig.defaultEnvironment;
+  const apiName = tenantConfig.apis[0]?.name;
+  const envConfig = recordGet(tenantConfig.environments, environment);
+  const selectedTarget = resolveSelectedTarget({
+    configured: apiName === undefined || envConfig === undefined ? undefined : recordGet(envConfig.endpoints, apiName),
+    flatEndpoint: config?.endpoint,
+    cliEndpoint: endpointFlag,
+    allowPrivateTarget: flags.allowPrivateTarget === true,
+  });
+  return { environment, selectedTarget };
+}
+
 export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): CommandContext {
   const tenantId = flags.tenant ?? config?.tenant ?? '';
 
-  // Value-less `--endpoint`/`--protocol`/`--spec-url` arrive as boolean `true` from parseFlag —
-  // reject at the consumption point (do not change parseFlag; booleans are valid for --quiet etc.)
-  const endpointFlag = requireStringFlag('--endpoint', flags.endpoint, {
-    requires: 'a URL value (e.g. --endpoint https://api.example.com/graphql).',
-    hint: 'Pass the endpoint URL immediately after the flag.',
-  });
-  const protocolFlag = requireStringFlag('--protocol', flags.protocol, {
-    requires: 'a value: graphql or rest',
-    hint: 'Pass graphql or rest immediately after the flag.',
-  });
-  const specUrlFlag = requireStringFlag('--spec-url', flags.specUrl, {
-    requires: 'a URL or file path value.',
-    hint: 'Pass the spec URL or path immediately after the flag.',
-  });
+  const { endpointFlag, protocolFlag, specUrlFlag } = requireTargetFlagValues(flags);
 
   const authHeaders = buildAuthHeaders(flags, config);
   const oauth2Auth = oauth2DescriptorFromConfig(config);
 
   // #560/#171: Ad-hoc mode — endpoint from flags (preferred) or .dino.yml; no tenant needed
-  const adhocEndpoint = endpointFlag ?? config?.endpoint;
-  if (!tenantId && typeof adhocEndpoint === 'string' && adhocEndpoint.length > 0) {
+  const stringTarget = resolveSelectedTarget({
+    flatEndpoint: config?.endpoint,
+    cliEndpoint: endpointFlag,
+    allowPrivateTarget: flags.allowPrivateTarget === true,
+  });
+  if (!tenantId && stringTarget !== undefined) {
     const protocolRaw = protocolFlag ?? config?.protocol ?? 'graphql';
     const protocol: 'graphql' | 'rest' = protocolRaw === 'rest' ? 'rest' : 'graphql';
     return withOptionalAuth(
       {
-        tenantConfig: buildAdHocTenantConfig(
-          adhocEndpoint,
-          protocol,
-          30_000,
-          specUrlFlag ?? config?.specUrl,
-        ),
+        tenantConfig: buildAdHocTenantConfig(stringTarget, protocol, 30_000, specUrlFlag ?? config?.specUrl),
         tenantId: 'adhoc',
+        selectedTarget: stringTarget,
         environment: 'default',
-        tracker: createTracker({ adapter: createCliAnalyticsAdapter(), tenantId: 'adhoc' }),
+        tracker: createPipelineTracker('adhoc'),
+        allowPrivateTarget: flags.allowPrivateTarget === true,
       },
       authHeaders,
       oauth2Auth,
@@ -423,12 +461,15 @@ export function buildContext(flags: CommonFlags, config: DinoCliConfig | null): 
     );
   }
   const tenantConfig = loadTenantById(tenantId);
+  const { environment, selectedTarget } = selectTenantTarget(tenantConfig, flags, config, endpointFlag);
   return withOptionalAuth(
     {
       tenantConfig,
       tenantId,
-      environment: flags.env ?? config?.environment ?? tenantConfig.defaultEnvironment,
-      tracker: createTracker({ adapter: createCliAnalyticsAdapter(), tenantId }),
+      environment,
+      selectedTarget,
+      tracker: createPipelineTracker(tenantId),
+      allowPrivateTarget: flags.allowPrivateTarget === true,
     },
     authHeaders,
     oauth2Auth,

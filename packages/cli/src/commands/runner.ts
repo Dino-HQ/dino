@@ -10,13 +10,15 @@ import {
   type TenantConfig,
   type RunnerJob,
   type RunnerResult,
+  type VerificationTarget,
 } from '@dino/core';
 import {
-  runPipeline,
   type ToolName,
   type PipelineOptions,
-  type Timer,
+  type Timer, type AttestationSigner,
   SystemTimer,
+  runPipeline,
+  SystemClock,
 } from '@dino/engine';
 import { createCloudReporter } from '../runner/inngest-reporter';
 import {
@@ -26,7 +28,8 @@ import {
   RunnerUnauthorizedError,
 } from '../runner/poll-loop';
 import { installRunnerSignalHandlers, cleanupRunner } from '../runner/runner-lifecycle';
-import { executeRunnerAssignment } from '../runner/runner-scan-execute';
+import { resolveRunnerAttestationSigner } from '../runner/runner-attestation';
+import { executeRunnerAssignment, type PipelineRunner } from '../runner/runner-scan-execute';
 import {
   createFileStateStorage,
   getDefaultRunnerStatePath,
@@ -35,13 +38,12 @@ import {
 } from '../runner/state-store';
 import { maybeStartWakeServer } from '../runner/wake-server';
 import { CliError } from '../shared/errors';
-import { DEFAULT_REASONING_OPTS, perOpFindingsFromEnv } from '../shared/pipeline-helpers';
 import { CLI_VERSION } from '../version';
+import { formatRegisterError, parseRegisterFlags, registerRequestBody, REGISTER_USAGE } from './runner-register-flags';
 import type { CommandContext } from '../shared/base-command';
 
 export type HttpClient = (url: string, init?: RequestInit) => Promise<Response>;
 
-const DEFAULT_REGISTER_ENDPOINT = 'https://api.usedino.dev';
 
 export type RunRunnerRegisterDeps = {
   storage?: StateStorage;
@@ -109,6 +111,8 @@ export type RunnerExecuteScanDeps = {
   /** Cloud-facing HTTP for live log emission + cancel watch (Spec B). Default: global fetch. */
   cloudHttpClient?: HttpClient;
   timer?: Timer;
+  /** Sigstore signer for the canonical result; `null`/absent = no attestation (Cleanup V2 task 4c). */
+  attestationSigner?: AttestationSigner | null;
 };
 
 function runnerDefaultSleep(ms: number): Promise<void> {
@@ -132,7 +136,7 @@ export function buildRunnerTenantConfig(
         : [{ name: 'default', type: 'rest', source: rest.source, specPath: rest.specPath }],
     environments: {
       cloud: {
-        endpoints: { default: targetUrl },
+        endpoints: { default: { url: targetUrl, protected: true } },
         timeout: 120_000,
         retries: 0,
       },
@@ -144,6 +148,7 @@ export function buildRunnerTenantConfig(
 }
 
 export function buildRunnerPipelineOptions(opts: {
+  selectedTarget: VerificationTarget;
   state: RunnerState;
   assignment: RunnerJob;
   registry: Record<string, string[]>;
@@ -154,6 +159,7 @@ export function buildRunnerPipelineOptions(opts: {
   restExecutor: PipelineOptions['restExecutor'];
   restOps: PipelineOptions['restOperations'];
   discoveryRaw: unknown;
+  discovery?: PipelineOptions['discovery'];
   rbacRoles?: PipelineOptions['rbacRoles'];
   rbacExpectations?: PipelineOptions['rbacExpectations'];
   rbacDefaultExpectations?: PipelineOptions['rbacDefaultExpectations'];
@@ -164,25 +170,21 @@ export function buildRunnerPipelineOptions(opts: {
   onToolEvent?: PipelineOptions['onToolEvent'];
   abortSignal?: PipelineOptions['abortSignal'];
 }): PipelineOptions {
-  const { state, assignment, hasRest } = opts;
+  const { state, hasRest } = opts;
   return {
+    targets: { graphql: opts.selectedTarget, rest: opts.selectedTarget },
     tenantId: state.tenantId,
     environment: 'cloud',
     trigger: 'manual',
     registry: opts.registry,
     executor: opts.executor,
     tools: opts.effectiveTools,
-    perOpFindings: perOpFindingsFromEnv(),
-    ...(assignment.command !== undefined ? { sentinelCommand: assignment.command } : {}),
-    reasoningConfig: { ...DEFAULT_REASONING_OPTS, enabled: false, apiKey: null },
     tracker: opts.tracker,
     restExecutor: opts.restExecutor,
-    restBaseUrl: hasRest ? assignment.targetUrl : undefined,
+    restBaseUrl: hasRest ? opts.selectedTarget.url : undefined,
     openApiSpec: hasRest ? opts.discoveryRaw : undefined,
     restOperations: hasRest ? opts.restOps : undefined,
-    agentVersion: CLI_VERSION,
-    scanIdForAttestation: assignment.scanId,
-    scanTargetUrl: assignment.targetUrl,
+    ...(opts.discovery === undefined ? {} : { discovery: opts.discovery }),
     ...(opts.rbacRoles === undefined ? {} : { rbacRoles: opts.rbacRoles }),
     ...(opts.rbacExpectations === undefined ? {} : { rbacExpectations: opts.rbacExpectations }),
     ...(opts.rbacDefaultExpectations === undefined
@@ -205,14 +207,14 @@ export function buildRunnerPipelineOptions(opts: {
  */
 export function createRunnerExecuteScan(
   state: RunnerState,
-  pipelineRunner: typeof runPipeline = runPipeline,
+  pipelineRunner: PipelineRunner = runPipeline,
   scanDeps: RunnerExecuteScanDeps = {},
 ): (assignment: RunnerJob) => Promise<RunnerResult> {
   const now = scanDeps.now ?? (() => Date.now()); // determinism:allowed - default seam for production runner
   const sleep = scanDeps.sleep ?? runnerDefaultSleep;
   // #1850 — the runner's outbound fetch (flow-runner auth + REST executor) hits CUSTOMER-controlled URLs;
   // pin to the validated IP so a rebinding target cannot reach the runner's localhost / metadata / other tenants.
-  const fetchImpl = scanDeps.fetchImpl ?? createPinnedFetch();
+  const fetchImpl = scanDeps.fetchImpl ?? createPinnedFetch({ allowPrivateTarget: false });
   // determinism:allowed — CSPRNG jitter seam (avoids S2245: PRNG Math.random hotspot)
   const rand =
     scanDeps.rand ?? (() => (crypto.getRandomValues(new Uint32Array(1))[0] ?? 0) / 2 ** 32);
@@ -224,7 +226,12 @@ export function createRunnerExecuteScan(
 
   return async (assignment: RunnerJob): Promise<RunnerResult> => {
     if (assignment.tenantId !== state.tenantId) {
-      return { scanId: assignment.scanId, status: 'failed', error: 'tenant_mismatch' };
+      return {
+        scanId: assignment.scanId,
+        attemptId: assignment.attemptId,
+        status: 'failed',
+        error: 'tenant_mismatch',
+      };
     }
     try {
       return await executeRunnerAssignment({
@@ -237,45 +244,20 @@ export function createRunnerExecuteScan(
         rand,
         cloudHttpClient,
         timer,
+        attestationSigner: scanDeps.attestationSigner ?? null,
         buildPipelineOptions: buildRunnerPipelineOptions,
         buildTenantConfig: buildRunnerTenantConfig,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      return { scanId: assignment.scanId, status: 'failed', error: message };
+      return {
+        scanId: assignment.scanId,
+        attemptId: assignment.attemptId,
+        status: 'failed',
+        error: message,
+      };
     }
   };
-}
-
-interface RegisterFlags {
-  token: string;
-  name: string;
-  tenantId: string;
-  endpoint: string;
-}
-
-function parseRegisterFlags(flags: Record<string, unknown>): RegisterFlags | null {
-  const token = typeof flags.token === 'string' ? flags.token : '';
-  const name = typeof flags.name === 'string' ? flags.name : '';
-  const tenantId = typeof flags.tenant === 'string' ? flags.tenant : '';
-  const endpoint =
-    typeof flags.endpoint === 'string' && flags.endpoint.length > 0
-      ? flags.endpoint.replace(/\/$/, '')
-      : DEFAULT_REGISTER_ENDPOINT;
-
-  if (!token || !name || !tenantId) return null;
-  return { token, name, tenantId, endpoint };
-}
-
-async function formatRegisterError(res: Response): Promise<string> {
-  const text = await res.text();
-  if (!text) return '';
-  try {
-    const j = JSON.parse(text) as { error?: string };
-    return j.error ? `: ${j.error}` : '';
-  } catch {
-    return `: ${text.slice(0, 200)}`;
-  }
 }
 
 export async function runRunnerRegister(
@@ -288,13 +270,7 @@ export async function runRunnerRegister(
 
   const parsed = parseRegisterFlags(flags);
   if (!parsed) {
-    throw new CliError(
-      'Usage: dino runner register --token <admin-api-key> --name <name> --tenant <tenantId> [--endpoint <url>]',
-      2,
-      undefined,
-      undefined,
-      'usage',
-    );
+    throw new CliError(REGISTER_USAGE, 2, undefined, undefined, 'usage');
   }
 
   const registerUrl = `${parsed.endpoint}/v1/runners/register`;
@@ -306,9 +282,10 @@ export async function runRunnerRegister(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${parsed.token}`,
       },
-      body: JSON.stringify({ name: parsed.name, tenantId: parsed.tenantId }),
+      body: JSON.stringify(registerRequestBody(parsed)),
     });
   } catch (e) {
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th positional arg (biome only detects native Error 2nd-arg cause)
     throw new CliError(
       `Registration request failed: ${e instanceof Error ? e.message : String(e)}`,
       70,
@@ -393,9 +370,11 @@ export async function runRunnerStart(
     hardShutdownTimerUnref: deps.hardShutdownTimerUnref,
   });
   const reporter = makeReporter(state.cloudEndpoint, state.token, httpClient, timer);
+  // Attestation identity (D4c.5): ambient GitHub Actions OIDC or a GCP metadata token; neither ⇒ unsigned results.
+  const attestationSigner = await resolveRunnerAttestationSigner(process.env, globalThis.fetch, SystemClock);
   const executeScan =
     deps.createExecuteScan?.(state) ??
-    createRunnerExecuteScan(state, runPipeline, { cloudHttpClient: httpClient, timer });
+    createRunnerExecuteScan(state, undefined, { cloudHttpClient: httpClient, timer, attestationSigner });
   const logger = createRunnerLogger();
   const pollConfig = buildPollLoopConfig({
     state,

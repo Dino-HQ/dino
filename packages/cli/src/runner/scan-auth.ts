@@ -16,10 +16,14 @@ import {
 import { recordGet } from '@dino/core';
 import { createHttpOtpResolver, type OtpHttpClient } from './http-otp-resolver';
 import type { OAuth2RefreshLeaseClient } from './oauth2-refresh-lease-client';
+import type { TSchema } from '@sinclair/typebox';
 
 type StaticAuthMethod = 'none' | 'bearer' | 'api_key' | 'basic_auth';
 
+import { bindFetchSignal, withSignal } from './runner-hydrate';
+
 export type { RoleBinding } from './runner-role-token-resolver';
+export { bindFetchSignal, fetchHydratedProfile } from './runner-hydrate';
 
 export interface HydratedProfile {
   method: string;
@@ -70,7 +74,10 @@ export interface ScanAuthDeps {
   refreshLeaseClient?: OAuth2RefreshLeaseClient;
   /** #37: re-fetch hydrated profile after coalesce / invalid_grant retry. */
   rehydrateProfile?: () => Promise<HydratedProfile | null>;
+  /** #2388 Task 7: the rbac lease signal; bound onto every auth-flow request so cancellation stops it. */
+  signal?: AbortSignal;
 }
+
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -98,13 +105,9 @@ export function parseLoginFlowSecrets(credential: string | null): Record<string,
 }
 
 export function parseAuthFlow(flow: unknown): AuthFlowDef | null {
-  if (flow === null || flow === undefined) {
-    return null;
-  }
-  if (!Value.Check(AuthFlowDefSchema, flow)) {
-    return null;
-  }
-  return flow;
+  if (flow === null || flow === undefined) return null;
+  if (!Value.Check(AuthFlowDefSchema as unknown as TSchema, flow)) return null;
+  return flow as AuthFlowDef;
 }
 
 export function parseHydratedAuthFlow(flow: unknown): AuthFlowDef | null {
@@ -202,6 +205,7 @@ function buildStoredInboxOtpResolver(
     sleep: deps.sleep,
     ...(extractPattern === undefined ? {} : { extractPattern }),
     ...(deps.otpWindowStartMs === undefined ? {} : { windowStartMs: deps.otpWindowStartMs }),
+    ...(deps.signal === undefined ? {} : { signal: deps.signal }),
   });
   return {
     ok: true,
@@ -325,8 +329,9 @@ async function acquireLoginFlowAuth(
 
 export async function acquireScanAuth(
   profile: HydratedProfile,
-  deps: ScanAuthDeps,
+  input: ScanAuthDeps,
 ): Promise<AcquiredScanAuth> {
+  const deps: ScanAuthDeps = { ...input, fetchImpl: bindFetchSignal(input.fetchImpl, input.signal) };
   if (profile.strategy === 'login_flow') {
     return acquireLoginFlowAuth(profile, deps);
   }
@@ -346,44 +351,12 @@ export async function acquireScanAuth(
 
 export { buildRoleTokenResolver } from './runner-role-token-resolver';
 
-export async function fetchHydratedProfile(opts: {
-  cloudEndpoint: string;
-  runnerId: string;
-  authProfileId: string;
-  scanId: string;
-  token: string;
-  capabilityToken?: string;
-  fetchImpl: FetchLike;
-}): Promise<HydratedProfile | null> {
-  const base = opts.cloudEndpoint.replace(/\/$/, '');
-  const url =
-    `${base}/v1/runners/${encodeURIComponent(opts.runnerId)}` +
-    `/auth-profiles/${encodeURIComponent(opts.authProfileId)}/hydrate` +
-    `?scanId=${encodeURIComponent(opts.scanId)}`;
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${opts.token}`,
-  };
-  if (opts.capabilityToken !== undefined) {
-    headers['x-dino-scan-capability'] = opts.capabilityToken;
-  }
-  try {
-    const res = await opts.fetchImpl(url, { method: 'GET', headers });
-    if (!res.ok) {
-      return null;
-    }
-    const profile: HydratedProfile = await res.json();
-    return profile;
-  } catch (err) {
-    // Fail closed: a transport failure → null → caller marks auth_failed. Log the error NAME only
-    // (never the body/token) for observability without leaking secrets (INV-6).
-    console.warn(
-      JSON.stringify({
-        message: 'runner_hydrate_fetch_failed',
-        detail: err instanceof Error ? err.name : 'unknown',
-      }),
-    );
+function readOtpBody(body: unknown): { text: string; receivedAt: number } | null {
+  const record = body as { text?: unknown; receivedAt?: unknown };
+  if (typeof record.text !== 'string') {
     return null;
   }
+  return { text: record.text, receivedAt: typeof record.receivedAt === 'number' ? record.receivedAt : 0 };
 }
 
 export function createOtpHttpClient(opts: {
@@ -395,7 +368,7 @@ export function createOtpHttpClient(opts: {
 }): OtpHttpClient {
   const base = opts.cloudEndpoint.replace(/\/$/, '');
   return {
-    async readOtp(address: string): Promise<{ text: string; receivedAt: number } | null> {
+    async readOtp(address: string, signal?: AbortSignal): Promise<{ text: string; receivedAt: number } | null> {
       const url =
         `${base}/v1/runners/${encodeURIComponent(opts.runnerId)}/otp` +
         `?address=${encodeURIComponent(address)}`;
@@ -406,19 +379,9 @@ export function createOtpHttpClient(opts: {
         headers['x-dino-scan-capability'] = opts.capabilityToken;
       }
       try {
-        const res = await opts.fetchImpl(url, { method: 'GET', headers });
-        if (res.status === 200) {
-          const body: { text?: unknown; receivedAt?: unknown } = await res.json();
-          if (typeof body.text !== 'string') {
-            return null;
-          }
-          const receivedAt = typeof body.receivedAt === 'number' ? body.receivedAt : 0;
-          return { text: body.text, receivedAt };
-        }
-        if (res.status === 204 || res.status === 400 || res.status === 503) {
-          return null;
-        }
-        return null;
+        const res = await opts.fetchImpl(url, withSignal({ method: 'GET', headers }, signal));
+        // 204 / 400 / 503 (and anything else that is not a 200) mean "no OTP yet": keep polling.
+        return res.status === 200 ? readOtpBody(await res.json()) : null;
       } catch (err) {
         // Poll-safe: a transport failure → null → the resolver keeps polling until its window elapses.
         // Log the error NAME only (never the OTP/address) for observability (INV-6).

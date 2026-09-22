@@ -10,45 +10,47 @@ import type { Timer } from '@dino/engine';
 const MAX_ATTEMPTS = 5;
 const RETRY_BASE_MS = 100;
 
-/** Optional fields on the completed scan-results POST (#1154, #1234, #1759 #30). */
-export type ScanCompletedExtras = {
-  attestation?: ScanAttestationWire;
-  pipelineResult?: unknown;
+/**
+ * Carried by every terminal scan-results POST. `attemptId` is REQUIRED: the URL path names the scan,
+ * this names the execution of it, so the cloud can reject a report from a superseded attempt.
+ */
+export type TerminalReportExtras = {
+  attemptId: string;
   rotatedRefreshToken?: string;
   /** Pool identity: scan-bound capability sent as x-dino-scan-capability (Spec B - a pool JWT carries no tenant claim). */
   capabilityToken?: string;
 };
 
-/** Optional fields on the failed scan-results POST (#1759 L3, #30). */
-export type ScanFailedExtras = {
-  failureType?: string;
-  rotatedRefreshToken?: string;
-  /** Pool identity: scan-bound capability sent as x-dino-scan-capability (Spec B). */
-  capabilityToken?: string;
+/** The completed scan-results POST (Cleanup V2 task 4c): the canonical result and its digest, the minimal DCG, and the optional extras. */
+export type ScanCompletedReport = TerminalReportExtras & {
+  dcg: unknown;
+  dinoResult: string;
+  dinoResultDigest: string;
+  attestation?: ScanAttestationWire;
+  schemaSnapshot?: unknown;
 };
 
-/** Optional fields on the cancelled scan-results POST (live-scan-logs Spec B). */
-export type ScanCancelledExtras = {
-  rotatedRefreshToken?: string;
-  /** Pool identity: scan-bound capability sent as x-dino-scan-capability (Spec B). */
-  capabilityToken?: string;
+/** Fields on the failed scan-results POST (#1759 L3, #30). */
+export type ScanFailedExtras = TerminalReportExtras & {
+  failureType?: string;
 };
+
+/** Fields on the cancelled scan-results POST (live-scan-logs Spec B). */
+export type ScanCancelledExtras = TerminalReportExtras;
 
 export interface ScanReporter {
-  /** Posts DCG JSON plus optional Sigstore bundle (#1154). Optional `pipelineResult` hydrates dashboard materialization (#1234). */
-  reportCompleted(scanId: string, dcg: unknown, extras?: ScanCompletedExtras): Promise<void>;
+  /** Posts the attempt id, the canonical result bytes + digest, the minimal DCG, and the optional Sigstore bundle / schema snapshot. */
+  reportCompleted(scanId: string, report: ScanCompletedReport): Promise<void>;
   /** `failureType` (e.g. `'auth_lost'`) drives cloud-side branching (#1759 L3 re-queue). Omitted → generic failure. */
-  reportFailed(scanId: string, reason: string, extras?: ScanFailedExtras): Promise<void>;
+  reportFailed(scanId: string, reason: string, extras: ScanFailedExtras): Promise<void>;
   /** Terminal cancel (Spec B INV-4): only after the cloud's cancel flag was observed. `toolsCompletedCount: 0` suppresses pool metering (INV-5). */
   reportCancelled(
     scanId: string,
     toolsCompletedCount: number,
-    extras?: ScanCancelledExtras,
+    extras: ScanCancelledExtras,
   ): Promise<void>;
 }
 
-/** @deprecated Use ScanReporter */
-export type InngestReporter = ScanReporter;
 
 async function sleepTimer(timer: Timer, ms: number): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -100,8 +102,6 @@ export async function postScanResultWithRetries(
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-/** @deprecated Use postScanResultWithRetries */
-export { postScanResultWithRetries as postInngestEventWithRetries };
 
 function resultsUrl(cloudEndpoint: string, scanId: string): string {
   const base = cloudEndpoint.replace(/\/$/, '');
@@ -129,38 +129,46 @@ export function createCloudReporter(
     });
 
   return {
-    async reportCompleted(
-      scanId: string,
-      dcg: unknown,
-      extras?: ScanCompletedExtras,
-    ): Promise<void> {
-      const body: Record<string, unknown> = { status: 'completed', dcg };
-      // Large optional payload — cloud applies INV-8 size guard + INV-9 redaction server-side.
-      if (extras?.pipelineResult !== undefined) body.result = extras.pipelineResult;
-      if (extras?.attestation) body.attestationBundle = extras.attestation.bundle;
-      if (extras?.rotatedRefreshToken !== undefined)
-        body.rotatedRefreshToken = extras.rotatedRefreshToken;
-      await post(scanId, body, extras?.capabilityToken);
+    async reportCompleted(scanId: string, report: ScanCompletedReport): Promise<void> {
+      const body: Record<string, unknown> = {
+        status: 'completed',
+        attemptId: report.attemptId,
+        dcg: report.dcg,
+        dinoResult: report.dinoResult,
+        dinoResultDigest: report.dinoResultDigest,
+      };
+      if (report.attestation !== undefined) body.attestationBundle = report.attestation.bundle;
+      if (report.schemaSnapshot !== undefined) body.schemaSnapshot = report.schemaSnapshot;
+      if (report.rotatedRefreshToken !== undefined) body.rotatedRefreshToken = report.rotatedRefreshToken;
+      await post(scanId, body, report.capabilityToken);
     },
 
-    async reportFailed(scanId: string, reason: string, extras?: ScanFailedExtras): Promise<void> {
-      const body: Record<string, unknown> = { status: 'failed', error: reason };
+    async reportFailed(scanId: string, reason: string, extras: ScanFailedExtras): Promise<void> {
+      const body: Record<string, unknown> = {
+        status: 'failed',
+        attemptId: extras.attemptId,
+        error: reason,
+      };
       // #1759 L3 — carry the discriminator the cloud branches on; without it auth_lost re-queue never fires.
-      if (extras?.failureType !== undefined) body.failureType = extras.failureType;
-      if (extras?.rotatedRefreshToken !== undefined)
+      if (extras.failureType !== undefined) body.failureType = extras.failureType;
+      if (extras.rotatedRefreshToken !== undefined)
         body.rotatedRefreshToken = extras.rotatedRefreshToken;
-      await post(scanId, body, extras?.capabilityToken);
+      await post(scanId, body, extras.capabilityToken);
     },
 
     async reportCancelled(
       scanId: string,
       toolsCompletedCount: number,
-      extras?: ScanCancelledExtras,
+      extras: ScanCancelledExtras,
     ): Promise<void> {
-      const body: Record<string, unknown> = { status: 'cancelled', toolsCompletedCount };
-      if (extras?.rotatedRefreshToken !== undefined)
+      const body: Record<string, unknown> = {
+        status: 'cancelled',
+        attemptId: extras.attemptId,
+        toolsCompletedCount,
+      };
+      if (extras.rotatedRefreshToken !== undefined)
         body.rotatedRefreshToken = extras.rotatedRefreshToken;
-      await post(scanId, body, extras?.capabilityToken);
+      await post(scanId, body, extras.capabilityToken);
     },
   };
 }

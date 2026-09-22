@@ -3,9 +3,22 @@
  * Normative: output-observability-contract.md §5A.2 / §5A.7.
  */
 
-import { sanitizeErrorMessage } from '@dino/core';
-import { CliError } from './errors';
+import {
+  isTenantConfigError,
+  sanitizeErrorMessage,
+  SsrfBlockedError,
+  winningKind,
+  type OutcomeKind,
+} from '@dino/core';
+import { CliError, hasNextAction, type AskUserNextAction } from './errors';
 import { stripControlsAndAnsi } from './neutralize';
+
+/** True when err is an SSRF/DNS block the CLI should treat as usage (exit 2), not crash (#193).
+ *  Prefix match only - a mid-message "SSRF blocked:" (e.g. wrapped GraphQL errors[]) must NOT match. */
+export function isSsrfBlockedError(err: unknown): boolean {
+  if (err instanceof SsrfBlockedError) return true;
+  return err instanceof Error && err.message.startsWith('SSRF blocked:');
+}
 
 /** graphql-request ClientError shape: message embeds `: {"response":…,"request":{"query":…}}`. */
 export function isUpstreamClientError(
@@ -26,15 +39,8 @@ export function boundErrorMessage(err: unknown): string {
   return oneLine.length > 300 ? `${oneLine.slice(0, 300)}…` : oneLine;
 }
 
-export type OutcomeKind =
-  | 'clean'
-  | 'findings_below'
-  | 'policy'
-  | 'partial'
-  | 'transient'
-  | 'usage'
-  | 'config'
-  | 'crash';
+/** The table, precedence and resolver live in `@dino/core` (Cleanup V2 task 2); re-exported unchanged. */
+export { EXIT_CODE, resolveExitCode, type OutcomeKind } from '@dino/core';
 
 export interface RuntimeOutcomeError {
   kind: string;
@@ -42,6 +48,7 @@ export interface RuntimeOutcomeError {
   retryable: 'transient' | 'permanent';
   input?: unknown;
   suggestion?: string;
+  nextAction?: AskUserNextAction;
 }
 
 export interface RuntimeOutcome {
@@ -53,51 +60,7 @@ export interface RuntimeOutcome {
   error?: RuntimeOutcomeError;
 }
 
-/** Highest precedence first: crash wins over everything. */
-const PRECEDENCE: readonly OutcomeKind[] = [
-  'crash',
-  'config',
-  'usage',
-  'transient',
-  'policy',
-  'partial',
-  'clean',
-  'findings_below',
-];
-
-const EXIT_CODE = new Map<OutcomeKind, number>([
-  ['clean', 0],
-  ['findings_below', 0],
-  ['policy', 3],
-  ['partial', 6],
-  ['transient', 4],
-  ['usage', 2],
-  ['config', 5],
-  ['crash', 70],
-]);
-
 const ENVELOPE_EXIT_CODES = new Set([2, 4, 5, 70]);
-
-function winningKind(o: RuntimeOutcome): OutcomeKind {
-  const kinds = [o.kind, ...(o.also ?? [])];
-  let best = kinds[0] ?? 'clean';
-  let bestRank = PRECEDENCE.indexOf(best);
-  for (const k of kinds) {
-    const rank = PRECEDENCE.indexOf(k);
-    if (rank >= 0 && (bestRank < 0 || rank < bestRank)) {
-      best = k;
-      bestRank = rank;
-    }
-  }
-  return best;
-}
-
-/** Pure: outcome → contract exit code (§5A.7). */
-export function resolveExitCode(o: RuntimeOutcome): number {
-  const winner = winningKind(o);
-  if (winner === 'partial' && o.acceptPartial === true) return 0;
-  return EXIT_CODE.get(winner) ?? 70;
-}
 
 /** Pure: JSON envelope string for exits 2/4/5/70; null otherwise (INV-3). */
 export function envelopeFor(o: RuntimeOutcome, exitCode: number): string | null {
@@ -116,7 +79,9 @@ export function envelopeFor(o: RuntimeOutcome, exitCode: number): string | null 
   };
   if (err.input !== undefined) body.input = sanitizeInput(err.input);
   if (err.suggestion !== undefined) body.suggestion = sanitizeErrorMessage(err.suggestion);
-  return JSON.stringify({ error: body });
+  const out: Record<string, unknown> = { error: body };
+  if (o.error?.nextAction !== undefined) out.nextAction = o.error.nextAction;
+  return JSON.stringify(out);
 }
 
 /**
@@ -198,8 +163,22 @@ function hasTransientHttpStatus(raw: string): boolean {
   return HTTP_STATUS_WORD.test(raw) || HTTP_STATUS_PAREN.test(raw);
 }
 
+/**
+ * Scanned-API HTTP 5xx (ClientError-shaped). Target failure, not a Dino crash (#197 Part B).
+ * `response` is typed unknown — guard the numeric status read; never assume `.status` exists.
+ */
+export function isUpstreamServerError(err: unknown): boolean {
+  if (!isUpstreamClientError(err)) return false;
+  const response = err.response;
+  if (response === null || typeof response !== 'object') return false;
+  const status = (response as { status?: unknown }).status;
+  return typeof status === 'number' && status >= 500 && status < 600;
+}
+
 /** Retryable network/DNS/timeout error? Safe against incidental substrings in user/upstream content. */
 export function isTransientError(err: unknown): boolean {
+  // #197 Part B: scanned-API 5xx → transient (exit 4), never crash (70). Existing 429/502/503/504 path unchanged.
+  if (isUpstreamServerError(err)) return true;
   if (err !== null && typeof err === 'object') {
     const code = (err as { code?: unknown }).code;
     if (typeof code === 'string' && NETWORK_CODES.has(code)) return true;
@@ -211,10 +190,9 @@ export function isTransientError(err: unknown): boolean {
   return hasTransientHttpStatus(raw);
 }
 
-/** Classify a watch/iteration failure as transient (4) vs crash (70). */
+/** Classify a watch/iteration failure through the canonical caught-error path. */
 export function outcomeKindFromIterationError(err: unknown): OutcomeKind {
-  if (err instanceof CliError && err.kind !== undefined) return err.kind;
-  return isTransientError(err) ? 'transient' : 'crash';
+  return outcomeFromCaughtError(err).kind;
 }
 
 function kindFromExitCode(exitCode: number): OutcomeKind {
@@ -244,6 +222,9 @@ function classifyCaughtKind(err: unknown): OutcomeKind {
     if (err.kind !== undefined) return err.kind;
     if (err.exitCode !== 1) return kindFromExitCode(err.exitCode);
   }
+  // #193: after CliError (so exit-1 kindless SSRF CliError falls through here), before transient.
+  if (isSsrfBlockedError(err)) return 'usage';
+  if (isTenantConfigError(err)) return err.kind;
   return isTransientError(err) ? 'transient' : 'crash';
 }
 
@@ -276,6 +257,9 @@ export function outcomeFromCaughtError(err: unknown): RuntimeOutcome {
   };
   if (err instanceof CliError && err.hint !== undefined) {
     error.suggestion = err.hint;
+  }
+  if (hasNextAction(err)) {
+    error.nextAction = err.nextAction;
   }
   return { kind, error };
 }

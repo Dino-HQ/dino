@@ -8,24 +8,24 @@ import { recordGet } from '@dino/core';
 import { setLogLevel } from '@dino/engine';
 import { runLogin, runLogout, runWhoami } from './commands/auth';
 import { runChangelog } from './commands/changelog';
-import { runConfigFromArgv } from './commands/config';
+import { runConfigFromArgv, runTelemetryFromArgv } from './commands/config';
 import { runDiff } from './commands/diff';
 import { runDocs } from './commands/docs';
 import { runLint } from './commands/lint';
 import { runRunnerFromFlags } from './commands/runner';
 import { runScan } from './commands/scan';
+import { runSchema } from './commands/schema';
+import { runSkill } from './commands/skill';
 import { runValidate } from './commands/validate';
 import { runVerify } from './commands/verify';
 import { runWatch } from './commands/watch';
 import { loadCliConfig } from './config/loader';
+import { maybeShowTelemetryNotice } from './config/telemetry-consent';
 import { dispatchBareInit } from './shared/bare-init-dispatch';
 import { parseArgs, buildContext } from './shared/base-command';
-import { quickstartText, usageText } from './shared/cli-usage';
-import { printCommandHelp } from './shared/command-help';
-import { emitResult } from './shared/emit-result';
+import { handleEarlyExit, printUsageToStream } from './shared/cli-early-exit';
 import { CliError } from './shared/errors';
 import { reportCaughtFailure } from './shared/report-failure';
-import { CLI_VERSION } from './version';
 import type { CommandContext, MergedFlags } from './shared/base-command';
 
 export { usageText, quickstartText } from './shared/cli-usage';
@@ -69,10 +69,14 @@ export {
   parseHeaderArg,
   resolveAuthHeaders,
   getEndpoint,
+  resolveEndpointOrNull,
   discoverOperations,
   withTracking,
+  collectMachineInfo,
 } from './shared/base-command';
-export { CliError } from './shared/errors';
+export type { MachineInfo, MachineInfoDeps } from './shared/base-command';
+export { CliError, NeedsInputError, hasNextAction } from './shared/errors';
+export type { AskUserInput, AskUserNextAction, AskUserResume } from './shared/errors';
 export { CLI_VERSION } from './version';
 export {
   detectUi,
@@ -85,8 +89,7 @@ export {
   printHeaderBanner,
 } from './shared/ui';
 export type { UiOptions, ChalkColor, HeaderBannerMeta } from './shared/ui';
-export { emitResult, setResultSink } from './shared/emit-result';
-export type { EmitResultOptions } from './shared/emit-result';
+export { emitResult, setResultSink, type EmitResultOptions } from './shared/emit-result';
 export {
   neutralize,
   neutralizeCatalogCustomerFields,
@@ -103,6 +106,7 @@ export {
   emitEnvelope,
   boundErrorMessage,
   isUpstreamClientError,
+  isSsrfBlockedError,
 } from './shared/outcome';
 export type { OutcomeKind, RuntimeOutcome, RuntimeOutcomeError } from './shared/outcome';
 export type { ContractFormat, LiveLeg, ContractVerdict } from './shared/output-contract';
@@ -140,56 +144,6 @@ export function normalizeToolsAndModules(flags: Record<string, unknown>): void {
   }
 }
 
-function printUsage(opts?: { stream?: 'stdout' | 'stderr' }): void {
-  // #2172: explicit help is a stdout RESULT; error-path usage stays on stderr
-  if (opts?.stream === 'stderr') {
-    console.error(usageText());
-    return;
-  }
-  emitResult(usageText());
-}
-
-/** Check if argv requests version or help output. Returns exit code 0 if handled, null otherwise. */
-function handleEarlyExit(
-  command: string | undefined,
-  flags: Record<string, unknown>,
-): number | null {
-  // #173: bare words `dino version` / `dino help` alias the flag forms
-  if (
-    flags.version === true ||
-    flags.v === true ||
-    command === '--version' ||
-    command === '-v' ||
-    command === 'version'
-  ) {
-    emitResult(CLI_VERSION);
-    return 0;
-  }
-  const helpRequested =
-    flags.help === true ||
-    flags.h === true ||
-    command === '--help' ||
-    command === '-h' ||
-    command === 'help';
-  if (helpRequested) {
-    // #2141: `dino <command> --help` shows that command's help, not the top-level banner.
-    // `dino help` is the bare-word alias for top-level help (not a named command).
-    const named =
-      command !== undefined && command !== '--help' && command !== '-h' && command !== 'help';
-    if (named && printCommandHelp(command)) {
-      return 0;
-    }
-    printUsage();
-    return 0;
-  }
-  if (!command) {
-    // #2160: no-args → quickstart (explicit --help still uses full usage above)
-    emitResult(quickstartText());
-    return 0;
-  }
-  return null;
-}
-
 // B14 (#587): Validate --format before dispatch — unknown values silently fall through to markdown
 const VALID_FORMATS = new Set(['markdown', 'json']);
 type CliOutputFormat = 'markdown' | 'json';
@@ -216,6 +170,7 @@ type TenantCliCommonFlags = {
   specUrl: string | undefined;
   header: string | string[] | undefined;
   token: string | undefined;
+  allowPrivateTarget: boolean;
 };
 
 /** Options for handleCommandError. */
@@ -275,9 +230,13 @@ async function runBareCommand(
 }
 
 async function runWithoutTenantContext(
+  argv: string[],
   command: string,
   flags: Record<string, unknown>,
 ): Promise<number | null> {
+  if (command === 'telemetry') {
+    return runBareCommand(() => runTelemetryFromArgv(argv), flags);
+  }
   if (command === 'runner') {
     return runBareCommand(() => runRunnerFromFlags(flags), flags);
   }
@@ -296,6 +255,8 @@ async function runWithoutTenantContext(
   if (command === 'init') {
     return dispatchBareInit(flags, runBareCommand);
   }
+  if (command === 'skill') return runBareCommand(() => runSkill(flags).then(() => 0), flags);
+  if (command === 'schema') return runBareCommand(() => runSchema(flags), flags);
   return null;
 }
 
@@ -321,7 +282,11 @@ async function invokeTrackedPipelineCommand(opts: InvokeTrackedPipelineOptions):
   } catch (err) {
     return handleCommandError({ err, context, command, startMs: commandStartMs, flags });
   } finally {
-    await context.tracker.shutdown();
+    try {
+      await context.tracker.shutdown(1000);
+    } catch {
+      void 0;
+    }
   }
 }
 
@@ -342,6 +307,8 @@ function buildTenantCliCommonFlags(
     specUrl: flags.specUrl as string | undefined, // #171
     header: flags.header as string | string[] | undefined, // #2160
     token: flags.token as string | undefined, // #2160
+    // Read straight off argv: the opt-in must come from the operator, never from `.dino.yml`.
+    allowPrivateTarget: flags.allowPrivateTarget === true,
   };
 }
 
@@ -393,7 +360,7 @@ async function runTenantBackedCommand(
 
   const handler = recordGet(COMMAND_HANDLERS, command);
   if (!handler) {
-    printUsage({ stream: 'stderr' });
+    printUsageToStream({ stream: 'stderr' });
     return usageFailure(`Unknown command: ${command}`, flags);
   }
 
@@ -422,6 +389,12 @@ async function runTenantBackedCommand(
  * Returns process exit code.
  */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+  try {
+    maybeShowTelemetryNotice();
+  } catch {
+    void 0;
+  }
+
   const { command, flags } = parseArgs(argv);
 
   // #2143: the default happy path shows ONLY product output — the report plus product notices
@@ -443,7 +416,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const earlyExit = handleEarlyExit(command, flags);
   if (earlyExit !== null) return earlyExit;
 
-  const noTenant = await runWithoutTenantContext(command, flags);
+  const noTenant = await runWithoutTenantContext(argv, command, flags);
   if (noTenant !== null) return noTenant;
 
   return runTenantBackedCommand(argv, command, flags);

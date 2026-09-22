@@ -34,7 +34,7 @@ function validateResponseSchemaKeys(doc: DcgV1): void {
 }
 
 /**
- * Sanctioned runtime validation entry point for DCG v1-0-0, v1-0-1, and v1-0-2.
+ * Sanctioned runtime validation for registered DCG versions, including v1-1-0.
  *
  * @param input - Untrusted JSON-decoded value (never access fields before parsing).
  * @returns Parsed, typed DCG document.

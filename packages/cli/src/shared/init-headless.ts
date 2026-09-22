@@ -3,7 +3,12 @@
  */
 
 import { buildAuthAnswers, type InitAuthAnswers } from './config-yaml';
-import { CliError } from './errors';
+import { CliError, NeedsInputError } from './errors';
+import {
+  collectMissingRequiredFlags,
+  descriptorsForMissing,
+  resumeArgsForInit,
+} from './init-needs-input';
 
 export interface HeadlessInitInputs {
   endpoint?: string;
@@ -321,6 +326,22 @@ function throwUsageIfProblems(problems: string[], suggestion: string): void {
   );
 }
 
+function throwUsageOrNeedsInput(problems: string[], fields: HeadlessTrimmedFields): void {
+  const uniqueProblems = [...new Set(problems)];
+  if (uniqueProblems.length === 0) return;
+  const suggestion = buildUsageSuggestion(fields);
+  const missing = collectMissingRequiredFlags(fields);
+  if (missing.length > 0) {
+    throw new NeedsInputError(
+      `missing or invalid input: ${uniqueProblems.join(', ')}`,
+      suggestion,
+      descriptorsForMissing(missing),
+      { type: 'run_command', bin: 'dino', args: resumeArgsForInit(fields) },
+    );
+  }
+  throwUsageIfProblems(problems, suggestion);
+}
+
 /** INV-6: interactive only when BOTH std streams are TTYs and --yes is absent. */
 export function isNonInteractiveInit(
   inputs: { yes?: boolean },
@@ -383,7 +404,7 @@ export function resolveHeadlessInitAnswers(inputs: HeadlessInitInputs): {
 } {
   const raw = readRawFields(inputs);
   const fields = trimFields(raw);
-  throwUsageIfProblems(
+  throwUsageOrNeedsInput(
     [
       ...collectRequiredProblems(fields),
       ...collectProtocolProblems(fields),
@@ -393,7 +414,7 @@ export function resolveHeadlessInitAnswers(inputs: HeadlessInitInputs): {
       ...collectControlCharProblems(raw),
       ...collectEmptyOverrideProblems(raw, fields),
     ],
-    buildUsageSuggestion(fields),
+    fields,
   );
 
   const { endpoint, protocol, authType, specUrl } = fields;

@@ -4,6 +4,8 @@ import { DinoHeader } from '../ink/DinoHeader';
 import { Divider } from '../ink/Divider';
 import { NextStep } from '../ink/NextStep';
 import { SummaryCard } from '../ink/SummaryCard';
+import type { HealthVerdictLabel } from '../ink/HealthBadge';
+import type { EnvelopeSeverityLevel } from '@dino/core';
 import { DINO_THEME } from '../ink/theme';
 
 export interface WatchIterationViewProps {
@@ -11,8 +13,12 @@ export interface WatchIterationViewProps {
   tenant: string;
   environment: string;
   iteration: number;
+  /** `verdict.health`: the badge renders the given verdict/level, never a recomputed one. */
   healthScore: number | null;
-  operationCount: number;
+  healthVerdict?: HealthVerdictLabel | undefined;
+  healthLevel?: EnvelopeSeverityLevel | undefined;
+  /** `verdict.operationCount`: null (printed `?`) under an UNKNOWN scope. */
+  operationCount: number | null;
   toolsRun: number;
   toolsCompleted: number;
   toolsFailed: number;
@@ -43,7 +49,7 @@ function formatCountdown(sec: number): string {
 }
 
 function buildIterationStats(props: {
-  operationCount: number;
+  operationCount: number | null;
   toolsRun: number;
   toolsCompleted: number;
   toolsFailed: number;
@@ -52,7 +58,7 @@ function buildIterationStats(props: {
   colored: boolean;
 }) {
   return [
-    { label: 'OPERATIONS', value: props.operationCount },
+    { label: 'OPERATIONS', value: props.operationCount ?? '?' },
     { label: 'TOOLS RUN', value: props.toolsRun },
     { label: 'COMPLETED', value: props.toolsCompleted },
     {
@@ -91,6 +97,8 @@ export function WatchIterationView({
   environment,
   iteration,
   healthScore,
+  healthVerdict,
+  healthLevel,
   operationCount,
   toolsRun,
   toolsCompleted,
@@ -125,6 +133,8 @@ export function WatchIterationView({
       <SummaryCard
         title="Watch"
         healthScore={degraded ? undefined : healthScore}
+        healthVerdict={degraded ? undefined : healthVerdict}
+        healthLevel={degraded ? undefined : healthLevel}
         stats={stats}
         colored={colored}
       />

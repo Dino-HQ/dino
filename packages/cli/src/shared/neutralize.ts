@@ -3,9 +3,9 @@
  * Spec #2172 - fails closed: never pass through bytes/metacharacters we cannot make safe.
  */
 
-import type { OperationCatalogEntry } from '@dino/engine';
+import type { OperationCatalogEntry } from "@dino/engine";
 
-export type NeutralizeContext = 'markdown' | 'terminal' | 'json';
+export type NeutralizeContext = "markdown" | "terminal" | "json";
 
 const ESC = 0x1b;
 const CSI_SINGLE = 0x9b;
@@ -79,7 +79,7 @@ function isDroppedControl(code: number): boolean {
  * Uses a code-point loop (no control-char regex - satisfies no-control-regex).
  */
 export function stripControlsAndAnsi(input: string): string {
-  let out = '';
+  let out = "";
   let i = 0;
   while (i < input.length) {
     const code = input.codePointAt(i);
@@ -111,47 +111,54 @@ const ESCAPED_HASH = String.raw`\#`;
 
 function escapeLeadingHashes(line: string): string {
   return line.replace(/^(\s*)(#+)/u, (_m, ws: string, hashes: string) => {
-    return `${ws}${hashes.replaceAll('#', ESCAPED_HASH)}`;
+    return `${ws}${hashes.replaceAll("#", ESCAPED_HASH)}`;
   });
 }
 
 function escapeMarkdownStructure(input: string): string {
   // Backslash MUST be first — otherwise `a\|b` → `a\\|b` (escaped `\`, active `|`).
-  let out = input.replaceAll('\\', '\\\\');
-  out = out.replaceAll('```', String.raw`\`\`\``).replaceAll('~~~', String.raw`\~\~\~`);
-  out = out.replaceAll('|', String.raw`\|`).replaceAll('<', String.raw`\<`);
-  return out.split('\n').map(escapeLeadingHashes).join('\n');
+  let out = input.replaceAll("\\", "\\\\");
+  out = out
+    .replaceAll("```", String.raw`\`\`\``)
+    .replaceAll("~~~", String.raw`\~\~\~`);
+  out = out.replaceAll("|", String.raw`\|`).replaceAll("<", String.raw`\<`);
+  return out.split("\n").map(escapeLeadingHashes).join("\n");
 }
 
 /**
  * Make customer-controlled content safe for the target output context.
  * Never returns content it failed to make safe (INV-4).
  */
-export function neutralize(untrusted: string, context: NeutralizeContext): string {
+export function neutralize(
+  untrusted: string,
+  context: NeutralizeContext,
+): string {
   const stripped = stripControlsAndAnsi(untrusted);
-  if (context === 'terminal') {
+  if (context === "terminal") {
     return stripped;
   }
-  if (context === 'json') {
+  if (context === "json") {
     // JSON.stringify on the caller side escapes structurally; we only normalize controls.
     return stripped;
   }
   return escapeMarkdownStructure(stripped);
 }
 
-type ToolFinding = OperationCatalogEntry['toolFindings']['byTool'][string];
+type ToolFinding = OperationCatalogEntry["toolFindings"]["byTool"][string];
 
 function neutralizeToolFindings(
-  byTool: OperationCatalogEntry['toolFindings']['byTool'],
+  byTool: OperationCatalogEntry["toolFindings"]["byTool"],
   context: NeutralizeContext,
-): OperationCatalogEntry['toolFindings']['byTool'] {
-  const entries = Object.entries(byTool).map(([tool, finding]): [string, ToolFinding] => {
-    const next: ToolFinding = {
-      ...finding,
-      examples: (finding.examples ?? []).map((ex) => neutralize(ex, context)),
-    };
-    return [tool, next];
-  });
+): OperationCatalogEntry["toolFindings"]["byTool"] {
+  const entries = Object.entries(byTool).map(
+    ([tool, finding]): [string, ToolFinding] => {
+      const next: ToolFinding = {
+        ...finding,
+        examples: (finding.examples ?? []).map((ex) => neutralize(ex, context)),
+      };
+      return [tool, next];
+    },
+  );
   return Object.fromEntries(entries);
 }
 
@@ -172,8 +179,7 @@ export function neutralizeCatalogCustomerFields(
           ...p,
           name: neutralize(p.name, context),
         }));
-  return {
-    ...entry,
+  const neutralizedFields = {
     name: neutralize(entry.name, context),
     module: neutralize(entry.module, context),
     returnType: neutralize(entry.returnType, context),
@@ -184,8 +190,19 @@ export function neutralizeCatalogCustomerFields(
         : neutralize(rawDescription, context),
     toolFindings: {
       toolsRun: entry.toolFindings?.toolsRun ?? [],
-      worstSeverity: entry.toolFindings?.worstSeverity ?? 'CLEAN',
+      worstSeverity: entry.toolFindings?.worstSeverity ?? "CLEAN",
       byTool: neutralizeToolFindings(sourceByTool, context),
     },
+  };
+  if (entry.kind === "operation") {
+    return {
+      ...entry,
+      ...neutralizedFields,
+      operationKey: neutralize(entry.operationKey, context),
+    };
+  }
+  return {
+    ...entry,
+    ...neutralizedFields,
   };
 }

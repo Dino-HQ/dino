@@ -1,6 +1,6 @@
 {
   "name": "@dino-hq/cli",
-  "version": "1.0.7",
+  "version": "1.1.2",
   "type": "module",
   "description": "The deterministic verification layer for APIs. An independent, reproducible verdict on whether an API change is correct, secure, and safe to ship — for AI agents, CI, and developers.",
   "license": "MIT",
@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "build": "node build.mjs",
+    "build:binary": "node build-binary.mjs",
     "lint": "echo \"No lint yet\"",
     "prepublishOnly": "cp ../../SECURITY.md . && node build.mjs",
     "test": "jest --passWithNoTests",
@@ -59,22 +60,24 @@
     "url": "https://github.com/Dino-HQ/dino/issues"
   },
   "devDependencies": {
-    "@dino/auth": "*",
     "@dino/agents": "*",
     "@dino/analytics": "*",
+    "@dino/auth": "*",
     "@dino/core": "*",
     "@dino/engine": "*",
     "@dino/plugins": "*",
-    "@dino/reasoning": "*",
-    "chalk": "^6.0.0",
-    "cosmiconfig": "^10.0.0",
-    "esbuild": "^0.28.1",
+    "chalk": "^5.6.2",
+    "cosmiconfig": "^9.0.2",
+    "esbuild": "^0.28.2",
     "ink": "7.1.1",
-    "ora": "^9.4.1",
+    "ora": "^8.2.0",
     "prompts": "^2.4.2",
-    "react": "^19.2.7"
+    "react": "^19.2.8"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "ci-info": "^4.4.0"
   }
 }

@@ -33,15 +33,6 @@ export type AuditAction =
   | 'workspace.deletion_requested'
   | 'workspace.deletion_blocked_active_subscription'
   | 'workspace.export_requested'
-  // Sentinel
-  | 'sentinel.settings.updated'
-  | 'sentinel.signal.acknowledged'
-  | 'sentinel.signal.dismissed'
-  | 'sentinel.signal.snoozed'
-  | 'sentinel.signal.feedback_created'
-  | 'sentinel.signal_reviewed'
-  | 'sentinel.check_run_created'
-  | 'sentinel.pr_report_posted'
   // Runner lifecycle
   | 'runner.auth_hydrated'
   | 'runner.registered'
@@ -66,6 +57,25 @@ export type AuditAction =
   | 'runner.managed.deleted'
   | 'runner.managed.orphaned'
   | 'runner.health_degraded'
+  // Runtime Secret Grants (F01b / DIN-1343) — grant lifecycle. Metadata is non-secret (grant
+  // purpose/version/outcome); raw material never enters an audit record. `proxy.dispatch_ambiguous`
+  // (Agent Proxy) lands with its phase, when emitted.
+  | 'grant.issued'
+  | 'grant.redeemed'
+  | 'grant.denied'
+  // Rotation lineage (F01b Phase 2 / DIN-1343 C5,C6). Emitted when a rotation retires a Credential
+  // Reference version: a durable (outbox-backed via `emitAuditDurable`) signal that a specific
+  // credential version is superseded, so Execution can cancel in-flight work bound to the retired
+  // version. Metadata is non-secret (`{scanId, retiredVersion, newVersion, reason}`). Redemption
+  // already fails closed on the retired version via the live D1 version-pin; this signal is the
+  // durable record Execution acts on (ADR-0150 — custody records, Execution acts).
+  | 'credential.revocation_signal'
+  // Agent Proxy non-idempotent dispatch (F01b Phase 4 / DIN-1343 C7). Emitted durably (via
+  // `emitAuditDurable`) whenever the proxy returns a 502 `dispatch_ambiguous` for a mutating request:
+  // either a lost/timed-out first-attempt response, or a refused same-key retry. The action may have
+  // executed at the upstream, so this is the durable record of unresolved ambiguity Execution reconciles
+  // (ADR-0150). Metadata is non-secret (`{scanId, dispatchKey, method, reason}`); no raw material.
+  | 'proxy.dispatch_ambiguous'
   // Intelligence
   | 'intelligence.query.created'
   // Findings
@@ -75,8 +85,6 @@ export type AuditAction =
   | 'finding.status_changed'
   // Quality gates (#64)
   | 'quality_gate.default_changed'
-  // Quick setup
-  | 'quick_setup.completed'
   // API activation (#1277)
   | 'api.created'
   | 'api.updated'
@@ -87,6 +95,8 @@ export type AuditAction =
   | 'api_environment.created'
   | 'api_environment.updated'
   | 'api_environment.deleted'
+  // Target Definition versioning (P1B / DIN-1349) — immutable append of a new versioned intent.
+  | 'target_definition.created'
   | 'auth_profile.created'
   | 'auth_profile.updated'
   | 'auth_profile.deleted'
@@ -144,6 +154,7 @@ export type AuditResourceType =
   | 'intelligence'
   | 'api'
   | 'api_environment'
+  | 'target_definition'
   | 'auth_profile'
   | 'token_factory_profile'
   | 'runner_profile'

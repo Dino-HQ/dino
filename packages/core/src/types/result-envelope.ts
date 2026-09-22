@@ -44,6 +44,18 @@ export interface ResultEnvelope<T = unknown> {
       scan_operation_coverage (Spec 3, task #13). */
   operationsExercised?: string[];
 
+  /** Count of operations/units this tool INSPECTED this scan (work done). Distinct from
+      summary.total, which is the verdict ledger (passed + failed + notTested). The ledger reads this so a completed
+      tool that examined >=1 unit reads `ran` even with 0 findings. Absent ⇒ ledger falls back
+      to summary.total. */
+  examinedOperations?: number;
+
+  /** Protocols this tool actually examined this scan (#2319). Set by `both`-protocol tools that
+      examine protocols asymmetrically (e.g. deprecation-tracker: static REST always, live GraphQL
+      only when resolvers are wired). Execution coverage credits an op only for a protocol the tool
+      examined. Absent ⇒ the tool covers every protocol it applies to (legacy behavior). */
+  examinedProtocols?: Array<'graphql' | 'rest'>;
+
   /** The raw, tool-specific result payload */
   rawResult: T;
 
@@ -56,22 +68,63 @@ export interface ResultEnvelope<T = unknown> {
   readonly crashReason?: string | undefined;
 }
 
+/** Why a verification unit got no verdict (#2388 Verdict Ledger). Closed enum; `unknown` is the
+ *  catch-all. The runtime array is the single source of truth — the ledger primitive rejects any
+ *  `notTestedByReason` key not in this set, so the "closed enum" holds at runtime, not just in types. */
+export const NOT_TESTED_REASONS = [
+  'authUnavailable',
+  'unreachable',
+  'timeout',
+  'budgetExceeded',
+  'aborted',
+  'unsupported',
+  'dryRun',
+  'inconclusive',
+  'dependencyUnavailable',
+  'unknown',
+  'withheldUnsafe',
+] as const;
+export type NotTestedReason = (typeof NOT_TESTED_REASONS)[number];
+
+/** What one ledger cell counts (declared per tool so aggregates never sum incompatible units). */
+export const VERIFICATION_UNITS = [
+  'operation',
+  'operation-auth-state',
+  'operation-strategy',
+  'test-case',
+  'schema-element',
+] as const;
+export type VerificationUnit = (typeof VERIFICATION_UNITS)[number];
+
+export type NotTestedByReason = Partial<Record<NotTestedReason, number>>;
+
+/**
+ * Verdict ledger (#2388): every in-scope verification unit gets exactly ONE terminal outcome —
+ * passed, failed, or notTested — so `total === passed + failed + notTested` and
+ * `notTested === Σ notTestedByReason`. Derived by the engine primitive from a tool's ToolOutcome
+ * (#2388 B8-D: the primitive accepts no other builder shape).
+ */
 export interface EnvelopeSummary {
-  /** Total number of items tested/checked */
+  /** Verification units in scope for this tool (passed + failed + notTested once migrated). */
   total: number;
 
-  /** Number that passed */
+  /** Units with a passing verdict (per-entry outcome counters only, never a findings count). */
   passed: number;
 
-  /** Number that failed */
+  /** Units with a failing verdict (per-entry outcome counters only, never by subtraction). */
   failed: number;
 
-  /** Items in scope but NOT exercised (partial/budget-cut scan). Additive/informational —
-      does NOT change total/passed/failed. Absent ⇒ 0 (complete scan).
-      UNIT IS TOOL-LOCAL and NOT comparable across tools: rest-fuzzer counts whole operations,
-      rbac-matrix counts op×role iterations. Treat it as a per-envelope "how incomplete" magnitude /
-      binary incompleteness flag, never as a cross-tool total. */
+  /** Units in scope that reached NO verdict (dry-run, timeout, unreachable, budget, …). A
+      coverage gap is never a pass: notTested > 0 with no findings ⇒ severity UNTESTED.
+      Absent ⇒ 0. Units are tool-local (see `unit`) — never sum across tools. */
   notTested?: number;
+
+  /** Breakdown of `notTested` by terminal reason; Σ values === notTested. A key is present only
+      with a positive count (never as a zero-valued tag). Present once the producer is ledger-migrated. */
+  notTestedByReason?: NotTestedByReason;
+
+  /** The unit every counter above is expressed in. Present once the producing tool declares it. */
+  unit?: VerificationUnit;
 
   /** Number of findings normalized as CRITICAL (derived from severity.findings) */
   critical: number;

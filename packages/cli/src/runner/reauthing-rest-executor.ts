@@ -5,6 +5,7 @@
 import { computeRefreshMargin } from './reauth-policy';
 import type { AcquiredScanAuth } from './scan-auth';
 import type { RestExecutionOptions, RestFuzzExecutor } from '@dino/agents';
+import { observeTransport, mergeTransportStates, type TransportState } from '@dino/core';
 
 const DEFAULT_EXPIRY_MARGIN_MS = 60_000;
 
@@ -35,6 +36,18 @@ function isNearExpiry(
     return false;
   }
   return now >= expiresAt - marginMs;
+}
+
+function retryObservation(options: RestExecutionOptions) {
+  let firstState: TransportState = 'unknown';
+  return {
+    first: (state: TransportState) => {
+      firstState = state;
+      observeTransport(options, state);
+    },
+    retry: (state: TransportState) =>
+      observeTransport(options, mergeTransportStates(firstState, state)),
+  };
 }
 
 export function wrapReauthingRestExecutor(
@@ -73,15 +86,34 @@ export function wrapReauthingRestExecutor(
     return auth;
   }
 
+  return executeWithReauth(base, { authForCall, singleFlightRefresh });
+}
+
+function executeWithReauth(base: RestFuzzExecutor, authProvider: {
+  authForCall: () => Promise<AcquiredScanAuth>;
+  singleFlightRefresh: () => Promise<AcquiredScanAuth>;
+}): RestFuzzExecutor {
   return async (operation, options) => {
-    let auth = await authForCall();
-    const first = await base(operation, mergeAuthIntoOptions(options, auth));
+    observeTransport(options, 'not-attempted');
+    let auth = await authProvider.authForCall();
+    observeTransport(options, 'unknown');
+    const observation = retryObservation(options);
+    const first = await base(
+      operation,
+      mergeAuthIntoOptions(
+        {
+          ...options,
+          onTransportState: observation.first,
+        },
+        auth,
+      ),
+    );
     if (first.status !== 401) {
       return first;
     }
 
     try {
-      auth = await singleFlightRefresh();
+      auth = await authProvider.singleFlightRefresh();
     } catch {
       return first;
     }
@@ -90,6 +122,16 @@ export function wrapReauthingRestExecutor(
       return first;
     }
 
-    return base(operation, mergeAuthIntoOptions(options, auth));
+    observation.retry('unknown');
+    return base(
+      operation,
+      mergeAuthIntoOptions(
+        {
+          ...options,
+          onTransportState: observation.retry,
+        },
+        auth,
+      ),
+    );
   };
 }

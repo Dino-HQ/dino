@@ -13,6 +13,7 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage } from
 import { request as httpsRequest } from 'node:https';
 import { isIPv6 } from 'node:net';
 import { resolveAndValidateDNS } from './endpoint-validator';
+import { observeTransport, type ObservedRequestInit } from './transport-observation';
 
 /** A 16 MiB default body ceiling — the runner callers already cap smaller; this is a backstop. */
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
@@ -57,6 +58,15 @@ export interface PinnedFetchDeps {
   readonly requestImpl?: PinnedRequestImpl;
   /** Body ceiling; aborts past it. Default 16 MiB. */
   readonly maxBytes?: number;
+  /**
+   * Widen the destination policy to loopback and RFC1918 (never link-local/metadata). Set ONLY from
+   * an explicit operator flag on the local CLI; the cloud and the managed runner never pass it.
+   *
+   * Required, with no default: a caller that omitted it used to get the strict policy silently, so
+   * every path that should have carried the operator's choice and did not looked correct until
+   * someone read it. Pass `false` (or spread `STRICT_DESTINATION`) to mean it.
+   */
+  readonly allowPrivateTarget: boolean;
 }
 
 function headerEntries(init: RequestInit['headers']): [string, string][] {
@@ -82,6 +92,14 @@ const MAX_REDIRECTS = 20;
 
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function shouldStopRedirect(redirect: RequestInit['redirect']): boolean {
+  return redirect === 'manual' || redirect === 'error';
+}
+
+function redirectLocation(response: Response): string | null {
+  return isRedirectStatus(response.status) ? response.headers.get('location') : null;
 }
 
 function sameOrigin(a: URL, b: URL): boolean {
@@ -110,8 +128,11 @@ async function buildPinnedArgs(args: {
   body: string | undefined;
   init: RequestInit | undefined;
   resolver: PinnedFetchDeps['resolver'];
+  allowPrivateTarget: boolean | undefined;
 }): Promise<PinnedRequestArgs> {
-  const ssrf = await resolveAndValidateDNS(args.url, args.resolver);
+  const ssrf = await resolveAndValidateDNS(args.url, args.resolver, {
+    allowPrivateTarget: args.allowPrivateTarget,
+  });
   if (!ssrf.allowed) throw new SsrfBlockedError(ssrf.reason);
   // SNI is the bare hostname — URL.hostname keeps brackets for IPv6 literals ([::1]); the connect IP
   // and the cert SNI must both be bracket-free. The Host header keeps `host` (brackets + port).
@@ -286,9 +307,10 @@ function toUrlString(input: string | URL | Request): string {
  * request never re-resolves the hostname, and SNI + Host stay the hostname. On a blocked/failed resolution it
  * throws {@link SsrfBlockedError} (fail-closed — never a Response).
  */
-export function createPinnedFetch(deps: PinnedFetchDeps = {}): typeof fetch {
+export function createPinnedFetch(deps: PinnedFetchDeps): typeof fetch {
   const doRequest = deps.requestImpl ?? createNodePinnedRequest(deps.maxBytes ?? DEFAULT_MAX_BYTES);
-  return async (input: string | URL | Request, init?: RequestInit) => {
+  return async (input: string | URL | Request, init?: ObservedRequestInit) => {
+    observeTransport(init, 'not-attempted');
     let url = toUrlString(input);
     let method = init?.method ?? 'GET';
     let body = bodyToString(init?.body);
@@ -305,12 +327,17 @@ export function createPinnedFetch(deps: PinnedFetchDeps = {}): typeof fetch {
         throw new Error(`pinnedFetch exceeded ${MAX_REDIRECTS} redirects`);
       }
       const u = new URL(url);
-      const res = await doRequest(
-        await buildPinnedArgs({ url, method, headers, body, init, resolver: deps.resolver }),
-      );
+      const args = await buildPinnedArgs({
+        url, method, headers, body, init,
+        resolver: deps.resolver,
+        allowPrivateTarget: deps.allowPrivateTarget,
+      });
+      init?.beforeTransport?.();
+      observeTransport(init, 'attempted');
+      const res = await doRequest(args);
 
-      const location = isRedirectStatus(res.status) ? res.headers.get('location') : null;
-      if (location === null || init?.redirect === 'manual' || init?.redirect === 'error') {
+      const location = redirectLocation(res);
+      if (location === null || shouldStopRedirect(init?.redirect)) {
         return res;
       }
 

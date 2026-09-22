@@ -3,7 +3,7 @@
  */
 
 import { createRestExecutor } from '@dino/agents';
-import { createPinnedFetch } from '@dino/core';
+import { createPinnedFetch, partitionTools, type DinoResult } from '@dino/core';
 import {
   loadOperationRegistry,
   clearTenantCache,
@@ -12,10 +12,10 @@ import {
   loadLatestSnapshot,
   diffSnapshots,
   runPipeline,
-  summarizeCatalogHealth,
+  createFuzzerProjectionContext,
 } from '@dino/engine';
 import { buildAdHocRegistry } from './scan-helpers';
-import { buildScanCatalogFromResult, shouldFallBackToAdHocRegistry } from './scan-pipeline';
+import { shouldFallBackToAdHocRegistry } from './scan-pipeline';
 import {
   resolveMaxIterations,
   validateAndBuildConfig,
@@ -27,12 +27,8 @@ import {
 } from './watch-helpers';
 import { discoverOperationsDetailed, getEndpoint, withTracking } from '../shared/base-command';
 import { saveHistoryEntry } from '../shared/history';
-import {
-  outcomeKindFromIterationError,
-  resolveExitCode,
-  type OutcomeKind,
-} from '../shared/outcome';
-import { perOpFindingsFromEnv } from '../shared/pipeline-helpers';
+import { discoveryRead } from '../shared/introspection-level';
+import { outcomeKindFromIterationError, resolveExitCode } from '../shared/outcome';
 import { detectUi, createSpinner, printNotice } from '../shared/ui';
 import type { CommandContext } from '../shared/base-command';
 import type { WatchHistoryEntry } from '../shared/history';
@@ -73,13 +69,15 @@ interface RunIterationOptions {
 }
 
 /** Outcome of one watch iteration (honest exit uses the final iteration). */
-type IterationOutcome = { kind: 'ok' } | { kind: 'degraded' } | { kind: 'enforce' };
+type IterationOutcome = { kind: 'ok' } | { kind: 'partial' } | { kind: 'enforce' };
 
 function buildWatchRestExecutor(
   context: CommandContext,
 ): ReturnType<typeof createRestExecutor> | undefined {
   // Mirror scan.ts:119-150 - pin fetch; merge context.authHeaders (per-call headers win).
-  const base = createRestExecutor({ fetch: createPinnedFetch() });
+  const base = createRestExecutor({
+    fetch: createPinnedFetch({ allowPrivateTarget: context.allowPrivateTarget === true }),
+  });
   const staticHeaders = context.authHeaders;
   if (staticHeaders === undefined || Object.keys(staticHeaders).length === 0) {
     return base;
@@ -92,7 +90,11 @@ function buildWatchRestExecutor(
 }
 
 async function executeIterationPipeline(cfg: IterationConfig, quiet?: boolean, noColor?: boolean) {
-  const { context } = cfg;
+  // The target was resolved and ADMITTED once, at context creation. Re-resolving it per iteration
+  // re-decided a settled question against a policy this call did not have, so a loopback target the
+  // command had already accepted was refused again before the first iteration. `protected` is
+  // already normalised on the resolved target, so the second pass was adding nothing either.
+  const context = cfg.context;
   // B11 (#584): Clear tenant cache each iteration -- watch runs indefinitely,
   // registry may change between iterations. Stale cache -> stale module slugs.
   clearTenantCache();
@@ -118,6 +120,7 @@ async function executeIterationPipeline(cfg: IterationConfig, quiet?: boolean, n
   const endpoint = hasRest ? getEndpoint(context) : undefined;
 
   const result = await runPipeline({
+    targets: { graphql: context.selectedTarget, rest: context.selectedTarget },
     tenantId: context.tenantId,
     environment: context.environment,
     trigger: 'watch',
@@ -127,50 +130,40 @@ async function executeIterationPipeline(cfg: IterationConfig, quiet?: boolean, n
     rbacRoles: cfg.rbacRoles,
     tools: cfg.validatedTools,
     modules: cfg.validatedModules,
-    perOpFindings: perOpFindingsFromEnv(),
-    reasoningConfig: cfg.reasoningConfig,
     tracker: context.tracker,
     timeoutMs: cfg.timeoutMs,
-    // B102 + B103: Share cache and circuit breaker across watch iterations
-    circuitBreaker: cfg.circuitBreaker,
-    reasoningCache: cfg.reasoningCache,
     restExecutor: hasRest ? buildWatchRestExecutor(context) : undefined,
     restBaseUrl: endpoint,
     openApiSpec: hasRest ? ops.discoveryRaw : undefined,
     restOperations: hasRest ? restOperations : undefined,
-  });
-
-  const catalog = buildScanCatalogFromResult({
-    result,
-    graphqlOps: ops.graphqlOperations,
-    context,
-    useAdHocFallback: useAdHoc,
-    restOperations,
-  });
-  return { ops, result, catalog };
+    ...(ops.introspectionLevel === undefined ? {} : { introspectionLevel: ops.introspectionLevel }),
+    // Read only by the shadow DinoResult constructor (Cleanup V2 task 2); tool inputs are unchanged.
+    discovery: { graphqlOperations: ops.graphqlOperations, introspectionLevel: ops.introspectionLevel, read: discoveryRead({ structureSource: ops.structureSource, hasRest }) },
+  }, createFuzzerProjectionContext());
+  return { ops, result };
 }
 
+/** Every field is a copy of the canonical result (Cleanup V2 task 4c); only the schema diff is the host's. */
 function buildIterationHistoryEntry(params: {
-  ops: Awaited<ReturnType<typeof discoverOperationsDetailed>>;
-  result: Awaited<ReturnType<typeof runPipeline>>;
-  context: CommandContext;
-  healthScore: number | null;
+  result: DinoResult;
   changes: { added: number; removed: number; modified: number; breakingChanges: number };
 }): WatchHistoryEntry {
-  const { ops, result, context, healthScore, changes } = params;
+  const { result, changes } = params;
+  const tools = result.verification.tools;
+  const partition = partitionTools(tools);
   return {
-    runId: result.runId,
-    timestamp: new Date().toISOString(), // determinism:allowed
-    tenantId: context.tenantId,
-    environment: context.environment,
+    runId: result.identity.runId,
+    timestamp: result.identity.generatedAt,
+    tenantId: result.identity.tenantId,
+    environment: result.identity.environment,
     trigger: 'watch',
-    durationMs: result.durationMs,
-    operationCount: ops.discoveredOperations.length,
-    toolsRun: result.metadata.toolsRun.length,
-    toolsCompleted: result.metadata.toolsCompleted.length,
-    toolsFailed: result.metadata.toolsFailed.length,
-    degraded: result.metadata.degraded,
-    healthScore,
+    durationMs: result.verification.durationMs,
+    operationCount: result.verdict.operationCount,
+    toolsRun: tools.filter((t) => t.status === 'ran').length,
+    toolsCompleted: partition.completed.length,
+    toolsFailed: partition.failed.length,
+    degraded: result.verdict.degraded,
+    healthScore: result.verdict.health.score,
     schemaChanges: {
       added: changes.added,
       removed: changes.removed,
@@ -185,7 +178,7 @@ async function runIteration(opts: RunIterationOptions): Promise<IterationOutcome
   const { cfg, iteration, quiet, noColor, nextSleepSec } = opts;
   const { context } = cfg;
 
-  const { ops, result, catalog } = await executeIterationPipeline(cfg, quiet, noColor);
+  const { ops, result } = await executeIterationPipeline(cfg, quiet, noColor);
 
   const restOperations = ops.discoveredOperations.filter((o) => o.type === 'rest');
   const snapshot = buildSnapshot({
@@ -203,22 +196,19 @@ async function runIteration(opts: RunIterationOptions): Promise<IterationOutcome
   const diff = prev ? diffSnapshots(prev, snapshot) : null;
   await saveSnapshot(snapshot, snapshotOpts);
 
-  const health = summarizeCatalogHealth(catalog);
-  const healthScore = health.score;
-  const healthLevel = health.level;
   const changes = diff?.summary ?? { added: 0, removed: 0, modified: 0, breakingChanges: 0 };
 
-  const entry = buildIterationHistoryEntry({ ops, result, context, healthScore, changes });
+  const entry = buildIterationHistoryEntry({ result, changes });
   await saveHistoryEntry(entry, { historyDir: cfg.historyDir, historyLimit: cfg.historyLimit });
 
   await showIterationSummary({
     iteration,
     context,
     entry,
-    healthScore,
-    healthLevel,
+    // Health is copied from the canonical verdict — never recomputed from a catalog rebuild.
+    health: result.verdict.health,
     changes,
-    result,
+    result: { durationMs: result.verification.durationMs, degraded: result.verdict.degraded },
     noColor,
     quiet,
     nextSleepSec,
@@ -232,8 +222,9 @@ async function runIteration(opts: RunIterationOptions): Promise<IterationOutcome
     );
     return { kind: 'enforce' };
   }
-  if (result.metadata.degraded) {
-    return { kind: 'degraded' };
+  // The verdict's own partial (incomplete verification, degraded included) is a declared partial outcome.
+  if (result.verdict.coverage === 'partial') {
+    return { kind: 'partial' };
   }
   return { kind: 'ok' };
 }
@@ -252,7 +243,7 @@ async function handleIterationError(
   await saveHistoryEntry(buildDegradedEntry(iteration, cfg.context), {
     historyDir: cfg.historyDir,
     historyLimit: cfg.historyLimit,
-  }).catch(() => {});
+  }).catch(() => undefined);
 }
 
 /* ------------------------------------------------------------------ */
@@ -261,26 +252,35 @@ async function handleIterationError(
 
 interface WatchLoopState {
   consecutiveFailures: number;
-  lastIterationOk: boolean;
-  lastFailureKind: OutcomeKind | null;
+  terminal: { kind: 'ok' } | { kind: 'partial' } | { kind: 'caught'; error: unknown };
 }
 
 function applyIterationOutcome(state: WatchLoopState, outcome: IterationOutcome): number | null {
   // enforce = policy breach (breaking changes) → exit 3, no envelope
   if (outcome.kind === 'enforce') return resolveExitCode({ kind: 'policy' });
   if (outcome.kind === 'ok') {
-    state.lastIterationOk = true;
-    state.lastFailureKind = null;
+    state.terminal = { kind: 'ok' };
     state.consecutiveFailures = 0;
   } else {
-    // degraded → partial declared outcome (exit 6)
-    state.lastIterationOk = false;
-    state.lastFailureKind = 'partial';
+    // partial verdict → partial declared outcome (exit 6)
+    state.terminal = { kind: 'partial' };
     state.consecutiveFailures = 0;
   }
   return null;
 }
 
+function resolveTerminalExit(terminal: WatchLoopState['terminal']): number {
+  switch (terminal.kind) {
+    case 'ok':
+      return 0;
+    case 'partial':
+      return resolveExitCode({ kind: 'partial' });
+    case 'caught':
+      throw terminal.error;
+  }
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: pre-existing watch interrupt/circuit loop; unchanged by Sonar import cleanup
 async function executeWatchLoop(
   cfg: IterationConfig,
   flags: WatchFlags,
@@ -291,17 +291,14 @@ async function executeWatchLoop(
   let interrupted = false;
   const state: WatchLoopState = {
     consecutiveFailures: 0,
-    lastIterationOk: true,
-    lastFailureKind: null,
+    terminal: { kind: 'ok' },
   };
   let pendingSleep: { cancel: () => void } | null = null;
   const onShutdown = (): void => {
     interrupted = true;
-    // B26 (#606): Cancel pending sleep immediately on Ctrl+C / SIGTERM
     pendingSleep?.cancel();
   };
   process.on('SIGINT', onShutdown);
-  // B106 (#675): Handle SIGTERM for graceful shutdown in containers
   process.on('SIGTERM', onShutdown);
 
   try {
@@ -319,9 +316,9 @@ async function executeWatchLoop(
         const early = applyIterationOutcome(state, outcome);
         if (early !== null) return early;
       } catch (iterError) {
+        state.terminal = { kind: 'caught', error: iterError };
+        if (outcomeKindFromIterationError(iterError) !== 'transient') throw iterError;
         state.consecutiveFailures++;
-        state.lastIterationOk = false;
-        state.lastFailureKind = outcomeKindFromIterationError(iterError);
         await handleIterationError(iterError, iteration, cfg, flags.quiet);
         throwIfCircuitBroken(state.consecutiveFailures, cfg, iterError);
       }
@@ -333,8 +330,7 @@ async function executeWatchLoop(
         pendingSleep = null;
       }
     }
-    if (state.lastIterationOk) return 0;
-    return resolveExitCode({ kind: state.lastFailureKind ?? 'crash' });
+    return resolveTerminalExit(state.terminal);
   } finally {
     process.removeListener('SIGINT', onShutdown);
     process.removeListener('SIGTERM', onShutdown);

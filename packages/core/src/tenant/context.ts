@@ -6,6 +6,7 @@
  * everything an agent needs to run against a specific tenant.
  */
 
+import { TenantConfigError } from './tenant-config-error';
 import { recordGet } from '../utils/safe-record';
 import type { TenantConfig, EnvironmentConfig } from './tenant-config';
 import type { Operation } from '../types/operation';
@@ -51,8 +52,9 @@ export function createAgentContext(options: CreateAgentContextOptions): AgentCon
 
   if (!environment) {
     const available = Object.keys(tenant.environments).join(', ');
-    throw new Error(
-      `Environment "${envName}" not found in tenant "${tenant.id}". Available: ${available}`,
+    throw new TenantConfigError(
+      `Environment "${envName}" not found in tenant "${tenant.id}". Available: ${available}. Run dino validate.`,
+      'usage',
     );
   }
 

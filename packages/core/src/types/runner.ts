@@ -11,7 +11,6 @@
  */
 
 import type { ScanId, TenantId } from './ids';
-import type { SentinelScanCommand } from './sentinel.js';
 
 /**
  * A scan assignment sent from cloud to runner.
@@ -21,10 +20,14 @@ import type { SentinelScanCommand } from './sentinel.js';
  */
 export interface RunnerJob {
   scanId: ScanId;
+  /**
+   * The execution this job is one attempt of. A scan is the logical parent; every execution of it
+   * is an attempt with its own immutable id. The runner echoes this back on the terminal report so
+   * a late report from a superseded attempt is rejected.
+   */
+  attemptId: string;
   tenantId: TenantId;
   targetUrl: string;
-  /** Sentinel decision-engine scan plan (#1388). Omitted for manual/legacy scans. */
-  command?: SentinelScanCommand;
   /** Linked auth profile for scan-time credential acquisition (#1759 B3b). */
   authProfileId?: string;
   /** Per-scan capability for pool runners (#68); required for hydrate + /otp on pool identity. */
@@ -66,6 +69,9 @@ export interface ScanAttestationWire {
  * Posted to `POST /v1/scans/:id/results` (runner-auth).
  * The scanId is in the URL path, not the body — included here for
  * internal routing after the HTTP layer extracts it.
+ * The attemptId IS in the body: the URL path identifies the scan, the body
+ * identifies which execution of it this report belongs to, so the cloud can
+ * reject a late report from a superseded attempt.
  *
  * Discriminated union: completed results MUST have dcg, failed results
  * MUST have error. { status: 'completed' } with no dcg is a compile error.
@@ -73,15 +79,20 @@ export interface ScanAttestationWire {
 export type RunnerResult =
   | {
       scanId: ScanId;
+      /** The execution this report belongs to; the cloud rejects it if the attempt was superseded. */
+      attemptId: string;
       status: 'completed';
+      /** The minimal DCG projected from the canonical result (unsigned; the cloud serves it as `dcg.json`). */
       dcg: unknown;
+      /** The exact canonical `DinoResult` bytes (Cleanup V2 task 4c) — the truth the cloud stores verbatim. */
+      dinoResult: string;
+      /** SHA-256 hex of `dinoResult`. */
+      dinoResultDigest: string;
       /**
-       * Cryptographic attestation for `dcg` when the pipeline had `attestationSigner` configured.
+       * Sigstore attestation of `dinoResult` when the runner had a signing identity.
        * Omitted when signing skipped or failed (INV-1 — scan still completes).
        */
       attestation?: ScanAttestationWire | undefined;
-      /** Full pipeline JSON for dashboard materialization (#1234). Optional for older runners. */
-      result?: unknown;
       /** Rotated OAuth2 refresh_token to persist across scans (#1759 #30). */
       rotatedRefreshToken?: string | undefined;
       /**
@@ -92,6 +103,8 @@ export type RunnerResult =
     }
   | {
       scanId: ScanId;
+      /** The execution this report belongs to; the cloud rejects it if the attempt was superseded. */
+      attemptId: string;
       status: 'failed';
       error: string;
       failureType?: string | undefined;
@@ -100,6 +113,8 @@ export type RunnerResult =
     }
   | {
       scanId: ScanId;
+      /** The execution this report belongs to; the cloud rejects it if the attempt was superseded. */
+      attemptId: string;
       /**
        * Terminal cancel (live-scan-logs Spec B): reported ONLY after the cloud's cancelRequested
        * flag was observed AND the pipeline abort path ran (Spec B INV-4 — never fabricated).

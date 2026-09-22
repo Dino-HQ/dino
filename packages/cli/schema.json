@@ -40,10 +40,6 @@
       "default": ".dino/snapshots",
       "description": "Directory for schema snapshots (used by dino diff)."
     },
-    "aiKey": {
-      "type": "string",
-      "description": "AI key for reasoning (or set DINO_AI_KEY when running scan)."
-    },
     "autonomy": {
       "type": "object",
       "properties": {

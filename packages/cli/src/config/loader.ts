@@ -35,7 +35,6 @@ const DinoCliConfigSchema = z.looseObject({
   environment: z.string().optional(),
   format: z.enum(['markdown', 'json']).optional(),
   snapshotDir: z.string().optional(),
-  aiKey: z.string().optional(),
   autonomy: z.object({ level: z.enum(['observe', 'enforce']) }).optional(),
   auth: FlatAuthSchema.optional(),
   // #560: Ad-hoc scan support — endpoint + protocol in .dino.yml
@@ -81,8 +80,6 @@ export interface DinoCliConfig {
   format?: ('markdown' | 'json') | undefined;
   /** Snapshot directory override */
   snapshotDir?: string | undefined;
-  /** AI key for reasoning (or set DINO_AI_KEY when running scan). */
-  aiKey?: string | undefined;
   /** Shadow Mode autonomy config */
   autonomy?:
     | {
@@ -142,19 +139,6 @@ function assertTenantMatchesFlag(
   }
 }
 
-function stripAiKeyOutsideCwd(
-  filepath: string | undefined,
-  aiKey: string | undefined,
-): string | undefined {
-  if (!filepath) return aiKey;
-  const configDir = path.dirname(filepath);
-  const rel = path.relative(process.cwd(), configDir);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    return undefined;
-  }
-  return aiKey;
-}
-
 /**
  * Search for non-executable config from cwd upward.
  * Only YAML/JSON are allowed; dino.config.js and other executable files are excluded (#450).
@@ -195,7 +179,6 @@ export async function loadCliConfig(options?: LoadCliConfigOptions): Promise<Din
     environment: config.environment,
     format: config.format,
     snapshotDir: config.snapshotDir,
-    aiKey: stripAiKeyOutsideCwd(result.filepath, config.aiKey),
     autonomy: config.autonomy,
     // #2160: pass the auth union through verbatim (drop enabled-only narrowing)
     auth: config.auth,

@@ -5,10 +5,10 @@
 
 import { createRestExecutor } from '@dino/agents';
 import { resolveConfig, recordSet, createPinnedFetch } from '@dino/core';
+import { isReducedCoverage } from '@dino/engine';
 import {
   logVerboseDefaultsForScan,
   prepareScanToolsAndModules,
-  assertReasoningRequiresApiKey,
   logRbacRolesHintWhenMissing,
   buildScanExecutor,
   validateRbacIfConfigured,
@@ -17,39 +17,45 @@ import {
   runPipelineCatalogSnapshotAndPrint,
   type PipelineCatalogOptions,
 } from './scan-helpers';
-import { ensureScanTelemetryConsent } from '../config/telemetry-consent';
-import { getEndpoint, discoverOperationsDetailed, withTracking } from '../shared/base-command';
-import { CliError } from '../shared/errors';
+import {
+  getEndpoint,
+  resolveEndpointOrNull,
+  discoverOperationsDetailed,
+  withTracking,
+} from '../shared/base-command';
+import { CliError, NeedsInputError } from '../shared/errors';
+import { SCAN_ENDPOINT_DESCRIPTOR, resumeArgsForScan } from '../shared/scan-needs-input';
 import { detectUi, createSpinner, printNotice, printHeaderBanner } from '../shared/ui';
 import { CLI_VERSION } from '../version';
 import type { CommandContext, CommonFlags, MergedFlags } from '../shared/base-command';
 import type { UiOptions } from '../shared/ui';
 import type { ResolvedScanConfig } from '@dino/core';
 
-export { buildAdHocRegistry, buildAdHocOperationMappings, getScanExitCode } from './scan-helpers';
+export { buildAdHocRegistry, buildAdHocOperationMappings } from './scan-helpers';
 
 export interface ScanFlags extends CommonFlags {
   modules?: string[];
   tools?: string[];
-  reasoning?: boolean;
   timeout?: number;
   snapshotDir?: string;
-  aiKey?: string;
   auth?: { enabled: boolean; role?: string };
   verbose?: boolean;
-  endpoint?: string;
+  endpoint?: string | undefined;
   protocol?: 'graphql' | 'rest';
   failOnHigh?: boolean;
   /** Downgrade partial coverage (exit 6) to exit 0 (#2173 INV-1). */
   acceptPartial?: boolean;
+  /** Requests per rate-limit burst; a burst below the common limit floor cannot disprove a limit. */
+  burst?: number;
 }
 
 /**
  * Drop keys whose values are undefined so objects satisfy ScanFlags under exactOptionalPropertyTypes.
- * Safe cast — parseArgs (sole upstream) guarantees field types match ScanFlags via yargs type defs.
+ * Safe cast - parseArgs (sole upstream) guarantees field types match ScanFlags via yargs type defs.
  * #2173: coerce `--timeout` string → number; non-numeric → usage CliError (exit 2).
+ * #193: reject malformed `--endpoint` before fetch (usage exit 2, not crash 70). Exported for tests.
  */
-function normalizeScanFlags(f: MergedFlags): ScanFlags {
+export function normalizeScanFlags(f: MergedFlags): ScanFlags {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(f)) {
     if (value !== undefined) {
@@ -57,7 +63,46 @@ function normalizeScanFlags(f: MergedFlags): ScanFlags {
     }
   }
   coerceTimeoutFlag(out);
+  coerceBurstFlag(out);
+  coerceEndpointFlag(out);
   return out as ScanFlags;
+}
+
+/** #193: reject malformed --endpoint before fetch (usage exit 2, not crash 70). */
+function coerceEndpointFlag(out: Record<string, unknown>): void {
+  const endpoint = out.endpoint;
+  if (typeof endpoint !== 'string' || endpoint.length === 0) return;
+  if (!URL.canParse(endpoint)) {
+    throw new CliError(
+      `Invalid --endpoint URL: "${endpoint}" (expected a full URL like https://api.example.com)`,
+      2,
+      'Pass a full URL including the scheme, e.g. --endpoint https://api.example.com/graphql',
+      undefined,
+      'usage',
+    );
+  }
+}
+
+/**
+ * `parseArgs` stores every option value as a string, so `--burst 60` arrives as `"60"` and
+ * `ScanFlags.burst: number` is a lie the type system cannot catch. Coerce and validate here, at the
+ * boundary, exactly as `--timeout` does — a burst that is not a positive integer is a usage error,
+ * not something to forward and let a planner reject deep inside the run.
+ */
+function coerceBurstFlag(out: Record<string, unknown>): void {
+  const raw = out.burst;
+  if (raw === undefined) return;
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new CliError(
+      `Invalid --burst: "${String(raw)}" (expected a positive whole number of requests)`,
+      2,
+      'e.g. --burst 61, one request past a 60/min limit and the smallest burst that can disprove one',
+      undefined,
+      'usage',
+    );
+  }
+  recordSet(out, 'burst', parsed);
 }
 
 function coerceTimeoutFlag(out: Record<string, unknown>): void {
@@ -101,7 +146,7 @@ function coerceTimeoutFlag(out: Record<string, unknown>): void {
 function notifyReducedFidelity(discoveryRaw: unknown, ui: UiOptions): void {
   if (!discoveryRaw || typeof discoveryRaw !== 'object') return;
   const level = (discoveryRaw as { introspectionLevel?: unknown }).introspectionLevel;
-  if (level === 'minimal' || level === 'shallow') {
+  if (typeof level === 'string' && isReducedCoverage(level)) {
     printNotice('Limited schema access: this API only exposes part of its schema.', ui, {
       hint: 'Results are best-effort; connect an OpenAPI/GraphQL spec for full coverage.',
     });
@@ -132,6 +177,31 @@ async function discoverWithSpinnerAndBanner(
   }
 }
 
+function scanDetectUi(flags: ScanFlags) {
+  return detectUi({
+    quiet: flags.quiet,
+    noColor: flags.noColor,
+    verbose: flags.verbose,
+    debug: flags.debug,
+  });
+}
+
+/**
+ * Resolve scan endpoint or emit HAR ask_user when unconfigured (#2268).
+ * Extracted from discoverAndPrepareScan for max-lines.
+ */
+function resolveScanEndpointOrAsk(context: CommandContext, flags: ScanFlags): string {
+  if (flags.endpoint === undefined && resolveEndpointOrNull(context) === null) {
+    throw new NeedsInputError(
+      'API endpoint is not configured',
+      'Pass --endpoint <url>, or run dino init to configure a tenant with environments/endpoints.',
+      [SCAN_ENDPOINT_DESCRIPTOR],
+      { type: 'run_command', bin: 'dino', args: resumeArgsForScan(flags) },
+    );
+  }
+  return getEndpoint(context);
+}
+
 async function discoverAndPrepareScan(
   context: CommandContext,
   flags: ScanFlags,
@@ -142,16 +212,9 @@ async function discoverAndPrepareScan(
     flags,
     resolvedConfig,
   );
-  assertReasoningRequiresApiKey(flags);
 
-  const endpoint = getEndpoint(context);
-  const ui = detectUi({
-    quiet: flags.quiet,
-    noColor: flags.noColor,
-    verbose: flags.verbose,
-    debug: flags.debug,
-  });
-  const discoveryMeta = await discoverWithSpinnerAndBanner(context, ui);
+  const endpoint = resolveScanEndpointOrAsk(context, flags);
+  const discoveryMeta = await discoverWithSpinnerAndBanner(context, scanDetectUi(flags));
   const graphqlOps = discoveryMeta.graphqlOperations;
   const rbacRoles = readRbacRolesFromContext(context);
   const { expectations: rbacExpectations, defaultExpectations: rbacDefaultExpectations } =
@@ -179,24 +242,32 @@ async function discoverAndPrepareScan(
     restExecutor: hasRest
       ? (() => {
           // #1850 - pin the REST scanner's fetch to the validated IP (customer-controlled endpoint).
-          const base = createRestExecutor({ fetch: createPinnedFetch() });
+          // The operator's opt-in has to reach the RUNTIME guard too: the static check passing is
+          // not enough, since the pinned fetch re-validates the resolved IP on every hop.
+          const base = createRestExecutor({
+            fetch: createPinnedFetch({ allowPrivateTarget: flags.allowPrivateTarget === true }),
+          });
           const staticHeaders = context.authHeaders;
           if (staticHeaders === undefined || Object.keys(staticHeaders).length === 0) {
             return base;
           }
           // #2160: merge static auth headers; per-call options.headers win on conflict.
+          // A probe that declares itself unauthenticated gets none of them — otherwise `--token`
+          // silently re-authenticates the one request whose whole purpose is to carry no credential.
           return (operation: Parameters<typeof base>[0], options: Parameters<typeof base>[1]) =>
             base(operation, {
               ...options,
-              headers: { ...staticHeaders, ...options.headers },
+              headers: options.unauthenticated
+                ? { ...options.headers }
+                : { ...staticHeaders, ...options.headers },
             });
         })()
       : undefined,
     restBaseUrl: hasRest ? endpoint : undefined,
     openApiSpec: hasRest ? discoveryMeta.discoveryRaw : undefined,
     restOperations: hasRest ? restOps : undefined,
-    // #202: durable report disclosure (stderr notice stays in notifyReducedFidelity)
     introspectionLevel: discoveryMeta.introspectionLevel,
+    structureSource: discoveryMeta.structureSource,
   };
 }
 
@@ -211,7 +282,6 @@ async function executeScanBody(context: CommandContext, flags: ScanFlags): Promi
     // #2143: humans get the readable report by default; `--format json` for machines.
     format: flags.format ?? 'markdown',
     snapshotDir: flags.snapshotDir,
-    aiKey: flags.aiKey,
     auth: flags.auth,
     timeout: flags.timeout,
     verbose: flags.verbose,
@@ -223,11 +293,10 @@ async function executeScanBody(context: CommandContext, flags: ScanFlags): Promi
 }
 
 /**
- * dino scan --tenant acme --env qa [--format json] [--reasoning] [--modules X,Y]
+ * dino scan --tenant acme --env qa [--format json] [--modules X,Y]
  */
 export async function runScan(context: CommandContext, flags: MergedFlags): Promise<number> {
   const scanFlags = normalizeScanFlags(flags);
-  await ensureScanTelemetryConsent();
   return withTracking({
     context,
     command: 'scan',
@@ -237,7 +306,6 @@ export async function runScan(context: CommandContext, flags: MergedFlags): Prom
       format: scanFlags.format,
       modules: scanFlags.modules,
       tools: scanFlags.tools,
-      reasoning: scanFlags.reasoning,
       debug: scanFlags.debug,
       noColor: scanFlags.noColor,
     },

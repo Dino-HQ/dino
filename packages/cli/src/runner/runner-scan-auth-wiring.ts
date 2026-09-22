@@ -108,6 +108,7 @@ function buildScanAuthDeps(ctx: AuthWireContext, profileId = ctx.authProfileId):
 async function hydrateBindingProfile(
   ctx: AuthWireContext,
   bindingAuthProfileId: string,
+  signal?: AbortSignal,
 ): Promise<HydratedProfile | null> {
   return fetchHydratedProfile({
     cloudEndpoint: ctx.state.cloudEndpoint,
@@ -119,18 +120,20 @@ async function hydrateBindingProfile(
       ? {}
       : { capabilityToken: ctx.assignment.capabilityToken }),
     fetchImpl: ctx.fetchImpl,
+    ...(signal === undefined ? {} : { signal }),
   });
 }
 
 async function acquireFromHydrated(
   ctx: AuthWireContext,
   profile: HydratedProfile,
-  extra?: { fromStepIndex?: number; otpWindowStartMs?: number },
+  extra?: { fromStepIndex?: number; otpWindowStartMs?: number; signal?: AbortSignal },
 ): Promise<AcquiredScanAuth> {
   return acquireScanAuth(profile, {
     ...buildScanAuthDeps(ctx),
     ...(extra?.fromStepIndex === undefined ? {} : { fromStepIndex: extra.fromStepIndex }),
     ...(extra?.otpWindowStartMs === undefined ? {} : { otpWindowStartMs: extra.otpWindowStartMs }),
+    ...(extra?.signal === undefined ? {} : { signal: extra.signal }),
   });
 }
 
@@ -280,9 +283,12 @@ async function attemptOptionalRbacWire(
 ): Promise<RunnerRbacWire | undefined> {
   try {
     return await wireMultiRoleRbac(hydratedProfile, {
-      hydrateProfile: (authProfileId) => hydrateBindingProfile(ctx, authProfileId),
-      acquire: (profile, authProfileId) =>
-        acquireScanAuth(profile, buildScanAuthDeps(ctx, authProfileId)),
+      hydrateProfile: (authProfileId, signal) => hydrateBindingProfile(ctx, authProfileId, signal),
+      acquire: (profile, authProfileId, signal) =>
+        acquireScanAuth(profile, {
+          ...buildScanAuthDeps(ctx, authProfileId),
+          ...(signal === undefined ? {} : { signal }),
+        }),
     });
   } catch (err) {
     console.warn(

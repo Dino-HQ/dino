@@ -4,7 +4,7 @@
  * Normative: output-observability-contract.md §WS-4, §5A.1 / §5A.4 / §5A.7.
  */
 
-import { ScanResultV1Schema } from '@dino/engine';
+import { canonicalDinoResultBytes, parseDinoResultV1 } from '@dino/core';
 
 export type ContractFormat = 'json' | 'markdown';
 
@@ -66,8 +66,10 @@ function parseStdoutJson(
 }
 
 /**
- * JSON: framing purity + ScanResultV1Schema (.strict).
- * Trailing/leading bytes outside the document → pure:false (INV-1).
+ * JSON: framing purity + the `DinoResult 1.0` contract + canonical identity (Cleanup V2 task 4c):
+ * stdout must be exactly the canonical bytes followed by the one newline `emitResult` appends — a
+ * re-serialised or pretty-printed result, or any byte outside the document (leading whitespace, a
+ * second newline, trailing spaces), is not the digest-stable output → pure:false (INV-1).
  */
 export function checkJsonFraming(stdout: string): {
   pure: boolean;
@@ -78,11 +80,15 @@ export function checkJsonFraming(stdout: string): {
   if (!frame.ok) {
     return { pure: false, schemaValid: false, error: frame.error };
   }
-  const schema = ScanResultV1Schema.safeParse(frame.parsed);
-  if (!schema.success) {
-    return { pure: true, schemaValid: false, error: schema.error.message };
+  try {
+    const parsed = parseDinoResultV1(frame.parsed);
+    if (stdout !== `${canonicalDinoResultBytes(parsed)}\n`) {
+      return { pure: false, schemaValid: true, error: 'stdout is not the canonical DinoResult bytes followed by one newline' };
+    }
+    return { pure: true, schemaValid: true };
+  } catch (err) {
+    return { pure: true, schemaValid: false, error: err instanceof Error ? err.message : String(err) };
   }
-  return { pure: true, schemaValid: true };
 }
 
 /** Lines outside markdown fenced code blocks (customer fences ignored - INV-2). */
@@ -186,21 +192,18 @@ export function checkDeterministicCores(
  * false-red as a Dino output regression (INV-5). */
 const RESULT_EXIT_CODES = new Set([0, 3, 6]);
 
-function evaluateLeg(leg: LiveLeg): string[] {
-  const failures: string[] = [];
-  if (RESULT_EXIT_CODES.has(leg.exitCode)) {
-    if (leg.format === 'json') {
-      const framing = checkJsonFraming(leg.stdout);
-      if (!framing.pure || !framing.schemaValid) {
-        failures.push(`json: ${framing.error ?? 'framing or schema failure'}`);
-      }
-    } else {
-      const leak = detectLoggerEnvelopeLeak(leg.stdout);
-      if (leak.leaked) {
-        failures.push(`markdown logger leak: ${leak.line ?? 'detected'}`);
-      }
-    }
+/** The result-document checks: canonical JSON framing, or a markdown logger leak. */
+function evaluateResultDocument(leg: LiveLeg): string[] {
+  if (leg.format === 'json') {
+    const framing = checkJsonFraming(leg.stdout);
+    return framing.pure && framing.schemaValid ? [] : [`json: ${framing.error ?? 'framing or schema failure'}`];
   }
+  const leak = detectLoggerEnvelopeLeak(leg.stdout);
+  return leak.leaked ? [`markdown logger leak: ${leak.line ?? 'detected'}`] : [];
+}
+
+function evaluateLeg(leg: LiveLeg): string[] {
+  const failures = RESULT_EXIT_CODES.has(leg.exitCode) ? evaluateResultDocument(leg) : [];
   // secret + exit-contract apply to EVERY leg (a leaked dino_k_ or a wrong envelope is a failure
   // regardless of exit code; empty-stdout error legs still get these).
   const secrets = checkNoSecretLeak(leg.stdout, leg.stderr);

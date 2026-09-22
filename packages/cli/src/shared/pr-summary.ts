@@ -1,17 +1,18 @@
 /**
- * ScanResultV1 → shareable PR summary (#2191, T2 pure).
+ * DinoResult → shareable PR summary (#2191, T2 pure; Cleanup V2 task 4c reads the canonical result).
  * INV-1: failure/partial/zero-op sections carry no CLEAN/Healthy/pass badge or health-score.
  */
 
+import { findingMass } from './finding-mass';
 import { checkNoSecretLeak } from './output-contract';
-import type { ScanResultV1 } from '@dino/engine';
+import type { DinoResult } from '@dino/core';
 
 export interface ScanSummaryInput {
   label: string;
   authed: boolean;
   credentialPresent: boolean;
   exitCode: number;
-  result: ScanResultV1 | null;
+  result: DinoResult | null;
   fullReportArtifact?: string | undefined;
 }
 
@@ -27,26 +28,25 @@ export const PR_COMMENT_MAX = 65_536;
 const TRUNCATION_NOTICE =
   '\n\n_(Report truncated - see workflow artifacts for full markdown reports.)_';
 
+function isPartialSection(result: DinoResult): boolean {
+  return result.verdict.coverage === 'partial';
+}
+
+/** The declared partial exit (6) carries a valid result; every other non-zero exit is a failure. */
+const PARTIAL_EXIT_CODE = 6;
+
 function isFailureSection(input: ScanSummaryInput): boolean {
-  return input.exitCode !== 0 || input.result === null;
+  if (input.result === null) return true;
+  if (input.exitCode === 0) return false;
+  return !(input.exitCode === PARTIAL_EXIT_CODE && isPartialSection(input.result));
 }
 
-function isPartialSection(result: ScanResultV1): boolean {
-  return result.meta.partial === true || result.core.coverage === 'partial';
+function isZeroOpsSection(result: DinoResult): boolean {
+  return result.verdict.operationCount === 0;
 }
 
-function isZeroOpsSection(result: ScanResultV1): boolean {
-  return result.core.operationCount === 0;
-}
-
-function countFindings(result: ScanResultV1): number {
-  let total = 0;
-  for (const op of result.core.operations) {
-    for (const tool of Object.keys(op.toolFindings.byTool)) {
-      total += op.toolFindings.byTool[tool]?.findingCount ?? 0; // eslint-disable-line security/detect-object-injection -- tool from Object.keys
-    }
-  }
-  return total;
+function operationsLine(result: DinoResult): string {
+  return `Operations: ${result.verdict.operationCount ?? 'unknown'}`;
 }
 
 function appendArtifactLine(lines: string[], artifact: string | undefined): void {
@@ -58,18 +58,18 @@ function appendArtifactLine(lines: string[], artifact: string | undefined): void
 function renderFailureSection(input: ScanSummaryInput): string {
   const lines = [`### ${input.label}`, `Scan failed (exit ${input.exitCode})`];
   if (input.result === null) {
-    lines.push('No valid ScanResultV1 was produced.');
+    lines.push('No valid DinoResult was produced.');
   }
   appendArtifactLine(lines, input.fullReportArtifact);
   return lines.join('\n');
 }
 
-function renderPartialSection(input: ScanSummaryInput, result: ScanResultV1): string {
-  const lines = [`### ${input.label}`, 'Partial coverage scan (reduced fidelity).'];
-  if (result.meta.reason !== undefined) {
-    lines.push(`Reason: ${result.meta.reason}`);
+function renderPartialSection(input: ScanSummaryInput, result: DinoResult): string {
+  const lines = [`### ${input.label}`, 'Partial coverage: verification was incomplete.'];
+  if (result.verdict.reasons.length > 0) {
+    lines.push(`Reason: ${result.verdict.reasons.join(', ')}`);
   }
-  lines.push(`Operations: ${result.core.operationCount}`);
+  lines.push(operationsLine(result));
   appendArtifactLine(lines, input.fullReportArtifact);
   return lines.join('\n');
 }
@@ -80,16 +80,16 @@ function renderZeroOpsSection(input: ScanSummaryInput): string {
   return lines.join('\n');
 }
 
-function renderSuccessSection(input: ScanSummaryInput, result: ScanResultV1): string {
+function renderSuccessSection(input: ScanSummaryInput, result: DinoResult): string {
   const lines = [
     `### ${input.label}`,
-    `Operations: ${result.core.operationCount}`,
-    `Health verdict: ${result.core.health.verdict}`,
+    operationsLine(result),
+    `Health verdict: ${result.verdict.health.verdict}`,
   ];
-  if (result.core.health.score !== null) {
-    lines.push(`Health score: ${result.core.health.score}/100`);
+  if (result.verdict.health.score !== null) {
+    lines.push(`Health score: ${result.verdict.health.score}/100`);
   }
-  lines.push(`Findings: ${countFindings(result)}`);
+  lines.push(`Findings: ${findingMass(result.findings)}`);
   appendArtifactLine(lines, input.fullReportArtifact);
   return lines.join('\n');
 }

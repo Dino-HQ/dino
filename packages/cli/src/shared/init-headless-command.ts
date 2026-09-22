@@ -2,7 +2,7 @@
  * #2198 — headless dino init write path (non-interactive orchestration).
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { buildConfigYaml } from './config-yaml';
 import { emitResult } from './emit-result';
 import { CliError } from './errors';
@@ -17,10 +17,30 @@ import { detectUi, printNotice } from './ui';
 import type { InitFlags } from '../commands/init';
 
 function readExistingConfig(currentPath: string): string | null {
-  // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is always cwd/.dino.yml
-  if (!existsSync(currentPath)) return null;
-  // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is always cwd/.dino.yml
-  return readFileSync(currentPath, 'utf-8');
+  // No existsSync preflight: fs.existsSync collapses ENOENT (no config → null) and EACCES
+  // (present but unreadable) into one `false`, so an unreadable .dino.yml would slip past and
+  // its later readFileSync would throw uncaught → crash/70 with the absolute path leaked in the
+  // envelope. Read directly and classify by error code (mirrors #241 in the tenant loader).
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is always cwd/.dino.yml
+    return readFileSync(currentPath, 'utf-8');
+  } catch (err) {
+    const code =
+      err !== null && typeof err === 'object' && 'code' in err
+        ? (err as { code?: unknown }).code
+        : undefined;
+    if (code === 'ENOENT') return null;
+    // Present but unreadable (EACCES/EISDIR) is a config/environment error, not an internal
+    // crash. Classify config/5 and never echo the absolute path (CWE-117 / #241 discipline).
+    const reason = typeof code === 'string' && code.length > 0 ? code : 'unreadable';
+    throw new CliError(
+      `.dino.yml could not be read: ${reason}. Check file permissions.`,
+      5,
+      'Ensure .dino.yml is readable, or remove it to regenerate with dino init.',
+      undefined,
+      'config',
+    );
+  }
 }
 
 function emitHeadlessJsonResult(doc: InitResultDoc): void {

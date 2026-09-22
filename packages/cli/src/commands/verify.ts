@@ -1,14 +1,14 @@
 /**
- * `dino verify` — fetch DCG + Sigstore bundle from Dino Cloud and verify offline (#1154).
+ * `dino verify` — fetch a scan's canonical `DinoResult` bytes + Sigstore bundle from Dino Cloud and verify
+ * offline (#1154, Cleanup V2 task 4c D4c.5).
  *
- * Trust model: issuer hint comes from the API (`expectedIssuer`), never from argv (INV-5).
+ * Trust model (INV-5): the signer policy — issuer AND identity — is pinned by the cloud for the scan's
+ * assigned runner and returned as `expected`; it never comes from argv, from the bundle, or from a default.
+ * No pinned identity ⇒ `verifiable: false` ⇒ exit 1, never a pass.
  */
 
-import { verifyAttestation, type AttestationBundle } from '@dino/engine';
+import { verifyAttestation, type AttestationBundle, type VerifyOptions } from '@dino/engine';
 import { CliError } from '../shared/errors';
-
-/** GitHub Actions OIDC issuer - canonical default for Dino-hosted runners. */
-const DINO_DEFAULT_CERTIFICATE_ISSUER = 'https://token.actions.githubusercontent.com';
 
 /** Narrow unknown CLI flag values to non-empty strings (literal keys only - avoids object-injection noise). */
 function optionalNonEmptyString(value: unknown): string | undefined {
@@ -16,30 +16,25 @@ function optionalNonEmptyString(value: unknown): string | undefined {
 }
 
 function verifyScanIdFrom(flags: Record<string, unknown>): string | undefined {
-  return (
-    optionalNonEmptyString(flags['_1']) ??
-    optionalNonEmptyString(flags['scanId']) ??
-    optionalNonEmptyString(flags['scan-id'])
-  );
+  // parseArgs camel-cases flags: `--scan-id` arrives as `scanId`.
+  return optionalNonEmptyString(flags['_1']) ?? optionalNonEmptyString(flags.scanId);
 }
 
 type VerifyAuthHeaders = { Authorization: string };
 
+/** `GET /v1/scans/:id/attestation`: the bundle and the server-pinned signer policy. */
+export type AttestationEnvelope = {
+  attestation: AttestationBundle | null;
+  expected: { issuer: string; identity: { email: string } | { uri: string } } | null;
+  verifiable: boolean;
+};
+
 type LoadedAttestation =
   | { kind: 'missing' }
   | { kind: 'none' }
+  | { kind: 'not-verifiable' }
   | { kind: 'http_error'; status: number }
-  | { kind: 'ok'; bundle: AttestationBundle; expectedIssuer?: string | null };
-
-function loadedOk(
-  bundle: AttestationBundle,
-  expectedIssuer: string | null | undefined,
-): Extract<LoadedAttestation, { kind: 'ok' }> {
-  if (expectedIssuer === undefined) {
-    return { kind: 'ok', bundle };
-  }
-  return { kind: 'ok', bundle, expectedIssuer };
-}
+  | { kind: 'ok'; bundle: AttestationBundle; policy: NonNullable<AttestationEnvelope['expected']> };
 
 async function loadAttestationForVerify(
   base: string,
@@ -53,27 +48,21 @@ async function loadAttestationForVerify(
   if (attestationRes.status === 404) return { kind: 'missing' };
   if (!attestationRes.ok) return { kind: 'http_error', status: attestationRes.status };
 
-  const envelope = (await attestationRes.json()) as {
-    attestation: AttestationBundle | null;
-    expectedIssuer?: string | null;
-  };
-
+  const envelope = (await attestationRes.json()) as AttestationEnvelope;
   if (!envelope.attestation) return { kind: 'none' };
-  return loadedOk(envelope.attestation, envelope.expectedIssuer);
+  if (!envelope.verifiable || !envelope.expected) return { kind: 'not-verifiable' };
+  return { kind: 'ok', bundle: envelope.attestation, policy: envelope.expected };
 }
 
-function certificateIssuerFromApiHint(expectedIssuer: string | null | undefined): string {
-  if (expectedIssuer !== undefined && expectedIssuer !== null && expectedIssuer.length > 0) {
-    return expectedIssuer;
-  }
-  return DINO_DEFAULT_CERTIFICATE_ISSUER;
+/** The pinned policy, verbatim, as sigstore constraints: both the issuer and the one identity form. */
+function pinnedVerifyOptions(policy: NonNullable<AttestationEnvelope['expected']>): VerifyOptions {
+  return 'email' in policy.identity
+    ? { certificateIssuer: policy.issuer, certificateIdentityEmail: policy.identity.email }
+    : { certificateIssuer: policy.issuer, certificateIdentityURI: policy.identity.uri };
 }
 
-/**
- * Entry point for `dino verify <scanId> --cloud-endpoint <url> --token <tenantJwt>`.
- * Does not load `.dino.yml` tenant context — verification is explicit HTTP + Sigstore only.
- */
-export async function runVerify(flags: Record<string, unknown>): Promise<number> {
+/** The three required inputs, or a usage error (exit 2). */
+function parseVerifyFlags(flags: Record<string, unknown>): { scanId: string; base: string; headers: VerifyAuthHeaders } {
   const scanId = verifyScanIdFrom(flags);
   if (!scanId) {
     throw new CliError(
@@ -85,7 +74,7 @@ export async function runVerify(flags: Record<string, unknown>): Promise<number>
     );
   }
 
-  const cloudEndpoint = optionalNonEmptyString(flags['cloud-endpoint']);
+  const cloudEndpoint = optionalNonEmptyString(flags.cloudEndpoint); // parseArgs camel-cases `--cloud-endpoint`
   const token = optionalNonEmptyString(flags['token']);
   if (!cloudEndpoint) {
     throw new CliError(
@@ -99,10 +88,15 @@ export async function runVerify(flags: Record<string, unknown>): Promise<number>
   if (!token) {
     throw new CliError('--token is required for verification', 2, undefined, undefined, 'usage');
   }
+  return { scanId, base: cloudEndpoint.replace(/\/$/, ''), headers: { Authorization: `Bearer ${token}` } };
+}
 
-  const base = cloudEndpoint.replace(/\/$/, '');
-  const headers: VerifyAuthHeaders = { Authorization: `Bearer ${token}` };
-
+/**
+ * Entry point for `dino verify <scanId> --cloud-endpoint <url> --token <tenantJwt>`.
+ * Does not load `.dino.yml` tenant context — verification is explicit HTTP + Sigstore only.
+ */
+export async function runVerify(flags: Record<string, unknown>): Promise<number> {
+  const { scanId, base, headers } = parseVerifyFlags(flags);
   const loaded = await loadAttestationForVerify(base, scanId, headers);
   if (loaded.kind === 'missing') {
     console.info('No attestation found for this scan.');
@@ -115,17 +109,19 @@ export async function runVerify(flags: Record<string, unknown>): Promise<number>
     console.info('Scan completed without attestation.');
     return 1;
   }
-
-  const dcgRes = await fetch(`${base}/v1/scans/${encodeURIComponent(scanId)}/dcg`, { headers }); // determinism:allowed
-  if (!dcgRes.ok) {
-    throw new CliError(`Failed to fetch scan result: HTTP ${String(dcgRes.status)}`, 70);
+  if (loaded.kind === 'not-verifiable') {
+    console.info('attestation not verifiable: no pinned signer identity for this runner');
+    return 1;
   }
-  const resultJson = await dcgRes.text();
 
-  const issuer = certificateIssuerFromApiHint(loaded.expectedIssuer);
-  const result = await verifyAttestation(loaded.bundle, resultJson, {
-    certificateIssuer: issuer,
-  });
+  // The attestation subject is the exact canonical DinoResult bytes the cloud stores (D4c.5).
+  const resultRes = await fetch(`${base}/v1/scans/${encodeURIComponent(scanId)}/result`, { headers }); // determinism:allowed
+  if (!resultRes.ok) {
+    throw new CliError(`Failed to fetch scan result: HTTP ${String(resultRes.status)}`, 70);
+  }
+  const resultJson = await resultRes.text();
+
+  const result = await verifyAttestation(loaded.bundle, resultJson, pinnedVerifyOptions(loaded.policy));
 
   if (result.verified) {
     console.info('Scan result is cryptographically verified.');
