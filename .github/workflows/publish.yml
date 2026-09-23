@@ -127,8 +127,13 @@ jobs:
           if [ -n "${{ steps.attest.outputs.bundle-path }}" ] && [ -f "${{ steps.attest.outputs.bundle-path }}" ]; then
             cp "${{ steps.attest.outputs.bundle-path }}" "dino-${VERSION}.sigstore.json"
           fi
+          # --draft: the standalone binaries are attached minutes later by the private
+          # release pipeline, which publishes the release only once every asset is there.
+          # Created live, `releases/latest` pointed at a release with no binaries (v1.1.3:
+          # ~3.5 min), so installs from usedino.dev/install.sh fell back to npm or failed.
           gh release create "v${VERSION}" ./*.tgz ./*.sigstore.json \
             --repo "${{ github.repository }}" \
             --title "v${VERSION}" \
             --generate-notes \
+            --draft \
           || gh release upload "v${VERSION}" ./*.tgz ./*.sigstore.json --clobber --repo "${{ github.repository }}"
