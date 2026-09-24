@@ -131,9 +131,15 @@ jobs:
           # release pipeline, which publishes the release only once every asset is there.
           # Created live, `releases/latest` pointed at a release with no binaries (v1.1.3:
           # ~3.5 min), so installs from usedino.dev/install.sh fell back to npm or failed.
-          gh release create "v${VERSION}" ./*.tgz ./*.sigstore.json \
-            --repo "${{ github.repository }}" \
-            --title "v${VERSION}" \
-            --generate-notes \
-            --draft \
-          || gh release upload "v${VERSION}" ./*.tgz ./*.sigstore.json --clobber --repo "${{ github.repository }}"
+          # The private pipeline also creates this release, and a draft does not claim its tag:
+          # a second `create` makes a duplicate instead of failing, so create only when
+          # `gh release view` (which finds drafts) finds none.
+          if gh release view "v${VERSION}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "v${VERSION}" ./*.tgz ./*.sigstore.json --clobber --repo "${{ github.repository }}"
+          else
+            gh release create "v${VERSION}" ./*.tgz ./*.sigstore.json \
+              --repo "${{ github.repository }}" \
+              --title "v${VERSION}" \
+              --generate-notes \
+              --draft
+          fi
