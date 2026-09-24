@@ -28,15 +28,17 @@ Dino discovers every operation, tests the live API for security, correctness, co
 ## Next
 
 - **Coding agents:** [usedino.dev/docs/for-agents](https://usedino.dev/docs/for-agents). `dino skill --install` gives your agent the loop, and `--format json` returns a `DinoResult` it can branch on.
-- **CI:** [usedino.dev/docs/ci](https://usedino.dev/docs/ci). `--fail-on-high` exits `3` on any HIGH or CRITICAL finding. With GitHub Actions, pin the action to a commit and the CLI to a version:
+- **CI:** [usedino.dev/docs/ci](https://usedino.dev/docs/ci). `--fail-on-high` exits `3` on any HIGH or CRITICAL finding. With GitHub Actions, use the action's `v1` tag and pin the CLI to a version:
 
   ```yaml
-  - uses: Dino-HQ/dino/.github/actions/scan@46bea210957ecc15bd6844619669cbc07cf91d69
+  - uses: Dino-HQ/dino/.github/actions/scan@v1
     with:
       api-url: ${{ secrets.API_URL }}
-      cli-version: 1.1.3
+      cli-version: 1.1.5
       fail-on-high: true
   ```
+
+  `v1` moves only for backward-compatible changes to the action; a breaking input change starts `v2`. For a hardened workflow, pin the action to a full commit SHA instead of `@v1`.
 
 - **Everything else:** [usedino.dev/docs](https://usedino.dev/docs): exit codes, the `DinoResult` contract, configuration and every command.
 
