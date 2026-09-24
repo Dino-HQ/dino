@@ -57,5 +57,5 @@ The rule that matters most: anything that is not a substantiated pass is not a p
 ## Notes
 
 - Everything here is local. This skill ships inside the \`dino\` CLI, so it matches the installed version; for per-run specifics, trust the live JSON envelope over any prose.
-- CI wiring is a separate step (coming). Do not hand-write a workflow that runs before the target is deployed.
+- CI: see https://usedino.dev/docs/ci (GitHub Action or any CI). Run Dino after the target is deployed, not before.
 `;

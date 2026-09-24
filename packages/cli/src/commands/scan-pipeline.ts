@@ -117,15 +117,20 @@ async function runScanPipelinePhase(params: ScanPipelinePhaseParams): Promise<Di
   }, createFuzzerProjectionContext());
 }
 
-async function persistScanSnapshot(params: {
+/** Exported for the scan/diff snapshot-parity regression test. */
+export async function persistScanSnapshot(params: {
   resolvedConfig: ResolvedScanConfig;
   graphqlOps: GraphQLOperation[];
+  restOperations: readonly Operation[] | undefined;
   context: CommandContext;
 }): Promise<void> {
-  const { resolvedConfig, graphqlOps, context } = params;
+  const { resolvedConfig, graphqlOps, restOperations, context } = params;
   const snapshotDir = safeUserPath(resolvedConfig.snapshotDir, '--snapshot-dir');
+  // diff, lint and changelog read this store too and snapshot REST operations, so scan must as
+  // well: a GraphQL-only snapshot would make every REST operation look added and hide removals.
   const snapshot = buildSnapshot({
     introspection: graphqlOps,
+    ...(restOperations ? { restOperations } : {}),
     tenantId: context.tenantId,
     environment: context.environment,
   });
@@ -208,10 +213,11 @@ export async function outputScanResult(params: {
   resolvedConfig: ResolvedScanConfig;
   context: CommandContext;
   graphqlOps: GraphQLOperation[];
+  restOperations?: readonly Operation[] | undefined;
   result: DinoResult;
 }): Promise<number> {
-  const { flags, resolvedConfig, context, graphqlOps, result } = params;
-  await persistScanSnapshot({ resolvedConfig, graphqlOps, context });
+  const { flags, resolvedConfig, context, graphqlOps, restOperations, result } = params;
+  await persistScanSnapshot({ resolvedConfig, graphqlOps, restOperations, context });
 
   if (result.verdict.degraded) {
     // #2143: user-relevant — product voice on stderr (no log prefix, no em-dash).
@@ -250,6 +256,7 @@ export async function runPipelineCatalogSnapshotAndPrint(
     resolvedConfig,
     context,
     graphqlOps,
+    restOperations,
     result,
   });
 }

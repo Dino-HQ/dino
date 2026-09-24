@@ -131,7 +131,7 @@ export const DOCS_OWN_FLAGS = {
   ai: {
     name: '--ai',
     type: 'boolean',
-    description: 'Include AI-generated descriptions in the report',
+    description: 'Deprecated: has no effect (the CLI runs no AI) and will be removed in a future major version',
   },
   threshold: {
     name: '--threshold',
