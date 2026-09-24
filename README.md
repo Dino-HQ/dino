@@ -8,7 +8,7 @@ Point Dino at an API and it does what a QA engineer does: tests every operation 
 
 ```bash
 curl -fsSL https://usedino.dev/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"   # this shell; the installer says if you need it permanently
+export PATH="$HOME/.local/bin:$PATH"   # if it fell back to npm, run the export line it printed instead
 
 # tell Dino which API to test
 printf 'endpoint: https://your-api.com/graphql\nprotocol: graphql\n' > .dino.yml
