@@ -1,10 +1,14 @@
 Copyright (c) 2026 Dino HQ. All rights reserved.
 
+Exception: the Dino CLI in packages/cli (published to npm as @dino-hq/cli) is
+licensed under the MIT License; see packages/cli/LICENSE. The terms below apply
+to everything else in this repository.
+
 This repository and its contents are provided for informational purposes only.
 No part of this repository may be reproduced, distributed, or used to create
 derivative works without explicit written permission from Dino HQ.
 
-This is not open-source software. The source code for the Dino platform is
-maintained in a separate private repository and is not included here.
+Apart from the CLI, this is not open-source software. The rest of the Dino
+platform is maintained in a separate private repository.
 
 For licensing inquiries, contact: https://github.com/Dino-HQ

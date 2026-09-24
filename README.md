@@ -89,6 +89,18 @@ dino scan --format json --quiet --fail-on-high
 
 Exits `3` on HIGH or CRITICAL findings. A clean verdict is a green build. See [usedino.dev/docs/install](https://usedino.dev/docs/install) for pinned installs in CI.
 
+Or use the GitHub Action, which installs the CLI, runs the scan and uploads the report as the `dino-scan-report` artifact:
+
+```yaml
+- uses: Dino-HQ/dino/.github/actions/scan@main
+  with:
+    api-url: ${{ secrets.API_URL }}
+    api-token: ${{ secrets.API_TOKEN }}   # optional
+    fail-on-high: true
+```
+
+Inputs: `api-url`, `protocol`, `spec-url`, `api-token`, `fail-on-high`, `accept-partial`, `fail-on-breaking`, `format`, `cli-version`. A complete workflow: [examples/dino-scan.yml](./examples/dino-scan.yml).
+
 ---
 
 ## Contributing
@@ -101,7 +113,7 @@ See [SECURITY.md](./SECURITY.md) for our security policy and vulnerability discl
 
 ## License
 
-[Proprietary](LICENSE) — see LICENSE file for details.
+The CLI ([`packages/cli`](./packages/cli), published as `@dino-hq/cli`) is [MIT](./packages/cli/LICENSE). Everything else in this repository is [proprietary](LICENSE).
 
 ---
 
