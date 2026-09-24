@@ -17,7 +17,7 @@ printf 'endpoint: https://your-api.com/graphql\nprotocol: graphql\n' > .dino.yml
 dino scan
 ```
 
-That's the whole quickstart — no account, no setup, and no Node.js: the installer puts the standalone `dino` binary on macOS or Linux (with Node.js 22+, `npm install -g @dino-hq/cli` works too, and it's the way to install on Windows, where the installer can't run yet; there's also a `dino-windows-x64.exe` in each [release](https://github.com/Dino-HQ/dino/releases/latest). All options at [usedino.dev/docs/install](https://usedino.dev/docs/install)). Dino introspects the schema, discovers every operation, runs its full test suite, and scores the health of each endpoint. Add `--fail-on-high`, and it gates CI (exits 1 on HIGH/CRITICAL).
+That's the whole quickstart — no account, no setup, and on macOS and most Linux no Node.js: the installer puts the standalone `dino` binary on your machine (where no binary fits (for example Alpine, which uses musl) it falls back to npm, which needs Node.js 22+; with Node.js 22+, `npm install -g @dino-hq/cli` works too, and it's the way to install on Windows, where the installer can't run yet; there's also a `dino-windows-x64.exe` in each [release](https://github.com/Dino-HQ/dino/releases/latest). All options at [usedino.dev/docs/install](https://usedino.dev/docs/install)). Dino introspects the schema, discovers every operation, runs its full test suite, and scores the health of each endpoint. Add `--fail-on-high`, and it gates CI (exits 1 on HIGH/CRITICAL).
 
 > Ad-hoc mode is GraphQL, unauthenticated. For REST/OpenAPI, authenticated scans, RBAC role matrices, and per-operation coverage, run `dino init` to fully onboard your API.
 
