@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Pin the action to a commit and the CLI to a version, so upgrades are deliberate.
-      - uses: Dino-HQ/dino/.github/actions/scan@a0e02c88d30fd040d12cdc8f8221513e091756de
+      - uses: Dino-HQ/dino/.github/actions/scan@46bea210957ecc15bd6844619669cbc07cf91d69
         with:
           api-url: ${{ secrets.API_URL }}
           api-token: ${{ secrets.API_TOKEN }}

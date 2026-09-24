@@ -31,7 +31,7 @@ Dino discovers every operation, tests the live API for security, correctness, co
 - **CI:** [usedino.dev/docs/ci](https://usedino.dev/docs/ci). `--fail-on-high` exits `3` on any HIGH or CRITICAL finding. With GitHub Actions, pin the action to a commit and the CLI to a version:
 
   ```yaml
-  - uses: Dino-HQ/dino/.github/actions/scan@a0e02c88d30fd040d12cdc8f8221513e091756de
+  - uses: Dino-HQ/dino/.github/actions/scan@46bea210957ecc15bd6844619669cbc07cf91d69
     with:
       api-url: ${{ secrets.API_URL }}
       cli-version: 1.1.3
