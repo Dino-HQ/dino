@@ -1,5 +1,5 @@
 name: 'Dino Scan'
-description: 'Run Dino API quality scans in CI — fuzzing, RBAC, rate limits, schema diffs, and more.'
+description: 'Run Dino, the deterministic verification layer for APIs, in CI: a verdict on security, correctness, contracts and docs.'
 author: 'Dino-HQ'
 
 branding:
@@ -10,32 +10,48 @@ inputs:
   api-url:
     description: 'Target API endpoint (e.g. https://api.example.com/graphql)'
     required: true
-  api-token:
-    description: 'Auth token for the target API (optional)'
+  protocol:
+    description: 'graphql or rest'
+    required: false
+    default: 'graphql'
+  spec-url:
+    description: 'OpenAPI spec URL or path (required when protocol is rest)'
     required: false
     default: ''
-  anthropic-api-key:
-    description: 'Anthropic API key for AI-powered descriptions'
-    required: true
+  api-token:
+    description: 'Bearer token for the target API (optional; pass a secret)'
+    required: false
+    default: ''
+  fail-on-high:
+    description: 'Fail the step (exit 3) when any HIGH or CRITICAL finding exists'
+    required: false
+    default: 'false'
+  accept-partial:
+    description: 'Treat a reduced-coverage (partial) run as success instead of exit 6'
+    required: false
+    default: 'false'
   fail-on-breaking:
-    description: 'Fail the workflow if breaking schema changes are detected'
+    description: 'Also run dino diff and fail (exit 3) on breaking schema changes. It compares against .dino/snapshots, so persist that directory between runs (actions/cache or commit it); otherwise the first run only saves a baseline.'
     required: false
     default: 'false'
   format:
-    description: 'Output format (markdown or json)'
+    description: 'Report format (markdown or json)'
     required: false
     default: 'markdown'
   cli-version:
-    description: 'Version of @dino-hq/cli to install (default: latest)'
+    description: 'Dino CLI version to install, e.g. 1.1.3 (default: latest)'
     required: false
     default: 'latest'
 
 outputs:
   report-path:
-    description: 'Path to the generated scan report'
+    description: 'Path to the scan report'
     value: ${{ steps.scan.outputs.report-path }}
+  exit-code:
+    description: 'dino scan exit code: 0 clean, 3 policy gate failed, 6 partial, 2/4/5/70 errors'
+    value: ${{ steps.scan.outputs.exit-code }}
   has-breaking-changes:
-    description: 'Whether breaking schema changes were detected'
+    description: 'Whether breaking schema changes were detected (only when fail-on-breaking is true)'
     value: ${{ steps.diff.outputs.has-breaking }}
 
 runs:
@@ -43,54 +59,70 @@ runs:
   steps:
     - name: Install Dino CLI
       shell: bash
-      run: npm install -g @dino-hq/cli@${{ inputs.cli-version }}
-
-    - name: Initialize Dino
-      shell: bash
+      env:
+        DINO_VERSION: ${{ inputs.cli-version }}
       run: |
-        mkdir -p .dino
-        cat > .dino.yml <<EOF
-        apiUrl: ${{ inputs.api-url }}
-        EOF
+        bash -o pipefail -c 'curl -fsSL https://usedino.dev/install.sh | sh'
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        # On the installer's npm fallback, dino is in npm's global bin instead.
+        if command -v npm >/dev/null 2>&1; then echo "$(npm prefix -g)/bin" >> "$GITHUB_PATH"; fi
 
     - name: Run Dino Scan
       id: scan
       shell: bash
       env:
+        API_URL: ${{ inputs.api-url }}
+        PROTOCOL: ${{ inputs.protocol }}
+        SPEC_URL: ${{ inputs.spec-url }}
         DINO_API_TOKEN: ${{ inputs.api-token }}
-        DINO_AI_KEY: ${{ inputs.anthropic-api-key }}
+        FAIL_ON_HIGH: ${{ inputs.fail-on-high }}
+        ACCEPT_PARTIAL: ${{ inputs.accept-partial }}
+        FORMAT: ${{ inputs.format }}
       run: |
-        REPORT_DIR=".dino/reports"
-        mkdir -p "$REPORT_DIR"
-        REPORT_FILE="$REPORT_DIR/scan-report.${{ inputs.format == 'json' && 'json' || 'md' }}"
-
-        dino scan \
-          --url "${{ inputs.api-url }}" \
-          --format "${{ inputs.format }}" \
-          --output "$REPORT_FILE" \
-          ${DINO_API_TOKEN:+--token "$DINO_API_TOKEN"} \
-          ${DINO_AI_KEY:+--reasoning}
-
+        mkdir -p .dino/reports
+        if [ "$FORMAT" = json ]; then ext=json; else ext=md; fi
+        REPORT_FILE=".dino/reports/scan-report.$ext"
+        args=(scan --endpoint "$API_URL" --protocol "$PROTOCOL" --format "$FORMAT")
+        [ -n "$SPEC_URL" ] && args+=(--spec-url "$SPEC_URL")
+        [ -n "$DINO_API_TOKEN" ] && args+=(--token "$DINO_API_TOKEN")
+        [ "$FAIL_ON_HIGH" = true ] && args+=(--fail-on-high)
+        [ "$ACCEPT_PARTIAL" = true ] && args+=(--accept-partial)
+        set +e
+        dino "${args[@]}" > "$REPORT_FILE"
+        code=$?
+        set -e
         echo "report-path=$REPORT_FILE" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        exit "$code"
 
     - name: Check for Breaking Changes
       id: diff
       if: inputs.fail-on-breaking == 'true'
       shell: bash
       env:
+        API_URL: ${{ inputs.api-url }}
+        PROTOCOL: ${{ inputs.protocol }}
+        SPEC_URL: ${{ inputs.spec-url }}
         DINO_API_TOKEN: ${{ inputs.api-token }}
       run: |
-        if dino diff --url "${{ inputs.api-url }}" ${DINO_API_TOKEN:+--token "$DINO_API_TOKEN"} --fail-on-breaking; then
-          echo "has-breaking=false" >> "$GITHUB_OUTPUT"
-        else
+        args=(diff --endpoint "$API_URL" --protocol "$PROTOCOL" --fail-on-breaking)
+        [ -n "$SPEC_URL" ] && args+=(--spec-url "$SPEC_URL")
+        [ -n "$DINO_API_TOKEN" ] && args+=(--token "$DINO_API_TOKEN")
+        set +e
+        dino "${args[@]}"
+        code=$?
+        set -e
+        if [ "$code" -eq 3 ]; then
           echo "has-breaking=true" >> "$GITHUB_OUTPUT"
-          echo "::error::Dino detected breaking API changes. Review the scan report for details."
-          exit 1
+          echo "::error::Dino detected breaking API changes."
+        else
+          echo "has-breaking=false" >> "$GITHUB_OUTPUT"
         fi
+        exit "$code"
 
     - name: Upload Scan Report
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: dino-scan-report
         path: .dino/reports/

@@ -1,0 +1,35 @@
+# Runs the scan action against a live smoke endpoint whenever it changes, so it can't
+# drift from the CLI unnoticed again.
+name: Scan action self-test
+
+on:
+  pull_request:
+    paths: ['.github/actions/scan/**', '.github/workflows/scan-action-selftest.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan (JSON)
+        id: scan
+        uses: ./.github/actions/scan
+        with:
+          api-url: https://dino-smoke-endpoint.comiblock-security-center.workers.dev/graphql
+          format: json
+          accept-partial: true
+
+      - name: The report is a DinoResult and the exit code is passed through
+        shell: bash
+        env:
+          REPORT: ${{ steps.scan.outputs.report-path }}
+          CODE: ${{ steps.scan.outputs.exit-code }}
+        run: |
+          test "$CODE" = 0
+          test "$(jq -r .dinoResult "$REPORT")" = 1.0
+          jq -e '.verdict.health.verdict' "$REPORT"
