@@ -7,7 +7,8 @@
 Point Dino at an API and it does what a QA engineer does: tests every operation for security, correctness, and breaking changes, checks that the docs match reality, and remembers your API between runs to catch drift before it ships. Autonomously, deterministically, in seconds — no test scripts to write or maintain.
 
 ```bash
-npm install -g @dino-hq/cli
+curl -fsSL https://usedino.dev/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"   # if it fell back to npm, run the export line it printed instead
 
 # tell Dino which API to test
 printf 'endpoint: https://your-api.com/graphql\nprotocol: graphql\n' > .dino.yml
@@ -16,7 +17,7 @@ printf 'endpoint: https://your-api.com/graphql\nprotocol: graphql\n' > .dino.yml
 dino scan
 ```
 
-That's the whole quickstart — no account, no setup. Dino introspects the schema, discovers every operation, runs its full test suite, and scores the health of each endpoint. Add `--fail-on-high`, and it gates CI (exits 1 on HIGH/CRITICAL).
+That's the whole quickstart — no account, no setup, and no Node.js: the installer puts the standalone `dino` binary on macOS or Linux (with Node.js 22+, `npm install -g @dino-hq/cli` works too, and it's the way to install on Windows, where the installer can't run yet; there's also a `dino-windows-x64.exe` in each [release](https://github.com/Dino-HQ/dino/releases/latest). All options at [usedino.dev/docs/install](https://usedino.dev/docs/install)). Dino introspects the schema, discovers every operation, runs its full test suite, and scores the health of each endpoint. Add `--fail-on-high`, and it gates CI (exits 1 on HIGH/CRITICAL).
 
 > Ad-hoc mode is GraphQL, unauthenticated. For REST/OpenAPI, authenticated scans, RBAC role matrices, and per-operation coverage, run `dino init` to fully onboard your API.
 
