@@ -23,6 +23,7 @@ jobs:
           api-url: https://dino-smoke-endpoint.comiblock-security-center.workers.dev/graphql
           format: json
           accept-partial: true
+          fail-on-breaking: true   # first run on a fresh runner: diff saves a baseline and passes
 
       - name: The report is a DinoResult and the exit code is passed through
         shell: bash

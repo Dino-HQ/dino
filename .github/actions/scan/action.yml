@@ -67,6 +67,34 @@ runs:
         # On the installer's npm fallback, dino is in npm's global bin instead.
         if command -v npm >/dev/null 2>&1; then echo "$(npm prefix -g)/bin" >> "$GITHUB_PATH"; fi
 
+    # Before the scan: diff compares the API with the latest saved snapshot, and the scan saves
+    # a new one. Run after it, diff would compare against the snapshot taken seconds earlier.
+    - name: Check for Breaking Changes
+      id: diff
+      if: inputs.fail-on-breaking == 'true'
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api-url }}
+        PROTOCOL: ${{ inputs.protocol }}
+        SPEC_URL: ${{ inputs.spec-url }}
+        DINO_API_TOKEN: ${{ inputs.api-token }}
+      run: |
+        args=(diff --endpoint "$API_URL" --protocol "$PROTOCOL" --fail-on-breaking)
+        [ -n "$SPEC_URL" ] && args+=(--spec-url "$SPEC_URL")
+        [ -n "$DINO_API_TOKEN" ] && args+=(--token "$DINO_API_TOKEN")
+        set +e
+        dino "${args[@]}"
+        code=$?
+        set -e
+        if [ "$code" -eq 3 ]; then
+          echo "has-breaking=true" >> "$GITHUB_OUTPUT"
+          echo "::error::Dino detected breaking API changes."
+        else
+          echo "has-breaking=false" >> "$GITHUB_OUTPUT"
+        fi
+        # The scan still runs and uploads its report; the last step fails the job on this code.
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
     - name: Run Dino Scan
       id: scan
       shell: bash
@@ -95,31 +123,6 @@ runs:
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         exit "$code"
 
-    - name: Check for Breaking Changes
-      id: diff
-      if: inputs.fail-on-breaking == 'true'
-      shell: bash
-      env:
-        API_URL: ${{ inputs.api-url }}
-        PROTOCOL: ${{ inputs.protocol }}
-        SPEC_URL: ${{ inputs.spec-url }}
-        DINO_API_TOKEN: ${{ inputs.api-token }}
-      run: |
-        args=(diff --endpoint "$API_URL" --protocol "$PROTOCOL" --fail-on-breaking)
-        [ -n "$SPEC_URL" ] && args+=(--spec-url "$SPEC_URL")
-        [ -n "$DINO_API_TOKEN" ] && args+=(--token "$DINO_API_TOKEN")
-        set +e
-        dino "${args[@]}"
-        code=$?
-        set -e
-        if [ "$code" -eq 3 ]; then
-          echo "has-breaking=true" >> "$GITHUB_OUTPUT"
-          echo "::error::Dino detected breaking API changes."
-        else
-          echo "has-breaking=false" >> "$GITHUB_OUTPUT"
-        fi
-        exit "$code"
-
     - name: Upload Scan Report
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -127,3 +130,10 @@ runs:
         name: dino-scan-report
         path: .dino/reports/
         retention-days: 30
+
+    - name: Fail on Breaking Changes
+      if: always() && inputs.fail-on-breaking == 'true' && steps.diff.outputs.exit-code != '0'
+      shell: bash
+      env:
+        DIFF_EXIT: ${{ steps.diff.outputs.exit-code }}
+      run: exit "${DIFF_EXIT:-70}"
