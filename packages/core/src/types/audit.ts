@@ -118,6 +118,9 @@ export type AuditAction =
   | 'api_key.created'
   | 'api_key.regenerated'
   | 'api_key.revoked'
+  // Workload identity federation (DIN-1352 / P1E)
+  | 'workload_federation.created'
+  | 'workload_federation.revoked'
   // Billing + Workspace Lifecycle (#1419 Bundle C)
   | 'member.preferences_updated'
   | 'billing.checkout_created'
@@ -139,7 +142,13 @@ export type AuditAction =
  * Actor types in the audit trail.
  * `admin` is legacy rows; new admin-key events use `admin_api`.
  */
-export type AuditActorType = 'member' | 'runner' | 'admin' | 'admin_api' | 'system';
+export type AuditActorType =
+  | 'member'
+  | 'service_account'
+  | 'runner'
+  | 'admin'
+  | 'admin_api'
+  | 'system';
 
 /** Resource types tracked by audit events. */
 export type AuditResourceType =
@@ -159,6 +168,7 @@ export type AuditResourceType =
   | 'token_factory_profile'
   | 'runner_profile'
   | 'api_key'
+  | 'workload_federation'
   | 'workspace'
   | 'billing'
   | 'github_installation'

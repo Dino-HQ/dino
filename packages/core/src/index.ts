@@ -291,6 +291,15 @@ export {
 } from './types/member';
 export type { MemberRole, DinoPermission, MemberRoleCatalogEntry } from './types/member';
 
+export { PRINCIPAL_TYPES, AUTH_METHODS } from './types/access';
+export type {
+  PrincipalType,
+  AuthMethod,
+  AuthProvenance,
+  AccessGrant,
+  DelegationContext,
+} from './types/access';
+
 // TenantContextSnapshot (Phase 2 R1)
 export { buildSnapshot } from './types/tenant-context-snapshot';
 export type {

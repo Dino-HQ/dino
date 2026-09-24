@@ -16,12 +16,13 @@ import { discoverOperationsDetailed, withTracking } from '../shared/base-command
 import { emitResult } from '../shared/emit-result';
 import { neutralizeCatalogCustomerFields } from '../shared/neutralize';
 import { safeUserPath } from '../shared/safe-user-path';
-import { detectUi, createSpinner } from '../shared/ui';
+import { detectUi, createSpinner, printNotice } from '../shared/ui';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 
 export interface DocsFlags extends CommonFlags {
   output?: string;
   title?: string;
+  /** Deprecated no-op: the CLI runs no AI. Accepted with a notice; removed in the next major version. */
   ai?: boolean;
   threshold?: number;
 }
@@ -44,7 +45,6 @@ function formatCatalogOutput(
     return JSON.stringify(
       renderCatalogJson(safeCatalog, {
         title: flags.title,
-        includeAiDescriptions: flags.ai,
         healthScoreThreshold: flags.threshold,
         introspectionLevel: provenance.introspectionLevel,
         structureSource: provenance.structureSource,
@@ -55,7 +55,6 @@ function formatCatalogOutput(
   }
   return renderCatalogMarkdown(safeCatalog, {
     title: flags.title ?? 'API Intelligence Report',
-    includeAiDescriptions: flags.ai ?? false,
     healthScoreThreshold: flags.threshold,
     introspectionLevel: provenance.introspectionLevel,
     structureSource: provenance.structureSource,
@@ -64,6 +63,11 @@ function formatCatalogOutput(
 
 async function executeDocsBody(context: CommandContext, flags: DocsFlags): Promise<number> {
   const ui = detectUi({ quiet: flags.quiet, noColor: flags.noColor });
+  if (flags.ai) {
+    // Reasoning moved to the cloud; the CLI produces no AI descriptions. Accepted so existing
+    // scripts keep working; removed in the next major version.
+    printNotice('--ai has no effect and will be removed in a future major version: the CLI runs no AI.', ui);
+  }
   const spinner = createSpinner('Generating documentation…', ui);
   spinner.start();
   let graphqlOps;
