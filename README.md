@@ -113,7 +113,7 @@ See [SECURITY.md](./SECURITY.md) for our security policy and vulnerability discl
 
 ## License
 
-The CLI ([`packages/cli`](./packages/cli), published as `@dino-hq/cli`) is [MIT](./packages/cli/LICENSE). Everything else in this repository is [proprietary](LICENSE).
+The CLI ([`packages/cli`](./packages/cli), published as `@dino-hq/cli`) is [MIT](./packages/cli/LICENSE). Everything else in this repository is [source-available](LICENSE): read, run, and verify it freely; commercial use requires a Dino subscription.
 
 ---
 
