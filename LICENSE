@@ -1,14 +1,29 @@
+Dino Source-Available License
+
 Copyright (c) 2026 Dino HQ. All rights reserved.
 
 Exception: the Dino CLI in packages/cli (published to npm as @dino-hq/cli) is
 licensed under the MIT License; see packages/cli/LICENSE. The terms below apply
-to everything else in this repository.
+to everything else in this repository (the "Software").
 
-This repository and its contents are provided for informational purposes only.
-No part of this repository may be reproduced, distributed, or used to create
-derivative works without explicit written permission from Dino HQ.
+1. Permitted use. You may read, run, and verify the Software free of charge,
+   including building it, executing it, and inspecting its behaviour, for
+   evaluation, personal, educational, research, and security-review purposes.
 
-Apart from the CLI, this is not open-source software. The rest of the Dino
-platform is maintained in a separate private repository.
+2. Commercial use. Any use of the Software for a commercial purpose, including
+   use in or for a business, or to provide a product or service to others,
+   requires an active Dino subscription (https://usedino.dev).
 
-For licensing inquiries, contact: https://github.com/Dino-HQ
+3. Restrictions. You may not redistribute, sublicense, or sell the Software or
+   derivative works of it, or use it to build a competing product or service,
+   without prior written permission from Dino HQ. You must keep this notice in
+   any copy of the Software you make for a permitted use.
+
+4. Other components. The rest of the Dino platform is maintained in a separate
+   private repository and is not licensed under these terms.
+
+5. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED. IN NO EVENT SHALL DINO HQ BE LIABLE FOR ANY CLAIM,
+   DAMAGES, OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+For licensing and subscription inquiries: https://usedino.dev/contact
