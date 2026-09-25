@@ -1,12 +1,8 @@
 version: 2
+# npm dependencies are not updated here: packages/ is synced from the private source repo on every
+# release (package.json included), so a bump made in this repo is overwritten at the next release.
+# Dependency updates for the CLI happen upstream, where its tests run. Security alerts still apply.
 updates:
-  - package-ecosystem: "npm"
-    directory: "/packages/cli"
-    schedule:
-      interval: "weekly"
-    groups:
-      minor-and-patch:
-        update-types: ["minor", "patch"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
