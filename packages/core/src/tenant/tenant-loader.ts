@@ -81,7 +81,9 @@ const AgentActivationSchema = z.object({
 });
 
 const RbacConfigSchema = z.object({
-  roles: z.array(z.string().min(1)).min(1, 'At least one RBAC role is required'),
+  roles: z
+    .array(z.string().min(1).refine((role) => !role.includes('\u0000'), 'RBAC role must not contain a NUL character'))
+    .min(1, 'At least one RBAC role is required'),
   defaults: z.record(z.string(), z.string()).optional(),
   expectations: z.record(z.string(), z.record(z.string(), z.string())).optional(),
 });

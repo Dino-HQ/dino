@@ -38,8 +38,10 @@ import {
 } from '../runner/state-store';
 import { maybeStartWakeServer } from '../runner/wake-server';
 import { CliError } from '../shared/errors';
+import { outcomeFromCaughtError } from '../shared/outcome';
 import { CLI_VERSION } from '../version';
-import { formatRegisterError, parseRegisterFlags, registerRequestBody, REGISTER_USAGE } from './runner-register-flags';
+import { formatRegisterErrorDetail, parseRegisterFlags, registerRequestBody, REGISTER_USAGE } from './runner-register-flags';
+import { cloudHttpFailure, dinoErrorFromCloudBodyText } from '../shared/cloud-error';
 import type { CommandContext } from '../shared/base-command';
 
 export type HttpClient = (url: string, init?: RequestInit) => Promise<Response>;
@@ -157,6 +159,7 @@ export function buildRunnerPipelineOptions(opts: {
   tracker: NonNullable<PipelineOptions['tracker']>;
   hasRest: boolean;
   restExecutor: PipelineOptions['restExecutor'];
+  suppliedQueryParams?: PipelineOptions['suppliedQueryParams'];
   restOps: PipelineOptions['restOperations'];
   discoveryRaw: unknown;
   discovery?: PipelineOptions['discovery'];
@@ -182,6 +185,7 @@ export function buildRunnerPipelineOptions(opts: {
     tracker: opts.tracker,
     restExecutor: opts.restExecutor,
     restBaseUrl: hasRest ? opts.selectedTarget.url : undefined,
+    ...(opts.suppliedQueryParams === undefined ? {} : { suppliedQueryParams: opts.suppliedQueryParams }),
     openApiSpec: hasRest ? opts.discoveryRaw : undefined,
     restOperations: hasRest ? opts.restOps : undefined,
     ...(opts.discovery === undefined ? {} : { discovery: opts.discovery }),
@@ -250,14 +254,28 @@ export function createRunnerExecuteScan(
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      // The cloud learns why a scan failed from the code; the message stays the raw text it always was.
+      const code = outcomeFromCaughtError(e).error?.code;
       return {
         scanId: assignment.scanId,
         attemptId: assignment.attemptId,
         status: 'failed',
         error: message,
+        ...(code === undefined ? {} : { failureType: code }),
       };
     }
   };
+}
+
+/**
+ * A registration HTTP failure: a Dino error body with a known code carries its own CLI outcome via
+ * the contract table (an auth/entitlement failure is config/5, not a crash); fall back to a crash.
+ */
+async function throwRegisterHttpFailure(res: Response): Promise<never> {
+  const text = await res.text();
+  const decoded = dinoErrorFromCloudBodyText(text, res.status);
+  if (decoded !== null) throw decoded;
+  throw cloudHttpFailure(`Registration failed (HTTP ${String(res.status)})${formatRegisterErrorDetail(text)}`, res.status);
 }
 
 export async function runRunnerRegister(
@@ -288,15 +306,16 @@ export async function runRunnerRegister(
     // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th positional arg (biome only detects native Error 2nd-arg cause)
     throw new CliError(
       `Registration request failed: ${e instanceof Error ? e.message : String(e)}`,
-      70,
+      4,
       undefined,
       e,
+      'transient',
+      'transient',
     );
   }
 
   if (!res.ok) {
-    const detail = await formatRegisterError(res);
-    throw new CliError(`Registration failed (HTTP ${String(res.status)})${detail}`, 70);
+    await throwRegisterHttpFailure(res);
   }
 
   const body = (await res.json()) as {
@@ -335,9 +354,10 @@ function rethrowRunnerPollError(e: unknown): never {
   if (e instanceof RunnerUnauthorizedError) {
     throw new CliError(
       'Runner revoked or token expired. Re-register with `dino runner register`.',
-      70,
+      5,
       undefined,
       e,
+      'config',
     );
   }
   throw e;

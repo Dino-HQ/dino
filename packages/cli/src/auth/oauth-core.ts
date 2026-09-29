@@ -3,6 +3,7 @@
  * Issue #2030.
  */
 
+import { Buffer } from 'node:buffer';
 import { createHash, randomBytes as cryptoRandomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { CliError } from '../shared/errors';
@@ -55,7 +56,7 @@ export function canonicalIssuer(issuer: string): string {
 }
 
 function base64Url(buf: Buffer): string {
-  return buf.toString('base64').replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+  return Buffer.from(buf).toString('base64').replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 }
 
 /**
@@ -105,11 +106,12 @@ function assertHttpsUrl(raw: string, label: string): URL {
   let parsed: URL;
   try {
     parsed = new URL(raw);
-  } catch {
-    throw new CliError(`Invalid ${label} URL`, 1, `Check ${label}: ${raw}`);
+  } catch (error_) {
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
+    throw new CliError(`Invalid ${label} URL`, 5, `Check ${label}: ${raw}`, error_, 'config');
   }
   if (parsed.protocol !== 'https:') {
-    throw new CliError(`${label} must be https`, 1, `Got: ${raw}`);
+    throw new CliError(`${label} must be https`, 5, `Got: ${raw}`, undefined, 'config');
   }
   return parsed;
 }
@@ -119,10 +121,8 @@ function assertHttpsUrl(raw: string, label: string): URL {
  * Pattern: packages/cloud/src/lib/oidc-discovery.ts (CLI-local, no SSRF DNS guard —
  * issuer is a fixed Dino domain, not user-supplied).
  */
-export async function discover(issuer: string, http: typeof fetch): Promise<OidcEndpoints> {
-  const base = canonicalIssuer(issuer.trim());
-  assertHttpsUrl(base, 'issuer');
-  const wellKnownUrl = `${base}/.well-known/openid-configuration`;
+/** Fetch + read the discovery JSON. Reach/HTTP failures are transient; a non-JSON body is config. */
+async function fetchDiscoveryBody(wellKnownUrl: string, http: typeof fetch): Promise<unknown> {
   let res: Response;
   try {
     res = await http(wellKnownUrl, {
@@ -131,42 +131,81 @@ export async function discover(issuer: string, http: typeof fetch): Promise<Oidc
       redirect: 'manual',
     });
   } catch (error_) {
-    throw new CliError('OIDC discovery failed', 1, `Could not reach ${wellKnownUrl}`, error_);
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
+    throw new CliError(
+      'OIDC discovery failed',
+      4,
+      `Could not reach ${wellKnownUrl}`,
+      error_,
+      'transient',
+      'transient',
+    );
   }
   if (!res.ok) {
-    throw new CliError('OIDC discovery failed', 1, `HTTP ${res.status} from ${wellKnownUrl}`);
+    // A provider outage can clear; any other refusal means the issuer is misconfigured (OIDC_DISCOVERY_FAILED).
+    const transient = res.status === 408 || res.status === 429 || res.status >= 500;
+    throw new CliError(
+      'OIDC discovery failed',
+      transient ? 4 : 5,
+      `HTTP ${res.status} from ${wellKnownUrl}`,
+      undefined,
+      transient ? 'transient' : 'config',
+      transient ? 'transient' : 'permanent',
+      transient ? undefined : 'OIDC_DISCOVERY_FAILED',
+    );
   }
-  let body: unknown;
   try {
-    body = await res.json();
+    return await res.json();
   } catch (error_) {
-    throw new CliError('OIDC discovery returned non-JSON', 1, wellKnownUrl, error_);
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
+    throw new CliError('OIDC discovery returned non-JSON', 5, wellKnownUrl, error_, 'config');
   }
+}
+
+/** Validate the discovery document against the requested issuer and build the https-only endpoints. */
+function endpointsFromDiscoveryDoc(
+  data: z.infer<typeof OidcDiscoverySchema>,
+  base: string,
+): OidcEndpoints {
+  if (canonicalIssuer(data.issuer) !== base) {
+    throw new CliError(
+      'OIDC issuer mismatch',
+      5,
+      `Document issuer ${data.issuer} !== requested ${base}`,
+      undefined,
+      'config',
+      'permanent',
+      'OIDC_ISSUER_MISMATCH',
+    );
+  }
+  assertHttpsUrl(data.authorization_endpoint, 'authorization_endpoint');
+  assertHttpsUrl(data.token_endpoint, 'token_endpoint');
+  if (data.revocation_endpoint !== undefined) {
+    assertHttpsUrl(data.revocation_endpoint, 'revocation_endpoint');
+  }
+  return {
+    authorizationEndpoint: data.authorization_endpoint,
+    tokenEndpoint: data.token_endpoint,
+    revocationEndpoint: data.revocation_endpoint ?? null,
+  };
+}
+
+export async function discover(issuer: string, http: typeof fetch): Promise<OidcEndpoints> {
+  const base = canonicalIssuer(issuer.trim());
+  assertHttpsUrl(base, 'issuer');
+  const wellKnownUrl = `${base}/.well-known/openid-configuration`;
+  const body = await fetchDiscoveryBody(wellKnownUrl, http);
   const parsed = OidcDiscoverySchema.safeParse(body);
   if (!parsed.success) {
     throw new CliError(
       'OIDC discovery document is missing required fields',
-      1,
+      5,
       'Need issuer, authorization_endpoint, token_endpoint',
+      undefined,
+      'config',
     );
   }
-  if (canonicalIssuer(parsed.data.issuer) !== base) {
-    throw new CliError(
-      'OIDC issuer mismatch',
-      1,
-      `Document issuer ${parsed.data.issuer} !== requested ${base}`,
-    );
-  }
-  assertHttpsUrl(parsed.data.authorization_endpoint, 'authorization_endpoint');
-  assertHttpsUrl(parsed.data.token_endpoint, 'token_endpoint');
-  if (parsed.data.revocation_endpoint !== undefined) {
-    assertHttpsUrl(parsed.data.revocation_endpoint, 'revocation_endpoint');
-  }
-  return {
-    authorizationEndpoint: parsed.data.authorization_endpoint,
-    tokenEndpoint: parsed.data.token_endpoint,
-    revocationEndpoint: parsed.data.revocation_endpoint ?? null,
-  };
+  return endpointsFromDiscoveryDoc(parsed.data, base);
 }
 
 /** Build the authorize URL (PKCE S256 + state + offline_access). */

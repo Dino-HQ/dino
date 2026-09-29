@@ -115,7 +115,13 @@ async function executeChangelog(context: CommandContext, flags: ChangelogFlags):
   const previousSnapshot = await loadPreviousSnapshot(snapshotOptions, flags.from);
 
   if (flags.from && previousSnapshot === null) {
-    throw new CliError(`Snapshot not found: ${flags.from}`);
+    throw new CliError(
+      `Snapshot not found: ${flags.from}`,
+      2,
+      'Check --from names an existing snapshot.',
+      undefined,
+      'usage',
+    );
   }
   if (!previousSnapshot) {
     await saveSnapshot(currentSnapshot, snapshotOptions);

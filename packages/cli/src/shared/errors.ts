@@ -2,7 +2,7 @@
  * @dino/cli - CLI-specific error with exit code, optional hint, and optional cause.
  */
 
-import { sanitizeErrorMessage } from '@dino/core';
+import { sanitizeErrorMessage, tenantConfigCode, type DinoErrorCode } from '@dino/core';
 import { stripControlsAndAnsi } from './neutralize';
 import {
   boundErrorMessage,
@@ -215,7 +215,7 @@ export function throwTenantConfigCliError(
   hint = 'Run dino validate to check your config.',
 ): never {
   const exitCode = kind === 'usage' ? 2 : 5;
-  throw new CliError(message, exitCode, hint, undefined, kind);
+  throw new CliError(message, exitCode, hint, undefined, kind, 'permanent', tenantConfigCode(kind));
 }
 
 /** Detect the AbortController timeout signature from plugin.discover. INV-UX-1. */
@@ -239,7 +239,7 @@ export function buildIntrospectionTimeoutError(
     '  • Authentication required but not configured (run: dino init)',
     '  • Endpoint unreachable from this network',
   ].join('\n');
-  return new CliError(message, 1, hint, cause);
+  return new CliError(message, 4, hint, cause, 'transient', 'transient');
 }
 
 export type CliErrorRetryable = 'transient' | 'permanent';
@@ -250,28 +250,34 @@ export interface CliErrorOptions {
   cause?: unknown;
   kind?: OutcomeKind;
   retryable?: CliErrorRetryable;
+  code?: DinoErrorCode;
 }
 
 /**
  * CLI-specific error with exit code and optional user-facing hint.
  * Positional constructor kept for the 7+ callers that pass `cause` as the 4th arg (#2173).
- * New `kind`/`retryable` MUST stay after `cause` (positions 5/6).
+ * `kind` is REQUIRED (position 5): every CLI failure declares its honest outcome kind, so no thrown
+ * error silently falls through to `crash`. `retryable` (6) defaults; `code` (7) carries a
+ * DinoErrorCode when the CLI has a stable identity for the condition (e.g. an OIDC issuer mismatch),
+ * so the stderr envelope surfaces it exactly as HTTP does.
  */
 export class CliError extends Error {
   public readonly exitCode: number;
   public readonly hint?: string;
-  public readonly kind?: OutcomeKind;
+  public readonly kind: OutcomeKind;
   public readonly retryable: CliErrorRetryable;
+  public readonly code?: DinoErrorCode;
 
   // Spec #2173: kind/retryable AFTER cause - exceeds max-params by design (positional compat).
-  // biome-ignore lint/complexity/useMaxParams: handover requires positions 5/6 after cause
+  // biome-ignore lint/complexity/useMaxParams: handover requires positions 5/6/7 after cause
   constructor(
     message: string,
-    exitCode: number = 1,
-    hint?: string,
-    cause?: unknown,
-    kind?: OutcomeKind,
+    exitCode: number,
+    hint: string | undefined,
+    cause: unknown,
+    kind: OutcomeKind,
     retryable: CliErrorRetryable = 'permanent',
+    code?: DinoErrorCode,
   ) {
     super(message);
     this.name = 'CliError';
@@ -281,8 +287,9 @@ export class CliError extends Error {
       // ES2022 Error.cause - preserves the original error for DEBUG=1 surfaces and tooling.
       (this as Error & { cause?: unknown }).cause = cause;
     }
-    if (kind !== undefined) this.kind = kind;
+    this.kind = kind;
     this.retryable = retryable;
+    if (code !== undefined) this.code = code;
   }
 }
 

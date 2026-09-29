@@ -253,8 +253,10 @@ export async function discoverOperationsDetailed(
   if (!discoveryResult.operations || discoveryResult.operations.length === 0) {
     throw new CliError(
       'Discovery returned no operations',
-      1,
+      5,
       'Confirm the endpoint supports GraphQL introspection or a valid OpenAPI spec for REST.',
+      undefined,
+      'config',
     );
   }
 

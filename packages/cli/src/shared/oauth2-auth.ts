@@ -3,8 +3,10 @@
  * Async acquisition at the discovery boundary; secrets stay in env vars.
  */
 
+import { DinoError, errorContractFor } from '@dino/core';
 import { acquireClientCredentialsToken } from '@dino/engine';
 import { CliError } from './errors';
+import { isTransientError } from './outcome';
 import type { DinoCliConfig } from '../config/loader';
 
 /** Flat oauth2 descriptor stashed by sync buildContext; acquired async via resolveAuthHeaders. */
@@ -60,16 +62,20 @@ export async function resolveAuthHeaders(
   if (!clientId) {
     throw new CliError(
       `Auth env var "${oauth2.clientIdEnv}" is not set.`,
-      1,
+      5,
       `export ${oauth2.clientIdEnv}=<client-id> then re-run.`,
+      undefined,
+      'config',
     );
   }
   const clientSecret = process.env[oauth2.clientSecretEnv];
   if (!clientSecret) {
     throw new CliError(
       `Auth env var "${oauth2.clientSecretEnv}" is not set.`,
-      1,
+      5,
       `export ${oauth2.clientSecretEnv}=<client-secret> then re-run.`,
+      undefined,
+      'config',
     );
   }
 
@@ -86,8 +92,17 @@ export async function resolveAuthHeaders(
     return context.authHeaders;
   } catch (err: unknown) {
     if (err instanceof CliError) throw err;
-    const msg = err instanceof Error ? err.message : 'OAuth2 token acquisition failed';
-    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
-    throw new CliError(msg, 1, 'Check tokenEndpoint and client credentials env vars, then re-run.', err);
+    throw tokenFailureCliError(err);
   }
+}
+
+/** The typed code decides first: an HTTP 500 from the provider is an outage, not a config error (#2635). */
+function tokenFailureCliError(err: unknown): CliError {
+  const msg = err instanceof Error ? err.message : 'OAuth2 token acquisition failed';
+  const code = err instanceof DinoError ? err.code : undefined;
+  const typedKind = code === undefined ? undefined : errorContractFor(code).cliKind;
+  if (typedKind === 'transient' || (typedKind === undefined && isTransientError(err))) {
+    return new CliError(msg, 4, 'The token endpoint could not be reached; retry.', err, 'transient', 'transient', code);
+  }
+  return new CliError(msg, 5, 'Check tokenEndpoint and client credentials env vars, then re-run.', err, 'config', 'permanent', code);
 }

@@ -129,7 +129,7 @@ interface AuthConfigBase {
  */
 export type TargetAuthConfig =
   | { adapter: 'none' }
-  | ({ adapter: 'jwt'; signingKey: string } & AuthConfigBase)
+  | ({ adapter: 'jwt'; signingKeyEnv: string } & AuthConfigBase)
   | ({ adapter: 'oauth2'; tokenEndpoint: string; scope?: string } & AuthConfigBase)
   | ({ adapter: 'api-key' } & AuthConfigBase);
 
@@ -141,21 +141,28 @@ export type TargetAuthConfig =
  * legacy AuthConfig path for those.
  *
  * Throws on missing required fields for known adapters — a jwt config
- * without signingKey is an error, not a fallback.
+ * without signingKeyEnv is an error, not a fallback.
  */
 export function toTargetAuthConfig(auth: AuthConfig): TargetAuthConfig | null {
   switch (auth.adapter) {
     case 'none':
       return { adapter: 'none' };
     case 'jwt': {
-      const signingKey = auth.adapterConfig.signingKey;
-      if (typeof signingKey !== 'string' || signingKey.length === 0) {
+      // The HS256 key forges every role's token, so it never lives in the tenant file: only the variable holding it.
+      if (auth.adapterConfig.signingKey !== undefined) {
         throw new TenantConfigError(
-          'auth.adapterConfig.signingKey is required for jwt adapter',
+          'auth.adapterConfig.signingKey must not hold the key: put it in an environment variable and set signingKeyEnv to its name',
           'config',
         );
       }
-      return { adapter: 'jwt', signingKey, roles: auth.roles, tokenRefresh: auth.tokenRefresh };
+      const signingKeyEnv = auth.adapterConfig.signingKeyEnv;
+      if (typeof signingKeyEnv !== 'string' || signingKeyEnv.length === 0) {
+        throw new TenantConfigError(
+          'auth.adapterConfig.signingKeyEnv is required for jwt adapter',
+          'config',
+        );
+      }
+      return { adapter: 'jwt', signingKeyEnv, roles: auth.roles, tokenRefresh: auth.tokenRefresh };
     }
     case 'oauth2': {
       const tokenEndpoint = auth.adapterConfig.tokenEndpoint;

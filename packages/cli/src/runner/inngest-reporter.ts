@@ -4,8 +4,33 @@
  */
 
 import { SystemTimer } from '@dino/engine';
-import type { ScanAttestationWire } from '@dino/core';
+import { ERROR_CONTRACT } from '@dino/core';
+import type { DinoErrorCode, ScanAttestationWire } from '@dino/core';
 import type { Timer } from '@dino/engine';
+
+/** The failureType is a stable DinoErrorCode (e.g. a credential outcome), not a legacy discriminator. */
+function knownErrorCode(failureType: string | undefined): DinoErrorCode | undefined {
+  return failureType !== undefined && Object.hasOwn(ERROR_CONTRACT, failureType)
+    ? (failureType as DinoErrorCode)
+    : undefined;
+}
+
+/** Build the failed scan-results POST body: `failureType` for cloud branching, additive `errorCode`. */
+function failedResultBody(reason: string, extras: ScanFailedExtras): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    status: 'failed',
+    attemptId: extras.attemptId,
+    error: reason,
+  };
+  // #1759 L3 — carry the discriminator the cloud branches on; without it auth_lost re-queue never fires.
+  if (extras.failureType !== undefined) body.failureType = extras.failureType;
+  // Additive: when failureType is a stable DinoErrorCode (a credential outcome), surface it as
+  // `errorCode` too, so the cloud can read the machine identity without parsing failureType.
+  const code = knownErrorCode(extras.failureType);
+  if (code !== undefined) body.errorCode = code;
+  if (extras.rotatedRefreshToken !== undefined) body.rotatedRefreshToken = extras.rotatedRefreshToken;
+  return body;
+}
 
 const MAX_ATTEMPTS = 5;
 const RETRY_BASE_MS = 100;
@@ -144,16 +169,7 @@ export function createCloudReporter(
     },
 
     async reportFailed(scanId: string, reason: string, extras: ScanFailedExtras): Promise<void> {
-      const body: Record<string, unknown> = {
-        status: 'failed',
-        attemptId: extras.attemptId,
-        error: reason,
-      };
-      // #1759 L3 — carry the discriminator the cloud branches on; without it auth_lost re-queue never fires.
-      if (extras.failureType !== undefined) body.failureType = extras.failureType;
-      if (extras.rotatedRefreshToken !== undefined)
-        body.rotatedRefreshToken = extras.rotatedRefreshToken;
-      await post(scanId, body, extras.capabilityToken);
+      await post(scanId, failedResultBody(reason, extras), extras.capabilityToken);
     },
 
     async reportCancelled(

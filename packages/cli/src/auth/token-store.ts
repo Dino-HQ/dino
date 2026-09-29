@@ -88,7 +88,13 @@ export function readStoredToken(env: Record<string, string | undefined>): Stored
 export function writeStoredToken(t: StoredToken): void {
   const validated = StoredTokenSchema.safeParse(t);
   if (!validated.success) {
-    throw new CliError('Refusing to store invalid token', 1, 'Token failed schema validation');
+    throw new CliError(
+      'Refusing to store invalid token',
+      5,
+      'Token failed schema validation',
+      undefined,
+      'config',
+    );
   }
   const target = credentialsPath();
   const tmp = `${target}.tmp`;
@@ -109,14 +115,16 @@ export function writeStoredToken(t: StoredToken): void {
     try {
       // eslint-disable-next-line security/detect-non-literal-fs-filename -- cleanup tmp
       fs.unlinkSync(tmp);
-    } catch {
-      void 0; // ignore - tmp may not exist if mkdir failed first
+    } catch { // masked-fix:allowed - tmp may not exist if mkdir failed first
+      // best-effort cleanup
     }
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
     throw new CliError(
       'Failed to write credentials file',
-      1,
+      5,
       `Ensure ${dinoDir()} is writable (mode 0600 target: ${target})`,
       error_,
+      'config',
     );
   }
 }
@@ -125,14 +133,14 @@ export function clearStoredToken(): void {
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- fixed basename under .dino
     fs.unlinkSync(credentialsPath());
-  } catch {
-    void 0; // already gone
+  } catch { // masked-fix:allowed - credentials file already gone
+    // best-effort cleanup
   }
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- lock cleanup
     fs.unlinkSync(lockPath());
-  } catch {
-    void 0; // ignore
+  } catch { // masked-fix:allowed - lock file already removed
+    // best-effort cleanup
   }
 }
 
@@ -161,7 +169,8 @@ async function acquireLock(now: () => number): Promise<void> {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') {
-        throw new CliError('Failed to acquire credentials lock', 1, lp, err);
+        // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
+        throw new CliError('Failed to acquire credentials lock', 5, lp, err, 'config');
       }
       try {
         // eslint-disable-next-line security/detect-non-literal-fs-filename -- stale lock check
@@ -171,21 +180,28 @@ async function acquireLock(now: () => number): Promise<void> {
           fs.unlinkSync(lp);
           continue;
         }
-      } catch {
-        void 0; // raced with unlock - retry
+      } catch { // masked-fix:allowed - raced with unlock; retry
+        // best-effort cleanup
       }
       await sleepMs(LOCK_RETRY_MS);
     }
   }
-  throw new CliError('Timed out waiting for credentials lock', 1, lp);
+  throw new CliError(
+    'Timed out waiting for credentials lock',
+    4,
+    lp,
+    undefined,
+    'transient',
+    'transient',
+  );
 }
 
 function releaseLock(): void {
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- unlock
     fs.unlinkSync(lockPath());
-  } catch {
-    void 0; // ignore
+  } catch { // masked-fix:allowed - lock file already removed
+    // best-effort cleanup
   }
 }
 

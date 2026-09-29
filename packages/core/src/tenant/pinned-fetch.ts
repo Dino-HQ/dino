@@ -12,6 +12,7 @@
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIPv6 } from 'node:net';
+import { DinoValidationError } from '../errors';
 import { resolveAndValidateDNS } from './endpoint-validator';
 import { observeTransport, type ObservedRequestInit } from './transport-observation';
 
@@ -324,7 +325,12 @@ export function createPinnedFetch(deps: PinnedFetchDeps): typeof fetch {
     // redirects itself and must keep that behavior).
     for (let hop = 0; ; hop++) {
       if (hop > MAX_REDIRECTS) {
-        throw new Error(`pinnedFetch exceeded ${MAX_REDIRECTS} redirects`);
+        // The endpoint the user configured redirects in a loop: their config, not a crash (#2342). A DinoError, not a
+        // TenantConfigError, so a tool that hits it still records one failed tool instead of aborting the scan.
+        throw new DinoValidationError(
+          'CONFIG_INVALID',
+          `The endpoint redirected more than ${MAX_REDIRECTS} times (a redirect loop); check the endpoint URL`,
+        );
       }
       const u = new URL(url);
       const args = await buildPinnedArgs({

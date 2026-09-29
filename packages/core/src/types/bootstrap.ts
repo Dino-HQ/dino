@@ -22,11 +22,13 @@
  * inside the same atomic admission transaction as the API it names. Provenance carries the
  * authenticated principal and a nullable Delegation Context slot per ADR-0036.
  *
- * This is the product contract. The @dino/cloud Drizzle table (`bootstrap_requests`) is the storage
- * shape and lives there; digest/id hashing uses the cloud `stableId` primitive.
+ * This is the product contract. It is admitted as a Presentation Request (capability
+ * `organization_api.bootstrap`, DIN-1354), whose custody (`presentation_requests`) stores this outcome
+ * verbatim for replay; digest/id hashing uses the cloud `stableId` primitive.
  */
 
 import { z } from 'zod';
+import type { PresentationRequestView } from './presentation-request';
 
 /**
  * Versioned Bootstrap Request contract. Bump when the admitted-outcome shape changes (ADR-0070).
@@ -230,41 +232,6 @@ export const BootstrapCommandSchema = z.object({
 export type BootstrapCommand = z.infer<typeof BootstrapCommandSchema>;
 
 /**
- * A bounded, authority-FREE pointer from a successful bootstrap to the SEPARATELY authorized follow-on
- * workflows (DIN-1350 item 6). Bootstrap admits identity + intent only; it neither captures a credential
- * nor triggers a scan. Instead it returns this NextAction naming the immediate next steps and the Target
- * they concern — credential/HAR custody (DIN-1256) and Discovery — each stamped `authorized: false` to
- * state plainly that the caller must obtain separate authorization to proceed. It grants NO authority and
- * is derived identically on HTTP and MCP so the two surfaces agree on "what to do next".
- */
-export const NextActionSchema = z.object({
-  credentialSetup: z.object({
-    workflow: z.literal('credential-har'),
-    targetId: z.string().min(1),
-    authorized: z.literal(false),
-  }),
-  discovery: z.object({
-    workflow: z.literal('discovery'),
-    targetId: z.string().min(1),
-    authorized: z.literal(false),
-  }),
-});
-export type NextAction = z.infer<typeof NextActionSchema>;
-
-/**
- * Derive the bounded NextAction from an admitted outcome — pure and shared by both adapters, so HTTP and
- * MCP return byte-identical NextAction meaning. It reads only the admitted Target identity; it admits no
- * credential and triggers no scan (the follow-on workflows are separately authorized).
- */
-export function deriveNextAction(outcome: AdmittedOutcome): NextAction {
-  const targetId = outcome.artifacts.target.id;
-  return {
-    credentialSetup: { workflow: 'credential-har', targetId, authorized: false },
-    discovery: { workflow: 'discovery', targetId, authorized: false },
-  };
-}
-
-/**
  * The locked semantic status of a bootstrap admission — distinct from the transport status code and from
  * any "did this invocation replay" flag: `created` = this request minted a new admitted estate; `replayed`
  * = the canonical estate already existed and was returned by idempotent replay (or race-convergence). Both
@@ -273,14 +240,15 @@ export function deriveNextAction(outcome: AdmittedOutcome): NextAction {
 export type BootstrapStatus = 'created' | 'replayed';
 
 /**
- * The transport-NEUTRAL bootstrap result projection (DIN-1350). The SINGLE place the admitted outcome is
- * projected onto the wire — the HTTP adapter and the MCP Tool BOTH return this exact shape, so identity,
- * semantic status, replay identity, and NextAction cannot diverge between surfaces. It exposes:
+ * The transport-NEUTRAL bootstrap result projection (DIN-1350, DIN-1354). The SINGLE place the admitted
+ * outcome is projected onto the wire — the HTTP adapter and the MCP Tool BOTH return this exact shape, so
+ * identity, semantic status and the next action cannot diverge between surfaces. It exposes:
  *  - the admitted artifacts,
- *  - `requestId` — the canonical, immutable Bootstrap Request identity (the replay identity: an HTTP
- *    admission and a later MCP replay of the same key return the SAME value),
+ *  - `requestId` — the canonical Presentation Request identity (the replay identity: an HTTP admission and
+ *    a later MCP replay of the same key return the SAME value),
  *  - `status` — the locked semantic status ({@link BootstrapStatus}), NOT the transport status code,
- *  - `nextAction` — the bounded, authority-free next steps.
+ *  - `request` — the Presentation Request as it stands: its checkpoint, the Human Action Request the
+ *    credential step waits on, and the one safe next action.
  */
 export type BootstrapResult = {
   api: AdmittedArtifacts['api'];
@@ -289,14 +257,14 @@ export type BootstrapResult = {
   targetDefinition: AdmittedArtifacts['targetDefinition'];
   requestId: string;
   status: BootstrapStatus;
-  nextAction: NextAction;
+  request: PresentationRequestView;
 };
 
 /** Project an admitted outcome onto the shared bootstrap result. `replayed` distinguishes a fresh admit
  *  (`created`) from an idempotent replay / race-convergence (`replayed`). */
 export function projectBootstrapResult(
   outcome: AdmittedOutcome,
-  opts: { replayed: boolean },
+  opts: { replayed: boolean; request: PresentationRequestView },
 ): BootstrapResult {
   return {
     api: outcome.artifacts.api,
@@ -305,6 +273,6 @@ export function projectBootstrapResult(
     targetDefinition: outcome.artifacts.targetDefinition,
     requestId: outcome.requestId,
     status: opts.replayed ? 'replayed' : 'created',
-    nextAction: deriveNextAction(outcome),
+    request: opts.request,
   };
 }

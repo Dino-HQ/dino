@@ -10,6 +10,7 @@ import {
   mergedFlagsForCommand,
 } from '../shared/command-registry';
 import { emitResult } from '../shared/emit-result';
+import { ENVELOPE_EXIT_CODES } from '../shared/output-contract';
 import { EXIT_CODE, type OutcomeKind } from '../shared/outcome';
 import { CLI_VERSION } from '../version';
 import type { CommandSpec, FlagSpec } from '../shared/command-registry.types';
@@ -56,13 +57,35 @@ export interface ClispecSuccessOutcome {
   description: string;
 }
 
+/** One field of the stderr error envelope (name → type/meaning), for the machine contract. */
+export interface ClispecEnvelopeField {
+  name: string;
+  type: string;
+  description: string;
+  optional?: boolean;
+}
+
+/** The stderr JSON error envelope, declared so an agent can parse it from the contract alone. */
+export interface ClispecErrorEnvelope {
+  stream: 'stderr';
+  position: 'last-line';
+  emitted_for_exit_codes: number[];
+  error_fields: ClispecEnvelopeField[];
+  top_level_fields: ClispecEnvelopeField[];
+}
+
 export interface ClispecDocument {
   $schema: string;
   clispec: typeof CLISPEC_VERSION;
   name: string;
   version: string;
   description: string;
-  output: { tty: string; piped: string };
+  output: {
+    tty: string;
+    piped: string;
+    'x-streams': { result: 'stdout'; error: 'stderr'; error_position: 'last-line' };
+    'x-error-envelope': ClispecErrorEnvelope;
+  };
   global_args: ClispecArg[];
   commands: ClispecCommand[];
   errors: ClispecErrorKind[];
@@ -101,7 +124,9 @@ const OUTCOME_CLASSIFICATION = {
   },
   config: {
     category: 'error',
-    description: 'Invalid or unreadable configuration.',
+    // D1: exit 5 now also carries auth, entitlement and permanent-upstream failures, each with a
+    // `code` and, where one exists, a `nextAction` (e.g. run `dino login`).
+    description: 'Configuration, credentials or entitlement need attention.',
   },
   transient: {
     category: 'error',
@@ -186,6 +211,58 @@ function buildExitTaxonomy(): {
   return { errors, outcomes, successOutcomes };
 }
 
+/**
+ * The stderr error envelope contract, derived from what `envelopeFor` emits (outcome.ts): the
+ * `error` object always carries kind/message/retryable/exitCode, and additively `code` (a stable
+ * DinoErrorCode) and the echoed `input`/`suggestion` when present; a `nextAction` rides at the top
+ * level when the failure is structurally resolvable (e.g. `ask_user`, a credential next step).
+ */
+function buildErrorEnvelope(): ClispecErrorEnvelope {
+  return {
+    stream: 'stderr',
+    position: 'last-line',
+    emitted_for_exit_codes: [...ENVELOPE_EXIT_CODES].sort((a, b) => a - b),
+    error_fields: [
+      { name: 'kind', type: 'string', description: 'The error outcome kind (see errors[].kind).' },
+      { name: 'message', type: 'string', description: 'One-line, sanitized failure message.' },
+      {
+        name: 'retryable',
+        type: "'transient' | 'permanent'",
+        description: 'Whether retrying the same invocation, unchanged, can succeed.',
+      },
+      { name: 'exitCode', type: 'number', description: 'The process exit code for this failure.' },
+      {
+        name: 'code',
+        type: 'string',
+        description:
+          'A stable DinoErrorCode, present when the failure has a known Dino identity (the same code HTTP sends).',
+        optional: true,
+      },
+      {
+        name: 'input',
+        type: 'unknown',
+        description: 'The rejected input, echoed and secret-sanitized, when applicable.',
+        optional: true,
+      },
+      {
+        name: 'suggestion',
+        type: 'string',
+        description: 'A remediation hint, when one exists.',
+        optional: true,
+      },
+    ],
+    top_level_fields: [
+      {
+        name: 'nextAction',
+        type: 'object',
+        description:
+          'A structured next step when the failure is resolvable (e.g. { type: "ask_user", … }); absent otherwise.',
+        optional: true,
+      },
+    ],
+  };
+}
+
 /** Build the clispec v0.3 document from COMMAND_REGISTRY + EXIT_CODE (pure, deterministic). */
 export function buildClispecDocument(): ClispecDocument {
   const commands: ClispecCommand[] = listRegistryCommands().map((commandName) => {
@@ -209,7 +286,16 @@ export function buildClispecDocument(): ClispecDocument {
     name: 'dino',
     version: CLI_VERSION,
     description: 'the deterministic verification layer for APIs',
-    output: { tty: 'text', piped: 'json' },
+    // With --format json, the result document is the only thing on stdout (exits 0/3/6) and a failure
+    // (the `errors[]` exit codes) is a single-line JSON envelope as the last stderr line, stdout empty.
+    // Declared here so an agent reading only this contract knows where to look (docs/OUTPUT_CONTRACT.md).
+    // `x-` prefixed: clispec v0.3 permits tool metadata at every level under that namespace.
+    output: {
+      tty: 'text',
+      piped: 'json',
+      'x-streams': { result: 'stdout', error: 'stderr', error_position: 'last-line' },
+      'x-error-envelope': buildErrorEnvelope(),
+    },
     global_args: sortedArgs(COMMON_PRESENTATION_FLAGS),
     commands,
     errors,

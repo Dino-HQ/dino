@@ -8,6 +8,7 @@ import { discover, resolveOAuthConfig } from '../auth/oauth-core';
 import { runOAuthLogin } from '../auth/oauth-login';
 import { clearStoredToken, getValidToken, readStoredToken } from '../auth/token-store';
 import { CliError } from '../shared/errors';
+import { cloudHttpFailure, decodeCloudErrorResponse } from '../shared/cloud-error';
 import { detectUi } from '../shared/ui';
 import type { StoredToken } from '../auth/token-store';
 
@@ -120,11 +121,13 @@ export async function runLogin(flags: Record<string, unknown>): Promise<number> 
     return 0;
   } catch (err) {
     if (err instanceof CliError) throw err;
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
     throw new CliError(
       err instanceof Error ? err.message : 'Login failed',
-      1,
+      5,
       'Re-run `dino login` or set DINO_TOKEN',
       err,
+      'config',
     );
   }
 }
@@ -167,7 +170,8 @@ export async function runWhoami(flags: Record<string, unknown>): Promise<number>
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     });
   } catch (error_) {
-    throw new CliError('Failed to reach Dino API', 1, `Check ${base}`, error_);
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
+    throw new CliError('Failed to reach Dino API', 4, `Check ${base}`, error_, 'transient', 'transient');
   }
   const unauthorized = new Set([401, 403]);
   if (unauthorized.has(res.status)) {
@@ -175,7 +179,11 @@ export async function runWhoami(flags: Record<string, unknown>): Promise<number>
     return 1;
   }
   if (!res.ok) {
-    throw new CliError(`whoami failed (HTTP ${res.status})`, 1, `${base}/v1/me`);
+    // A Dino error body with a known code classifies through the contract table (auth/entitlement
+    // → config/5, provider flake → transient/4) instead of message matching; fall back otherwise.
+    const decoded = await decodeCloudErrorResponse(res);
+    if (decoded !== null) throw decoded;
+    throw cloudHttpFailure(`whoami failed (HTTP ${res.status})`, res.status, `${base}/v1/me`);
   }
   const body = (await res.json()) as {
     tenantName?: string;

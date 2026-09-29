@@ -20,6 +20,7 @@ import {
   validateConfigConsistency,
 } from '../shared/pipeline-helpers';
 import { detectUi, healthVerdictLabel, durationLabel, colorize, printNotice } from '../shared/ui';
+import { assertTenantAuthUsable } from './scan-helpers';
 import type { CommandContext, CommonFlags } from '../shared/base-command';
 import type { WatchHistoryEntry } from '../shared/history';
 import type { UiOptions } from '../shared/ui';
@@ -117,6 +118,7 @@ function buildExecutor(
   auth: WatchFlags['auth'] | undefined,
   ui: UiOptions,
 ): { executor: ReturnType<typeof createExecutor>; tokenResolver?: TokenResolver } {
+  assertTenantAuthUsable(context, auth);
   const endpoint = getEndpoint(context);
   const base = createExecutor(endpoint, undefined, {
     allowPrivateTarget: context.allowPrivateTarget === true,
