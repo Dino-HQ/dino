@@ -39,7 +39,7 @@ inputs:
     required: false
     default: 'markdown'
   cli-version:
-    description: 'Dino CLI version to install, e.g. 1.1.3 (default: latest)'
+    description: 'Dino CLI version to install, e.g. 1.2.1 (default: latest)'
     required: false
     default: 'latest'
 
