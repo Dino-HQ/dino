@@ -112,7 +112,7 @@ const OUTCOME_CLASSIFICATION = {
   },
   policy: {
     category: 'outcome',
-    description: 'Policy gate triggered (e.g. --fail-on-high, --fail-on-breaking).',
+    description: 'Policy gate triggered (e.g. --fail-on-high, --fail-on-breaking), or `dino verify` could not prove the result.',
   },
   partial: {
     category: 'outcome',

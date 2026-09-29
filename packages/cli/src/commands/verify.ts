@@ -4,12 +4,20 @@
  *
  * Trust model (INV-5): the signer policy — issuer AND identity — is pinned by the cloud for the scan's
  * assigned runner and returned as `expected`; it never comes from argv, from the bundle, or from a default.
- * No pinned identity ⇒ `verifiable: false` ⇒ exit 1, never a pass.
+ * No pinned identity ⇒ `verifiable: false` ⇒ a config error (exit 5), never a pass.
+ *
+ * Every outcome is a declared exit code: 0 proven; 3 (policy) not proven, when the signature does not
+ * verify or the scan carries no attestation; 5 (config) when the runner has no pinned signer identity;
+ * a cloud refusal keeps its contract code (e.g. SCAN_NOT_FOUND is usage, 2).
  */
 
 import { verifyAttestation, type AttestationBundle, type VerifyOptions } from '@dino/engine';
 import { cloudHttpFailure, decodeCloudErrorResponse } from '../shared/cloud-error';
 import { CliError } from '../shared/errors';
+import { resolveExitCode } from '../shared/outcome';
+
+/** The result could not be proven: a verdict (like a failed policy gate), never a pass and never an error. */
+const NOT_PROVEN = resolveExitCode({ kind: 'policy' });
 
 /** Narrow unknown CLI flag values to non-empty strings (literal keys only - avoids object-injection noise). */
 function optionalNonEmptyString(value: unknown): string | undefined {
@@ -31,10 +39,9 @@ export type AttestationEnvelope = {
 };
 
 type LoadedAttestation =
-  | { kind: 'missing' }
+  | { kind: 'refused'; response: Response }
   | { kind: 'none' }
   | { kind: 'not-verifiable' }
-  | { kind: 'http_error'; status: number }
   | { kind: 'ok'; bundle: AttestationBundle; policy: NonNullable<AttestationEnvelope['expected']> };
 
 async function loadAttestationForVerify(
@@ -46,8 +53,7 @@ async function loadAttestationForVerify(
     // determinism:allowed
     headers,
   });
-  if (attestationRes.status === 404) return { kind: 'missing' };
-  if (!attestationRes.ok) return { kind: 'http_error', status: attestationRes.status };
+  if (!attestationRes.ok) return { kind: 'refused', response: attestationRes };
 
   const envelope = (await attestationRes.json()) as AttestationEnvelope;
   if (!envelope.attestation) return { kind: 'none' };
@@ -99,20 +105,24 @@ function parseVerifyFlags(flags: Record<string, unknown>): { scanId: string; bas
 export async function runVerify(flags: Record<string, unknown>): Promise<number> {
   const { scanId, base, headers } = parseVerifyFlags(flags);
   const loaded = await loadAttestationForVerify(base, scanId, headers);
-  if (loaded.kind === 'missing') {
-    console.info('No attestation found for this scan.');
-    return 1;
-  }
-  if (loaded.kind === 'http_error') {
-    throw cloudHttpFailure(`Failed to fetch attestation: HTTP ${String(loaded.status)}`, loaded.status);
+  if (loaded.kind === 'refused') {
+    // The cloud's own error code decides the outcome (a 404 is SCAN_NOT_FOUND: usage, 2).
+    const decoded = await decodeCloudErrorResponse(loaded.response);
+    if (decoded !== null) throw decoded;
+    throw cloudHttpFailure(`Failed to fetch attestation: HTTP ${String(loaded.response.status)}`, loaded.response.status);
   }
   if (loaded.kind === 'none') {
-    console.info('Scan completed without attestation.');
-    return 1;
+    console.info('Not verified: the scan completed without an attestation.');
+    return NOT_PROVEN;
   }
   if (loaded.kind === 'not-verifiable') {
-    console.info('attestation not verifiable: no pinned signer identity for this runner');
-    return 1;
+    throw new CliError(
+      'Attestation not verifiable: no pinned signer identity for this runner',
+      5,
+      'This scan cannot be verified. Register the runner with `dino runner register --attestation-identity <uri>` so its next scans can be verified',
+      undefined,
+      'config',
+    );
   }
 
   // The attestation subject is the exact canonical DinoResult bytes the cloud stores (D4c.5).
@@ -136,6 +146,6 @@ export async function runVerify(flags: Record<string, unknown>): Promise<number>
     return 0;
   }
 
-  console.info(`Verification failed: ${result.error ?? 'unknown error'}`);
-  return 1;
+  console.info(`Not verified: ${result.error ?? 'unknown error'}`);
+  return NOT_PROVEN;
 }
