@@ -4,7 +4,7 @@
  * cloud still requires `dcg` and serves `dcg.json`), cancellation and the completed-tool count are read
  * off the verification records, and the attestation — when an identity exists — signs the same bytes.
  */
-import { canonicalDinoResultBytes, dinoResultDigest, partitionTools, type DinoResult, type GraphQLOperation, type RunnerJob, type RunnerResult, type ScanAttestationWire } from '@dino/core';
+import { canonicalDinoResultBytes, dinoResultDigest, partitionTools, type CredentialOutcomeCode, type DinoResult, type GraphQLOperation, type RunnerJob, type RunnerResult, type ScanAttestationWire } from '@dino/core';
 import { buildSnapshot } from '@dino/engine';
 
 /** A cancelled run: a verification record cut off by cancellation (never inferred from an abort alone). */
@@ -33,6 +33,8 @@ export type CompletedRunnerResultOpts = {
   cliVersion: string;
   rotatedRefreshToken: string | undefined;
   authLost: boolean;
+  /** P1F: a typed credential outcome latched during the scan (e.g. a revoked RBAC role credential). */
+  credentialFailure?: CredentialOutcomeCode;
   cancelObserved: boolean;
   schemaSnapshot?: unknown;
   /** Resolved by the caller; `undefined` when no identity or the signer failed (INV-1). */
@@ -46,6 +48,10 @@ export async function buildCompletedRunnerResult(opts: CompletedRunnerResultOpts
   // AND a verification record was cut off by the cancellation — never fabricated from an abort alone.
   if (cancelObserved && wasCancelled(result)) {
     return { scanId: assignment.scanId, attemptId: assignment.attemptId, status: 'cancelled', toolsCompletedCount: partitionTools(result.verification.tools).completed.length, ...withRotated };
+  }
+  // The specific, actionable credential outcome wins over the generic auth loss it usually caused.
+  if (opts.credentialFailure !== undefined) {
+    return { scanId: assignment.scanId, attemptId: assignment.attemptId, status: 'failed', error: 'auth_failed', failureType: opts.credentialFailure, ...withRotated };
   }
   if (authLost) {
     return { scanId: assignment.scanId, attemptId: assignment.attemptId, status: 'failed', error: 'auth_lost', failureType: 'auth_lost', ...withRotated };

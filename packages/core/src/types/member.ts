@@ -87,8 +87,6 @@ export const DINO_PERMISSIONS = [
   'scan:cancel',
   'settings:update',
   'settings:read',
-  'settings:ai:update',
-  'settings:ai:delete',
   'member:remove',
   'member:invite',
   'member:role_change',
@@ -100,7 +98,6 @@ export const DINO_PERMISSIONS = [
   'runner:oidc:update',
   'finding:share',
   'intelligence:query',
-  'test_connection:trigger',
 ] as const;
 export type DinoPermission = (typeof DINO_PERMISSIONS)[number];
 
@@ -119,15 +116,12 @@ const ADMIN_PLUS: readonly DinoPermission[] = [
   'scan:cancel',
   'settings:update',
   'settings:read',
-  'settings:ai:update',
-  'settings:ai:delete',
   'runner:register',
   'runner:managed:create',
   'runner:managed:control',
   'runner:oidc:update',
   'finding:share',
   'intelligence:query',
-  'test_connection:trigger',
   'member:invite',
   // Locked-out-teammate recovery: reset (fully remove) another member's MFA enrollment. Admin+,
   // not owner-only — the recovery scenario is exactly when the owner may be unavailable.
@@ -141,7 +135,6 @@ const DEVELOPER_PERMS: readonly DinoPermission[] = [
   'settings:read',
   'finding:share',
   'intelligence:query',
-  'test_connection:trigger',
 ];
 
 function permissionsForRole(role: MemberRole): readonly DinoPermission[] {

@@ -25,7 +25,7 @@ export interface ContractVerdict {
 }
 
 /** Exits that require a JSON error envelope as the last stderr line (§5A.7). */
-const ENVELOPE_EXIT_CODES = new Set([2, 4, 5, 70]);
+export const ENVELOPE_EXIT_CODES: ReadonlySet<number> = new Set([2, 4, 5, 70]);
 
 /** Dino-specific key prefix - safe on stdout AND stderr (zero customer collision). */
 // No upper bound: `\w{4,200}\b` fails to match a >200-char key (greedy cap can't reach a word

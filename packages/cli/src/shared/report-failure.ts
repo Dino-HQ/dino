@@ -14,8 +14,14 @@ export function reportCaughtFailure(err: unknown, flags: Record<string, unknown>
     quiet: false,
     noColor: flags.noColor === true,
   });
-  // INV-2: printError must not be gated by quiet — quiet suppresses chrome, never errors.
-  printError(err instanceof Error ? err : new Error(String(err)), ui, flags.debug === true);
+  // D5: the prose renders the same canonical message the envelope carries (outcome.error.message),
+  // so the two can never disagree. INV-2: printError is not gated by quiet.
+  printError(
+    err instanceof Error ? err : new Error(String(err)),
+    ui,
+    flags.debug === true,
+    outcome.error?.message,
+  );
   emitEnvelope(envelopeFor(outcome, code));
   return code;
 }

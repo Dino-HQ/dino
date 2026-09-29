@@ -2,6 +2,7 @@
  * Multi-role RBAC wire helpers (#1859).
  */
 
+import { TenantConfigError } from '@dino/core';
 import { buildRoleTokenResolver, type RoleTokenDeps } from './runner-role-token-resolver';
 import { validateRbacExpectations } from '../shared/rbac-expectations-read';
 import type { HydratedProfile } from './scan-auth';
@@ -15,13 +16,23 @@ export type RunnerRbacWire = {
   skippedRoles: string[];
 };
 
+/** Hydrated RBAC config is the operator's: malformed, it is a config error, never a runner crash (#2636). */
+function parseHydratedJson(raw: string, field: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    // biome-ignore lint/style/useErrorCause: cause forwarded via the TenantConfigError options arg (biome only detects native Error 2nd-arg cause)
+    throw new TenantConfigError(`Hydrated auth profile has invalid ${field}: not JSON`, 'config', { cause: err });
+  }
+}
+
 function parseRolesJson(raw: string | null | undefined): string[] {
   if (raw === null || raw === undefined || raw.trim() === '') {
     return [];
   }
-  const parsed: unknown = JSON.parse(raw);
+  const parsed = parseHydratedJson(raw, 'rolesJson');
   if (!Array.isArray(parsed) || !parsed.every((role) => typeof role === 'string')) {
-    throw new Error('invalid rolesJson');
+    throw new TenantConfigError('Hydrated auth profile has invalid rolesJson: expected a list of role ids', 'config');
   }
   return parsed;
 }
@@ -54,9 +65,9 @@ function parseHydratedRbacJson(raw: string | null | undefined): {
   if (raw === null || raw === undefined || raw.trim() === '') {
     return {};
   }
-  const parsed: unknown = JSON.parse(raw);
+  const parsed = parseHydratedJson(raw, 'rbacExpectationsJson');
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('invalid rbacExpectationsJson');
+    throw new TenantConfigError('Hydrated auth profile has invalid rbacExpectationsJson: expected an object', 'config');
   }
   const record = parsed as Record<string, unknown>;
   if ('expectations' in record || 'defaults' in record) {

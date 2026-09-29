@@ -10,6 +10,7 @@ import {
   logVerboseDefaultsForScan,
   prepareScanToolsAndModules,
   logRbacRolesHintWhenMissing,
+  assertTenantAuthUsable,
   buildScanExecutor,
   validateRbacIfConfigured,
   readRbacRolesFromContext,
@@ -207,6 +208,8 @@ async function discoverAndPrepareScan(
   flags: ScanFlags,
   resolvedConfig: ResolvedScanConfig,
 ): Promise<PipelineCatalogOptions> {
+  // Before tool filtering, which would drop rbac-matrix and exit 2 first: an unusable auth config is exit 5 (#2636).
+  assertTenantAuthUsable(context, flags.auth);
   const { effectiveTools, validatedModules } = prepareScanToolsAndModules(
     context,
     flags,
@@ -264,6 +267,8 @@ async function discoverAndPrepareScan(
         })()
       : undefined,
     restBaseUrl: hasRest ? endpoint : undefined,
+    // Local scan authenticates with headers only (--token, --header, auth.type header), never a query parameter.
+    suppliedQueryParams: [],
     openApiSpec: hasRest ? discoveryMeta.discoveryRaw : undefined,
     restOperations: hasRest ? restOps : undefined,
     introspectionLevel: discoveryMeta.introspectionLevel,

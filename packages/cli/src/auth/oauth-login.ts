@@ -125,8 +125,11 @@ function attachLoopbackTimeout(opts: {
     opts.rejectFn(
       new CliError(
         'Login timed out waiting for the browser callback',
-        1,
+        4,
         'Re-run `dino login`, or use `dino login --no-browser` / set DINO_TOKEN',
+        undefined,
+        'transient',
+        'transient',
       ),
     );
   }, opts.timeoutMs);
@@ -134,13 +137,23 @@ function attachLoopbackTimeout(opts: {
   const onAbort = (): void => {
     clearTimeout(timeout);
     opts.close();
-    opts.rejectFn(new CliError('Login cancelled', 1, 'Re-run `dino login` when ready'));
+    opts.rejectFn(
+      new CliError(
+        'Login cancelled',
+        4,
+        'Re-run `dino login` when ready',
+        undefined,
+        'transient',
+        'transient',
+      ),
+    );
   };
   if (opts.signal !== undefined) {
     if (opts.signal.aborted) onAbort();
     else opts.signal.addEventListener('abort', onAbort, { once: true });
   }
 
+  // biome-ignore lint/complexity/noVoid: fire-and-forget cleanup; the caller awaits opts.result itself
   void opts.result
     .finally(() => {
       clearTimeout(timeout);
@@ -203,8 +216,10 @@ function tokenFromExchangeBody(json: unknown, now: () => number, issuer: string)
   if (!parsed.success) {
     throw new CliError(
       'Token exchange response was malformed',
-      1,
+      5,
       'Expected access_token and expires_in',
+      undefined,
+      'config',
     );
   }
   return {
@@ -243,21 +258,31 @@ async function exchangeCode(opts: {
       body,
     });
   } catch (error_) {
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
     throw new CliError(
       'Token exchange network error',
-      1,
+      4,
       'Check network connectivity to the issuer token endpoint',
       error_,
+      'transient',
+      'transient',
     );
   }
   if (!res.ok) {
-    throw new CliError('Token exchange failed', 1, `Token endpoint returned HTTP ${res.status}`);
+    throw new CliError(
+      'Token exchange failed',
+      5,
+      `Token endpoint returned HTTP ${res.status}`,
+      undefined,
+      'config',
+    );
   }
   let json: unknown;
   try {
     json = await res.json();
   } catch (error_) {
-    throw new CliError('Token exchange returned non-JSON', 1, undefined, error_);
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
+    throw new CliError('Token exchange returned non-JSON', 5, undefined, error_, 'config');
   }
   return tokenFromExchangeBody(json, opts.now, opts.issuer);
 }
@@ -296,8 +321,10 @@ function assertCallbackOk(
   if (callback.error !== undefined) {
     throw new CliError(
       `Authorization failed: ${callback.error}`,
-      1,
+      5,
       callback.errorDescription ?? 'The user denied consent or the IdP returned an error',
+      undefined,
+      'config',
     );
   }
   // RFC 9207 / SEP-2468: if the AS returned `iss`, it MUST match the configured issuer (mix-up defense).
@@ -307,21 +334,44 @@ function assertCallbackOk(
   ) {
     throw new CliError(
       'OAuth issuer mismatch: aborting login',
-      1,
+      5,
       'The authorization response came from an unexpected issuer (possible mix-up). Re-run `dino login`.',
+      undefined,
+      'config',
+      'permanent',
+      'OIDC_ISSUER_MISMATCH',
     );
   }
   if (callback.state !== expectedState) {
     throw new CliError(
       'OAuth state mismatch: aborting login',
-      1,
+      5,
       'This can indicate a CSRF attempt. Re-run `dino login`.',
+      undefined,
+      'config',
     );
   }
   if (callback.code === undefined || callback.code.length === 0) {
-    throw new CliError('Authorization callback missing code', 1, 'Re-run `dino login`');
+    throw new CliError(
+      'Authorization callback missing code',
+      5,
+      'Re-run `dino login`',
+      undefined,
+      'config',
+    );
   }
   return callback.code;
+}
+
+/** Await the loopback callback; a non-CliError rejection is a transient callback failure. */
+async function awaitCallback(loopback: LoopbackHandle): Promise<CallbackResult> {
+  try {
+    return await loopback.result;
+  } catch (err) {
+    if (err instanceof CliError) throw err;
+    // biome-ignore lint/style/useErrorCause: cause forwarded via CliError's 4th arg (biome only detects native Error 2nd-arg cause)
+    throw new CliError('Login callback failed', 4, 'Re-run `dino login`', err, 'transient', 'transient');
+  }
 }
 
 /**
@@ -367,14 +417,7 @@ export async function runOAuthLogin(deps: LoginDeps): Promise<StoredToken> {
     deps.openBrowser(authorizeUrl);
   }
 
-  let callback: CallbackResult;
-  try {
-    callback = await loopback.result;
-  } catch (err) {
-    if (err instanceof CliError) throw err;
-    throw new CliError('Login callback failed', 1, 'Re-run `dino login`', err);
-  }
-
+  const callback = await awaitCallback(loopback);
   const code = assertCallbackOk(callback, state, config.issuer);
   const token = await exchangeCode({
     tokenEndpoint: endpoints.tokenEndpoint,

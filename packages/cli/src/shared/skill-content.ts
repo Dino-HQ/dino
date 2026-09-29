@@ -42,13 +42,13 @@ If \`dino init\` (or \`dino scan\` with no resolvable endpoint) is missing a val
 
 ## Reading a result honestly
 
-Read the envelope, not the prose: the exit code tells you pass vs not-pass, and the JSON (\`nextAction\` / \`suggestion\`) tells you what to do next, always current for this run. As a map, the exit codes are:
+Read the envelope, not the prose: the exit code tells you pass vs not-pass, and the JSON (\`code\`, \`nextAction\` / \`suggestion\`) tells you what to do next, always current for this run. \`error.code\` is a stable Dino error code (the same identity the API sends) present when the failure has one; key on it over the message text. As a map, the exit codes are:
 
 - 0: clean, or findings below threshold (pass)
 - 2: usage error (fix the flags; read the envelope suggestion / nextAction)
 - 3: policy failure (findings exceeded the gate)
 - 4: transient error (retry later)
-- 5: config error (fix .dino.yml)
+- 5: config error - configuration, credentials or entitlement need attention (fix .dino.yml, or run \`dino login\` when the envelope says so)
 - 6: partial (some checks did not complete; NOT a full pass)
 - 70: crash
 

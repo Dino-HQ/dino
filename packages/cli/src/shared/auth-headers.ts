@@ -17,8 +17,10 @@ export function parseHeaderArg(raw: string): Record<string, string> {
   if (idx <= 0) {
     throw new CliError(
       'Invalid --header: expected `Name: Value` (e.g. --header "Authorization: Bearer <token>").',
-      1,
+      2,
       'Example: --header "Authorization: Bearer tok" or --header "X-API-Key: secret"',
+      undefined,
+      'usage',
     );
   }
   const name = raw.slice(0, idx).trim();
@@ -26,8 +28,10 @@ export function parseHeaderArg(raw: string): Record<string, string> {
   if (name.length === 0) {
     throw new CliError(
       'Invalid --header: expected `Name: Value` (e.g. --header "Authorization: Bearer <token>").',
-      1,
+      2,
       'Example: --header "Authorization: Bearer tok" or --header "X-API-Key: secret"',
+      undefined,
+      'usage',
     );
   }
   return { [name]: value };
@@ -40,8 +44,10 @@ function resolveFlatHeaderAuth(
   if (raw === undefined || raw === '') {
     throw new CliError(
       `Auth env var "${auth.valueEnv}" is not set.`,
-      1,
+      5,
       `export ${auth.valueEnv}=<your-token> then re-run.`,
+      undefined,
+      'config',
     );
   }
   const useScheme = auth.scheme !== undefined && auth.scheme.length > 0;
@@ -68,8 +74,10 @@ function applyFlagHeaders(flags: CommonFlags, headers: Record<string, string>): 
     if (typeof arg !== 'string' || arg.length === 0) {
       throw new CliError(
         '--header requires a `Name: Value` string.',
-        1,
+        2,
         'Example: --header "Authorization: Bearer tok"',
+        undefined,
+        'usage',
       );
     }
     Object.assign(headers, parseHeaderArg(arg));

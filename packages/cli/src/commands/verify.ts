@@ -8,6 +8,7 @@
  */
 
 import { verifyAttestation, type AttestationBundle, type VerifyOptions } from '@dino/engine';
+import { cloudHttpFailure, decodeCloudErrorResponse } from '../shared/cloud-error';
 import { CliError } from '../shared/errors';
 
 /** Narrow unknown CLI flag values to non-empty strings (literal keys only - avoids object-injection noise). */
@@ -103,7 +104,7 @@ export async function runVerify(flags: Record<string, unknown>): Promise<number>
     return 1;
   }
   if (loaded.kind === 'http_error') {
-    throw new CliError(`Failed to fetch attestation: HTTP ${String(loaded.status)}`, 70);
+    throw cloudHttpFailure(`Failed to fetch attestation: HTTP ${String(loaded.status)}`, loaded.status);
   }
   if (loaded.kind === 'none') {
     console.info('Scan completed without attestation.');
@@ -117,7 +118,9 @@ export async function runVerify(flags: Record<string, unknown>): Promise<number>
   // The attestation subject is the exact canonical DinoResult bytes the cloud stores (D4c.5).
   const resultRes = await fetch(`${base}/v1/scans/${encodeURIComponent(scanId)}/result`, { headers }); // determinism:allowed
   if (!resultRes.ok) {
-    throw new CliError(`Failed to fetch scan result: HTTP ${String(resultRes.status)}`, 70);
+    const decoded = await decodeCloudErrorResponse(resultRes);
+    if (decoded !== null) throw decoded;
+    throw cloudHttpFailure(`Failed to fetch scan result: HTTP ${String(resultRes.status)}`, resultRes.status);
   }
   const resultJson = await resultRes.text();
 

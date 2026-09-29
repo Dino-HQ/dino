@@ -134,6 +134,8 @@ async function executeIterationPipeline(cfg: IterationConfig, quiet?: boolean, n
     timeoutMs: cfg.timeoutMs,
     restExecutor: hasRest ? buildWatchRestExecutor(context) : undefined,
     restBaseUrl: endpoint,
+    // Watch authenticates with headers only, like local scan: no query parameter is supplied.
+    suppliedQueryParams: [],
     openApiSpec: hasRest ? ops.discoveryRaw : undefined,
     restOperations: hasRest ? restOperations : undefined,
     ...(ops.introspectionLevel === undefined ? {} : { introspectionLevel: ops.introspectionLevel }),

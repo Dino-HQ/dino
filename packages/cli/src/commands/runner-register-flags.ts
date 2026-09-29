@@ -31,12 +31,17 @@ export function parseRegisterFlags(flags: Record<string, unknown>): RegisterFlag
     : { token, name, tenantId, endpoint };
 }
 
-export async function formatRegisterError(res: Response): Promise<string> {
-  const text = await res.text();
+/** Human-readable ` : <detail>` suffix from an already-read error body text. */
+export function formatRegisterErrorDetail(text: string): string {
   if (!text) return '';
   try {
-    const j = JSON.parse(text) as { error?: string };
-    return j.error ? `: ${j.error}` : '';
+    const j = JSON.parse(text) as { error?: unknown };
+    // A Dino error envelope nests `error: { message }`; a legacy body used a bare `error` string.
+    if (j.error !== null && typeof j.error === 'object') {
+      const message = (j.error as { message?: unknown }).message;
+      return typeof message === 'string' && message.length > 0 ? `: ${message}` : '';
+    }
+    return typeof j.error === 'string' && j.error.length > 0 ? `: ${j.error}` : '';
   } catch {
     return `: ${text.slice(0, 200)}`;
   }

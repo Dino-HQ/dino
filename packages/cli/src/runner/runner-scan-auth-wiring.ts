@@ -22,10 +22,12 @@ import {
   type HydratedProfile,
   type ScanAuthDeps,
 } from './scan-auth';
+import { outcomeFromCaughtError } from '../shared/outcome';
 import { refreshOAuth2Auth } from './scan-auth-oauth2';
+import { buildRotatedRefreshGetter, readHydratedRefreshToken } from './runner-refresh-token';
 import type { RunnerState } from './state-store';
 import type { RestFuzzExecutor } from '@dino/agents';
-import type { RunnerJob } from '@dino/core';
+import type { CredentialOutcomeCode, RunnerJob } from '@dino/core';
 
 export type { RunnerRbacWire } from './runner-rbac-wire';
 
@@ -38,6 +40,8 @@ function scanAuthLogger(): { info: (event: string, data?: Record<string, unknown
 }
 
 type AuthWireContext = {
+  /** P1F: the last typed credential outcome the cloud returned for this scan's hydrate. */
+  credentialFailure?: { code?: CredentialOutcomeCode };
   state: RunnerState;
   assignment: RunnerJob;
   authProfileId: string;
@@ -59,8 +63,16 @@ function buildOtpClient(ctx: AuthWireContext) {
   });
 }
 
+/** Every hydrate (primary, refresh, RBAC role) latches the FIRST typed credential outcome for the scan. */
+function latchCredentialFailure(ctx: AuthWireContext): (code: CredentialOutcomeCode) => void {
+  return (code) => {
+    ctx.credentialFailure ??= { code };
+  };
+}
+
 async function hydrateProfile(ctx: AuthWireContext): Promise<HydratedProfile | null> {
   return fetchHydratedProfile({
+    onCredentialFailure: latchCredentialFailure(ctx),
     cloudEndpoint: ctx.state.cloudEndpoint,
     runnerId: ctx.state.runnerId,
     authProfileId: ctx.authProfileId,
@@ -111,6 +123,7 @@ async function hydrateBindingProfile(
   signal?: AbortSignal,
 ): Promise<HydratedProfile | null> {
   return fetchHydratedProfile({
+    onCredentialFailure: latchCredentialFailure(ctx),
     cloudEndpoint: ctx.state.cloudEndpoint,
     runnerId: ctx.state.runnerId,
     authProfileId: bindingAuthProfileId,
@@ -181,31 +194,10 @@ export type RunnerAuthWireResult =
       authLost: () => boolean;
       rotatedRefreshToken: () => string | undefined;
       rbac?: RunnerRbacWire;
+      /** P1F: a typed credential outcome latched mid-scan (role hydrate, re-hydrate); it fails the scan. */
+      credentialFailure?: () => CredentialOutcomeCode | undefined;
     }
-  | { ok: false; error: 'auth_failed' };
-
-function readHydratedRefreshToken(profile: HydratedProfile): string | undefined {
-  if (profile.credential === null || profile.credential.trim() === '') {
-    return undefined;
-  }
-  try {
-    const parsed: unknown = JSON.parse(profile.credential);
-    if (!isRecord(parsed)) {
-      return undefined;
-    }
-    const rt = parsed.refresh_token;
-    if (typeof rt === 'string' && rt.trim() !== '') {
-      return rt;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
+  | { ok: false; error: 'auth_failed'; credentialCode?: CredentialOutcomeCode };
 
 function latchAuthEverLost(
   authEverLost: { value: boolean },
@@ -258,25 +250,6 @@ async function performReauth(p: {
   };
 }
 
-function buildRotatedRefreshGetter(
-  originalHydratedRefreshToken: string | undefined,
-  readCurrentRefreshToken: () => string | undefined,
-): () => string | undefined {
-  return () => {
-    const currentRefreshToken = readCurrentRefreshToken();
-    if (currentRefreshToken === undefined || currentRefreshToken === '') {
-      return undefined;
-    }
-    if (
-      originalHydratedRefreshToken !== undefined &&
-      currentRefreshToken === originalHydratedRefreshToken
-    ) {
-      return undefined;
-    }
-    return currentRefreshToken;
-  };
-}
-
 async function attemptOptionalRbacWire(
   ctx: AuthWireContext,
   hydratedProfile: HydratedProfile,
@@ -291,10 +264,15 @@ async function attemptOptionalRbacWire(
         }),
     });
   } catch (err) {
+    // Kind and code say whether the skip is the operator's config or Dino's fault (#2636).
+    const outcome = outcomeFromCaughtError(err);
+    const code = outcome.error?.code;
     console.warn(
       JSON.stringify({
         event: 'runner_rbac_skip',
         reason: err instanceof Error ? err.message : 'invalid_rbac_config',
+        kind: outcome.kind,
+        ...(code === undefined ? {} : { code }),
       }),
     );
     return undefined;
@@ -308,17 +286,27 @@ function authWireSuccess(opts: {
   rotatedRefreshToken: () => string | undefined;
   rbac?: RunnerRbacWire;
   rbacDeclared?: boolean;
+  credentialFailure: () => CredentialOutcomeCode | undefined;
 }): RunnerAuthWireResult {
   return {
     ok: true,
     restExecutor: opts.restExecutor,
     authConfigured: true,
+    credentialFailure: opts.credentialFailure,
     ...(opts.rbacDeclared === undefined ? {} : { rbacDeclared: opts.rbacDeclared }),
     getAuth: opts.getAuth,
     authLost: opts.authLost,
     rotatedRefreshToken: opts.rotatedRefreshToken,
     ...(opts.rbac === undefined ? {} : { rbac: opts.rbac }),
   };
+}
+
+/** P1F: a failed hydrate carries the cloud's typed credential outcome when there was one. */
+function hydrateFailure(ctx: AuthWireContext): RunnerAuthWireResult {
+  const code = ctx.credentialFailure?.code;
+  return code === undefined
+    ? { ok: false, error: 'auth_failed' }
+    : { ok: false, error: 'auth_failed', credentialCode: code };
 }
 
 async function wireHydratedAuthProfile(opts: {
@@ -331,9 +319,7 @@ async function wireHydratedAuthProfile(opts: {
   const authLost = (): boolean => authEverLost.value;
 
   let hydratedProfile = await hydrateProfile(ctx);
-  if (hydratedProfile === null) {
-    return { ok: false, error: 'auth_failed' };
-  }
+  if (hydratedProfile === null) return hydrateFailure(ctx);
 
   let currentAuth = await acquireFromHydrated(ctx, hydratedProfile);
   if (currentAuth.authFailed) {
@@ -347,6 +333,7 @@ async function wireHydratedAuthProfile(opts: {
     () => currentRefreshToken,
   );
 
+  const credentialFailure = (): CredentialOutcomeCode | undefined => ctx.credentialFailure?.code;
   const rbacDeclared = hydratedProfileDeclaresRbac(hydratedProfile);
   const rbac = await attemptOptionalRbacWire(ctx, hydratedProfile);
 
@@ -358,6 +345,7 @@ async function wireHydratedAuthProfile(opts: {
       rotatedRefreshToken,
       ...(rbac === undefined ? {} : { rbac }),
       rbacDeclared,
+      credentialFailure,
     });
   }
 
@@ -384,6 +372,7 @@ async function wireHydratedAuthProfile(opts: {
     rotatedRefreshToken,
     ...(rbac === undefined ? {} : { rbac }),
     rbacDeclared,
+    credentialFailure,
   });
 }
 

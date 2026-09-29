@@ -18,11 +18,21 @@ if (_accessCoverage.ALLOW !== true) {
 
 function assertExpectedAccessValue(value: unknown, label: string): asserts value is ExpectedAccess {
   if (typeof value !== 'string') {
-    throw new CliError(`Invalid RBAC expectation for ${label}: value must be a string`);
+    throw new CliError(
+      `Invalid RBAC expectation for ${label}: value must be a string`,
+      5,
+      undefined,
+      undefined,
+      'config',
+    );
   }
   if (!(RBAC_EXPECTED_ACCESS as readonly string[]).includes(value)) {
     throw new CliError(
       `Invalid RBAC expectation for ${label}: "${value}" must be one of ALLOW, DENY, UNKNOWN`,
+      5,
+      undefined,
+      undefined,
+      'config',
     );
   }
 }
@@ -41,6 +51,10 @@ function assertPlainObject(
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new CliError(
       `Invalid RBAC expectation for ${label}: expected an object of role → access`,
+      5,
+      undefined,
+      undefined,
+      'config',
     );
   }
 }

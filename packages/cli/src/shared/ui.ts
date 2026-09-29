@@ -7,12 +7,17 @@
  * INV-5: NO_COLOR env var disables all color.
  */
 
+import { healthVerdict } from '@dino/engine';
 import chalk from 'chalk';
 import ora from 'ora';
-import { healthVerdict } from '@dino/engine';
-import { DINO_ASCII, DINO_TAGLINE, DINO_BRAND_HEX } from './brand';
+import { DINO_ASCII, DINO_BRAND_HEX, DINO_TAGLINE } from './brand';
 import { CliError } from './errors';
-import { boundErrorMessage, isUpstreamClientError, isSsrfBlockedError } from './outcome';
+import { boundErrorMessage, humanizeError, isUpstreamClientError } from './outcome';
+
+// humanizeError now lives in outcome.ts (the single place a failure's message is built, #2196 D5);
+// re-exported here so `@dino/cli/shared/ui` consumers keep importing it from this module.
+export { humanizeError } from './outcome';
+
 import type { EnvelopeSeverityLevel } from '@dino/core';
 import type { Ora } from 'ora';
 
@@ -139,7 +144,10 @@ function healthColor(level: EnvelopeSeverityLevel): ChalkColor {
  * regenerated from the level. UX Language §4.1: the number supports the verdict, it never IS the verdict.
  */
 export function healthVerdictLabel(health: HealthView, ui: UiOptions): string {
-  const text = health.score === null ? health.verdict : `${health.verdict} (${clampHealthScore(health.score)})`;
+  const text =
+    health.score === null
+      ? health.verdict
+      : `${health.verdict} (${clampHealthScore(health.score)})`;
   return colorize(text, healthColor(health.level), ui);
 }
 
@@ -167,11 +175,13 @@ export function durationLabel(ms: number): string {
  * Print a CliError or generic Error with optional hint and debug stack trace.
  * UX Language §9: errors describe what happened + suggest next action.
  */
-export function printError(err: Error, ui: UiOptions, debug?: boolean): void {
-  const message = humanizeError(err);
+export function printError(err: Error, ui: UiOptions, debug?: boolean, message?: string): void {
+  // D5: when the caller has already built the canonical failure message (so the prose and the
+  // stderr envelope agree), render that; otherwise fall back to humanizing the error here.
+  const text = message ?? humanizeError(err);
   const hint = err instanceof CliError ? err.hint : undefined;
 
-  console.error(colorize(`✗  ${message}`, 'red', ui));
+  console.error(colorize(`✗  ${text}`, 'red', ui));
   if (hint) {
     console.error(colorize(`   ${hint}`, 'dim', ui));
   }
@@ -179,89 +189,6 @@ export function printError(err: Error, ui: UiOptions, debug?: boolean): void {
     const stackText = isUpstreamClientError(err) ? boundErrorMessage(err) : err.stack;
     console.error(colorize(stackText, 'dim', ui));
   }
-}
-
-/**
- * #201: rewrite endpoint-validation jargon at the CLI boundary.
- * Returns undefined when the message is not an endpoint-validation error.
- */
-function humanizeEndpointValidationError(message: string): string | undefined {
-  // All engine SSRF/DNS errors carry the literal "SSRF blocked:" prefix + a reason code.
-  if (message.includes('SSRF blocked:')) {
-    if (message.includes('dns_resolution_failed')) {
-      return "We couldn't find that host. Check the endpoint URL for a typo and try again.";
-    }
-    if (
-      message.includes('blocked_ipv4') ||
-      message.includes('blocked_ipv6') ||
-      message.includes('metadata_host') ||
-      message.includes('unparseable_mapped_ip')
-    ) {
-      return "That endpoint points to a private or internal address, so Dino won't test it. Use a public API endpoint.";
-    }
-    if (message.includes('wrong_protocol')) {
-      return 'The endpoint URL must start with http:// or https://.';
-    }
-    if (message.includes('malformed_url')) {
-      return "That endpoint URL isn't valid. Example: https://api.example.com/graphql";
-    }
-    // Unknown/future reason code — never leak "SSRF blocked … <code>".
-    return "Dino couldn't test that endpoint: it didn't pass an address safety check.";
-  }
-  return undefined;
-}
-
-/** Known node/network failure signatures → product text; undefined when none matches. */
-function humanizeNetworkError(haystack: string, name: string, message: string): string | undefined {
-  if (haystack.includes('ECONNRESET') || message.includes('socket hang up')) {
-    return 'The connection to the API was closed unexpectedly. Check the endpoint and your network.';
-  }
-  if (haystack.includes('ENOTFOUND')) {
-    return "Couldn't resolve the endpoint host. Check the URL.";
-  }
-  if (haystack.includes('ECONNREFUSED')) {
-    return 'The endpoint refused the connection. Is it running and reachable?';
-  }
-  if (haystack.includes('ETIMEDOUT') || name === 'AbortError' || haystack.includes('AbortError')) {
-    return 'The request timed out. The endpoint may be slow or unreachable.';
-  }
-  if (message.includes('fetch failed')) {
-    return "Couldn't reach the endpoint. Check the URL and your network.";
-  }
-  return undefined;
-}
-
-/**
- * #174/#201: map known node/network and endpoint-validation errors to clean product text.
- * Default arm keeps the original `.message`. Never interpolates the raw error
- * object or `process.env` — map by code/name/message substrings only.
- */
-export function humanizeError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  const name = err instanceof Error ? err.name : '';
-  let code = '';
-  if (err !== null && typeof err === 'object') {
-    const rawCode = Reflect.get(err, 'code');
-    if (typeof rawCode === 'string') {
-      code = rawCode;
-    }
-  }
-  const haystack = `${code} ${name} ${message}`;
-
-  // #193: single-source with classifyCaughtKind - prefix/class only (not message substring).
-  if (isSsrfBlockedError(err)) {
-    const endpointMsg = humanizeEndpointValidationError(message);
-    if (endpointMsg !== undefined) return endpointMsg;
-  }
-
-  // #201: node's own malformed-URL TypeError. Anchor on the stable ERR_INVALID_URL code,
-  // not a message substring, so a target API's error text can't false-match.
-  if (code === 'ERR_INVALID_URL') {
-    return "That endpoint URL isn't valid. Example: https://api.example.com/graphql";
-  }
-  const network = humanizeNetworkError(haystack, name, message);
-  if (network !== undefined) return network;
-  return boundErrorMessage(err);
 }
 
 /**

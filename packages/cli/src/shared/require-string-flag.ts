@@ -21,7 +21,7 @@ export function requireStringFlag(
 ): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value === 'string' && value.length > 0) return value;
-  throw new CliError(`${name} requires ${opts.requires}`, 1, opts.hint);
+  throw new CliError(`${name} requires ${opts.requires}`, 2, opts.hint, undefined, 'usage');
 }
 
 /** Value-less `--endpoint`/`--protocol`/`--spec-url` arrive as boolean `true`: reject them here, not in parseFlag (booleans are valid for --quiet). */

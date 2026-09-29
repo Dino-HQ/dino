@@ -18,6 +18,9 @@
  *   DinoUpstreamError          — 502
  */
 
+import { ERROR_CONTRACT } from './error-contract';
+import { parseCredentialNextAction, type CredentialNextAction } from './credential-next-action';
+
 // ── Error codes ─────────────────────────────────────────────
 
 /** All Dino error codes. Exhaustive, grepable, stable contract. */
@@ -65,6 +68,29 @@ export type DinoErrorCode =
   // semantics" is a typed conflict, never a silent last-write-win or a new canonical version. Distinct
   // from ALREADY_EXISTS (a canonical artifact with that name already exists under a *different* request).
   | 'IDEMPOTENCY_CONFLICT'
+  // Continuation (409) — a Human Action Request submission or resume names a checkpoint that is no longer
+  // the Request's current one, or a Request that cannot continue (DIN-1354). Re-read the Request.
+  | 'CHECKPOINT_INVALID'
+  // Continuation (409) — the Human Action Request expired before a response was accepted (DIN-1354).
+  | 'CHECKPOINT_EXPIRED'
+  // Agent Proxy (409): a mutating dispatch with this identity already completed once. The action
+  // landed; only its response is non-replayable. Not retryable, and not ambiguous.
+  | 'DISPATCH_ALREADY_RESOLVED'
+  // Credential Reference outcomes (P1F / DIN-1353) — typed, fail-closed, each with a bounded
+  // `nextAction` (see credential-outcome.ts). NOT_FOUND is 404 (existence-hiding); the rest 409/503.
+  | 'CREDENTIAL_REFERENCE_NOT_FOUND'
+  | 'CREDENTIAL_REFERENCE_REVOKED'
+  | 'CREDENTIAL_REFERENCE_STALE'
+  | 'CREDENTIAL_RESIDENCY_MISMATCH'
+  | 'CREDENTIAL_RECONFIGURE_REQUIRED'
+  | 'CREDENTIAL_CUSTODY_UNAVAILABLE'
+  // Target Connection outcomes (DIN-1490) — typed, fail-closed, each with a bounded `nextAction` (see
+  // target-connection-outcome.ts). SCOPE_INVALID is 400; the rest are 409.
+  | 'TARGET_CONNECTION_REQUIRED'
+  | 'TARGET_CONNECTION_NOT_AUTHORIZED'
+  | 'TARGET_CONNECTION_STALE'
+  | 'TARGET_CONNECTION_SCOPE_INVALID'
+  | 'TARGET_CONNECTION_SCOPE_UNAVAILABLE'
   // Rate limit (429)
   | 'RATE_LIMITED'
   // Upstream/provider rate limit (429) — the SECRET CUSTODIAN throttled Dino (distinct from
@@ -78,12 +104,21 @@ export type DinoErrorCode =
   | 'UPSTREAM_FAILED'
   | 'STYTCH_ERROR'
   | 'GCP_ERROR'
-  | 'INNGEST_ERROR'
   | 'OIDC_DISCOVERY_FAILED'
   | 'OAUTH2_EXCHANGE_FAILED'
-  | 'OAUTH2_RECONNECT_FAILED'
+  // Agent Proxy (502): a mutating dispatch may or may not have run (lost response, or a same-key
+  // retry of an in-flight intent). NEVER retry blindly — a resend can duplicate a non-idempotent
+  // effect. `reason` (lost_response | already_dispatched) is serialized; see DispatchAmbiguousReason.
+  | 'DISPATCH_AMBIGUOUS'
+  // Method not allowed (405)
+  | 'METHOD_NOT_ALLOWED'
+  // Unsupported media type (415) — the request body's Content-Type isn't one the endpoint accepts.
+  | 'UNSUPPORTED_MEDIA_TYPE'
   // Internal (500)
   | 'INTERNAL_ERROR'
+  // Server misconfigured (500) — a Dino deployment is missing required configuration (a secret, an
+  // app ID). The caller can't fix it; distinct from CONFIG_INVALID (the caller's configuration, 400).
+  | 'SERVER_MISCONFIGURED'
   // Engine / pipeline
   | 'TIMEOUT'
   | 'NETWORK_ERROR'
@@ -99,7 +134,6 @@ export type ErrorMeta = Record<string, unknown>;
 export interface DinoErrorOptions {
   code: DinoErrorCode;
   message: string;
-  statusCode?: number;
   meta?: ErrorMeta | undefined;
   cause?: unknown;
 }
@@ -119,7 +153,9 @@ export class DinoError extends Error {
   constructor(opts: DinoErrorOptions) {
     super(opts.message, opts.cause === undefined ? undefined : { cause: opts.cause });
     this.code = opts.code;
-    this.statusCode = opts.statusCode ?? 500; // masked-fix:allowed — base class default, was `= 500` param default before options refactor
+    // The status is the code's, never the caller's: ERROR_CONTRACT is the only source. Engine-only codes
+    // (status null) never reach an HTTP response and report 500 if one ever does.
+    this.statusCode = ERROR_CONTRACT[opts.code].status ?? 500; // masked-fix:allowed — engine-only codes have no HTTP status
     this.meta = opts.meta;
     this.name = 'DinoError';
   }
@@ -136,57 +172,94 @@ export class DinoError extends Error {
    * (`feature`, `limit`, `used`, `resetDate`, `allowedLevels`). ONLY these keys are
    * ever copied — never the whole meta bag, so IDs/diagnostics stay server-side.
    */
-  toJSON(): {
-    error: {
-      code: DinoErrorCode;
-      message: string;
-      status: number;
-      feature?: string;
-      limit?: number | null;
-      used?: number;
-      resetDate?: string | null;
-      allowedLevels?: readonly string[];
-    };
-  } {
-    const error: {
-      code: DinoErrorCode;
-      message: string;
-      status: number;
-      feature?: string;
-      limit?: number | null;
-      used?: number;
-      resetDate?: string | null;
-      allowedLevels?: readonly string[];
-    } = {
+  toJSON(): { error: DinoErrorJson } {
+    const error: DinoErrorJson = {
       code: this.code,
       message: this.message,
       status: this.statusCode,
+      retryable: ERROR_CONTRACT[this.code].retryable,
     };
     if (
       (this.code === 'QUOTA_EXCEEDED' || this.code === 'TIER_UPGRADE_REQUIRED') &&
       this.meta !== undefined
     ) {
-      const m = this.meta;
-      if (typeof m.feature === 'string') {
-        error.feature = m.feature;
-      }
-      if (typeof m.used === 'number') {
-        error.used = m.used;
-      }
-      if (typeof m.limit === 'number' || m.limit === null) {
-        error.limit = m.limit;
-      }
-      if (typeof m.resetDate === 'string' || m.resetDate === null) {
-        error.resetDate = m.resetDate;
-      }
-      if (Array.isArray(m.allowedLevels)) {
-        // Validate every element (not just Array.isArray) so a non-string array never
-        // leaks mistyped to the client — parity with the typed checks above. The old
-        // `as readonly string[]` cast let e.g. `[{ tenantId }]` through as `string[]`.
-        error.allowedLevels = m.allowedLevels.filter((x): x is string => typeof x === 'string');
-      }
+      copyUpgradeContext(this.meta, error);
+    }
+    // P1F (DIN-1353), DIN-1490: credential and Target Connection outcomes surface ONLY a validated,
+    // closed-union NextAction — never the rest of meta. An unrecognised shape is dropped (fail closed).
+    if (hasBoundedNextAction(this.code) && this.meta !== undefined) {
+      const nextAction = parseCredentialNextAction(this.meta.nextAction);
+      if (nextAction !== undefined) error.nextAction = nextAction;
+    }
+    // Agent Proxy: an ambiguous dispatch surfaces ONLY its closed-union reason, which callers need
+    // to tell a lost response from a refused same-key retry. Anything else in meta stays server-side.
+    if (this.code === 'DISPATCH_AMBIGUOUS' && isDispatchAmbiguousReason(this.meta?.reason)) {
+      error.reason = this.meta.reason;
     }
     return { error };
+  }
+}
+
+/** Client-safe error body. `meta` never serializes wholesale — only the whitelisted fields below. */
+export interface DinoErrorJson {
+  code: DinoErrorCode;
+  message: string;
+  status: number;
+  /** Whether sending the same request again, unchanged, can succeed (from ERROR_CONTRACT). */
+  retryable: boolean;
+  feature?: string;
+  limit?: number | null;
+  used?: number;
+  resetDate?: string | null;
+  allowedLevels?: readonly string[];
+  nextAction?: CredentialNextAction;
+  reason?: DispatchAmbiguousReason;
+}
+
+/** Why an Agent Proxy mutating dispatch is ambiguous. */
+export type DispatchAmbiguousReason = 'lost_response' | 'already_dispatched';
+
+function isDispatchAmbiguousReason(value: unknown): value is DispatchAmbiguousReason {
+  return value === 'lost_response' || value === 'already_dispatched';
+}
+
+/** Codes whose body may carry the closed-union bounded `nextAction` (credential and Target Connection outcomes). */
+function hasBoundedNextAction(code: DinoErrorCode): boolean {
+  return code.startsWith('CREDENTIAL_') || code.startsWith('TARGET_CONNECTION_');
+}
+
+const UPGRADE_CONTEXT_FIELDS = ['feature', 'limit', 'used', 'resetDate', 'allowedLevels'] as const;
+
+/**
+ * The fields beyond `code`, `message`, `status` and `retryable` a code's error body may carry — the same
+ * whitelist `toJSON()` applies. The OpenAPI error schema is generated from it.
+ */
+export function errorBodyExtraFields(code: DinoErrorCode): readonly (keyof DinoErrorJson)[] {
+  if (code === 'QUOTA_EXCEEDED' || code === 'TIER_UPGRADE_REQUIRED') return UPGRADE_CONTEXT_FIELDS;
+  if (hasBoundedNextAction(code)) return ['nextAction'];
+  if (code === 'DISPATCH_AMBIGUOUS') return ['reason'];
+  return [];
+}
+
+/** UPGRADE CONTEXT (C14, contract #1259): copy ONLY the fixed whitelist of typed meta fields. */
+function copyUpgradeContext(m: ErrorMeta, error: DinoErrorJson): void {
+  if (typeof m.feature === 'string') {
+    error.feature = m.feature;
+  }
+  if (typeof m.used === 'number') {
+    error.used = m.used;
+  }
+  if (typeof m.limit === 'number' || m.limit === null) {
+    error.limit = m.limit;
+  }
+  if (typeof m.resetDate === 'string' || m.resetDate === null) {
+    error.resetDate = m.resetDate;
+  }
+  if (Array.isArray(m.allowedLevels)) {
+    // Validate every element (not just Array.isArray) so a non-string array never
+    // leaks mistyped to the client — parity with the typed checks above. The old
+    // `as readonly string[]` cast let e.g. `[{ tenantId }]` through as `string[]`.
+    error.allowedLevels = m.allowedLevels.filter((x): x is string => typeof x === 'string');
   }
 }
 
@@ -195,68 +268,70 @@ export class DinoError extends Error {
 // HTTP status family the subclass represents.
 
 /** Codes valid for 400-class errors. */
-export type ValidationErrorCode = Extract<
-  DinoErrorCode,
-  | 'INVALID_JSON'
-  | 'INVALID_REQUEST_BODY'
-  | 'INVALID_FIELD'
-  | 'INVALID_SPEC_BODY'
-  | 'PROTOCOL_NOT_SUPPORTED'
-  | 'CONFIG_INVALID'
-  | 'API_CONTEXT_SNAPSHOT_INVALID_ID'
-  | 'OIDC_ISSUER_MISMATCH'
-  | 'FEATURE_DISABLED'
-  | 'OAUTH2_NO_REFRESH_TOKEN'
->;
+export const VALIDATION_ERROR_CODES = [
+  'INVALID_JSON',
+  'INVALID_REQUEST_BODY',
+  'INVALID_FIELD',
+  'INVALID_SPEC_BODY',
+  'PROTOCOL_NOT_SUPPORTED',
+  'CONFIG_INVALID',
+  'API_CONTEXT_SNAPSHOT_INVALID_ID',
+  'OIDC_ISSUER_MISMATCH',
+  'FEATURE_DISABLED',
+  'OAUTH2_NO_REFRESH_TOKEN',
+] as const satisfies readonly DinoErrorCode[];
+export type ValidationErrorCode = (typeof VALIDATION_ERROR_CODES)[number];
 
 /** Codes valid for 401/403-class errors. */
-export type AuthErrorCode = Extract<
-  DinoErrorCode,
-  | 'AUTH_MISSING'
-  | 'AUTH_INVALID'
-  | 'AUTH_EXPIRED'
-  | 'AUTH_FORBIDDEN'
-  | 'LAST_OWNER'
-  | 'DOMAIN_NOT_VERIFIED'
->;
+export const AUTH_ERROR_CODES = [
+  'AUTH_MISSING',
+  'AUTH_INVALID',
+  'AUTH_EXPIRED',
+  'AUTH_FORBIDDEN',
+  'LAST_OWNER',
+  'DOMAIN_NOT_VERIFIED',
+] as const satisfies readonly DinoErrorCode[];
+export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
 /** Codes valid for 404-class errors. */
-export type NotFoundErrorCode = Extract<
-  DinoErrorCode,
-  | 'TENANT_NOT_FOUND'
-  | 'SCAN_NOT_FOUND'
-  | 'RUNNER_NOT_FOUND'
-  | 'DCG_NOT_FOUND'
-  | 'RESOURCE_NOT_FOUND'
-  | 'MEMBER_NOT_FOUND'
-  | 'API_CONTEXT_SNAPSHOT_NOT_FOUND'
-  | 'API_CONTEXT_NO_COMPLETE_SNAPSHOT'
-  | 'NO_SNAPSHOT'
-  | 'INSUFFICIENT_SCANS'
->;
+export const NOT_FOUND_ERROR_CODES = [
+  'TENANT_NOT_FOUND',
+  'SCAN_NOT_FOUND',
+  'RUNNER_NOT_FOUND',
+  'DCG_NOT_FOUND',
+  'RESOURCE_NOT_FOUND',
+  'MEMBER_NOT_FOUND',
+  'API_CONTEXT_SNAPSHOT_NOT_FOUND',
+  'API_CONTEXT_NO_COMPLETE_SNAPSHOT',
+  'NO_SNAPSHOT',
+  'INSUFFICIENT_SCANS',
+] as const satisfies readonly DinoErrorCode[];
+export type NotFoundErrorCode = (typeof NOT_FOUND_ERROR_CODES)[number];
 
 /** Codes valid for 409-class errors. */
-export type ConflictErrorCode = Extract<
-  DinoErrorCode,
-  | 'ALREADY_EXISTS'
-  | 'STATE_CONFLICT'
-  | 'RETRY_LIMIT_EXCEEDED'
-  | 'API_CONTEXT_SNAPSHOT_NOT_COMPLETE'
-  | 'SNAPSHOT_VERSION_UNSUPPORTED'
-  | 'IDEMPOTENCY_CONFLICT'
->;
+export const CONFLICT_ERROR_CODES = [
+  'ALREADY_EXISTS',
+  'STATE_CONFLICT',
+  'RETRY_LIMIT_EXCEEDED',
+  'API_CONTEXT_SNAPSHOT_NOT_COMPLETE',
+  'SNAPSHOT_VERSION_UNSUPPORTED',
+  'IDEMPOTENCY_CONFLICT',
+  'DISPATCH_ALREADY_RESOLVED',
+  'CHECKPOINT_INVALID',
+  'CHECKPOINT_EXPIRED',
+] as const satisfies readonly DinoErrorCode[];
+export type ConflictErrorCode = (typeof CONFLICT_ERROR_CODES)[number];
 
 /** Codes valid for 502-class errors. */
-export type UpstreamErrorCode = Extract<
-  DinoErrorCode,
-  | 'UPSTREAM_FAILED'
-  | 'STYTCH_ERROR'
-  | 'GCP_ERROR'
-  | 'INNGEST_ERROR'
-  | 'OIDC_DISCOVERY_FAILED'
-  | 'OAUTH2_EXCHANGE_FAILED'
-  | 'OAUTH2_RECONNECT_FAILED'
->;
+export const UPSTREAM_ERROR_CODES = [
+  'UPSTREAM_FAILED',
+  'STYTCH_ERROR',
+  'GCP_ERROR',
+  'OIDC_DISCOVERY_FAILED',
+  'OAUTH2_EXCHANGE_FAILED',
+  'DISPATCH_AMBIGUOUS',
+] as const satisfies readonly DinoErrorCode[];
+export type UpstreamErrorCode = (typeof UPSTREAM_ERROR_CODES)[number];
 
 // ── Subclasses ──────────────────────────────────────────────
 
@@ -268,20 +343,15 @@ export class DinoValidationError extends DinoError {
     meta?: ErrorMeta | undefined,
     options?: { cause?: unknown },
   ) {
-    super({ code, message, statusCode: 400, meta, cause: options?.cause });
+    super({ code, message, meta, cause: options?.cause });
     this.name = 'DinoValidationError';
   }
 }
 
 /** 401/403 — authentication or authorization failure. */
 export class DinoAuthError extends DinoError {
-  constructor(
-    code: AuthErrorCode,
-    message: string,
-    statusCode: 401 | 403 = 401,
-    options?: { cause?: unknown },
-  ) {
-    super({ code, message, statusCode, cause: options?.cause });
+  constructor(code: AuthErrorCode, message: string, options?: { cause?: unknown }) {
+    super({ code, message, cause: options?.cause });
     this.name = 'DinoAuthError';
   }
 }
@@ -289,7 +359,7 @@ export class DinoAuthError extends DinoError {
 /** 404 — resource not found. */
 export class DinoNotFoundError extends DinoError {
   constructor(code: NotFoundErrorCode, message: string, meta?: ErrorMeta | undefined) {
-    super({ code, message, statusCode: 404, meta });
+    super({ code, message, meta });
     this.name = 'DinoNotFoundError';
   }
 }
@@ -297,7 +367,7 @@ export class DinoNotFoundError extends DinoError {
 /** 409 — state conflict (wrong status for operation, retry exhausted). */
 export class DinoConflictError extends DinoError {
   constructor(code: ConflictErrorCode, message: string, meta?: ErrorMeta | undefined) {
-    super({ code, message, statusCode: 409, meta });
+    super({ code, message, meta });
     this.name = 'DinoConflictError';
   }
 }
@@ -310,7 +380,7 @@ export class DinoUpstreamError extends DinoError {
     meta?: ErrorMeta | undefined,
     options?: { cause?: unknown },
   ) {
-    super({ code, message, statusCode: 502, meta, cause: options?.cause });
+    super({ code, message, meta, cause: options?.cause });
     this.name = 'DinoUpstreamError';
   }
 }

@@ -3,8 +3,33 @@
  * auth (#2388 Task 7: the rbac lease signal cancels grant, hydrate, and login-flow requests).
  */
 
+import { isCredentialOutcomeCode, type CredentialOutcomeCode } from '@dino/core';
 import type { FetchLike } from '@dino/auth';
 import type { HydratedProfile } from './scan-auth';
+
+/** Receives the typed credential outcome (P1F) when the cloud refused a grant or hydrate with one. */
+export type CredentialFailureSink = (code: CredentialOutcomeCode) => void;
+
+/**
+ * P1F (DIN-1353): read a typed credential outcome from a non-2xx body. Only codes in the closed
+ * credential set are surfaced; anything else (authority denials, malformed bodies) stays generic.
+ */
+async function reportCredentialFailure(res: Response, sink: CredentialFailureSink | undefined): Promise<void> {
+  if (sink === undefined) return;
+  try {
+    const body = (await res.json()) as { error?: { code?: unknown } };
+    const code = body.error?.code;
+    if (typeof code === 'string' && isCredentialOutcomeCode(code)) sink(code);
+  } catch (err) {
+    // Unparseable body → no typed outcome; the caller's generic failure stands. Name only (INV-6).
+    console.warn(
+      JSON.stringify({
+        message: 'runner_credential_outcome_unparseable',
+        detail: err instanceof Error ? err.name : 'unknown',
+      }),
+    );
+  }
+}
 
 /** Attach a cancellation signal to a request init when one is present. */
 export function withSignal(init: RequestInit, signal: AbortSignal | undefined): RequestInit {
@@ -33,6 +58,7 @@ async function issueRuntimeSecretGrant(opts: {
   capabilityToken?: string;
   fetchImpl: FetchLike;
   signal?: AbortSignal;
+  onCredentialFailure?: CredentialFailureSink;
 }): Promise<string | null> {
   const base = opts.cloudEndpoint.replace(/\/$/, '');
   const url =
@@ -51,6 +77,7 @@ async function issueRuntimeSecretGrant(opts: {
       withSignal({ method: 'POST', headers, body: JSON.stringify({ purpose: 'hydrate', scanId: opts.scanId }) }, opts.signal),
     );
     if (!res.ok) {
+      await reportCredentialFailure(res, opts.onCredentialFailure);
       return null;
     }
     const body = (await res.json()) as { grant?: unknown };
@@ -76,6 +103,8 @@ export async function fetchHydratedProfile(opts: {
   fetchImpl: FetchLike;
   /** #2388 Task 7: cancels the grant and hydrate requests when the rbac lease ends. */
   signal?: AbortSignal;
+  /** P1F: receives the typed credential outcome when the cloud refused with one. */
+  onCredentialFailure?: CredentialFailureSink;
 }): Promise<HydratedProfile | null> {
   const base = opts.cloudEndpoint.replace(/\/$/, '');
   // F01b: mint a grant first; hydrate rejects (401) without `x-dino-runtime-grant`.
@@ -97,6 +126,7 @@ export async function fetchHydratedProfile(opts: {
   try {
     const res = await opts.fetchImpl(url, withSignal({ method: 'GET', headers }, opts.signal));
     if (!res.ok) {
+      await reportCredentialFailure(res, opts.onCredentialFailure);
       return null;
     }
     const profile = (await res.json()) as HydratedProfile;

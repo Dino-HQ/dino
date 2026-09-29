@@ -10,7 +10,7 @@ import {
   createObservedNativeFetch,
   observeTransport,
   type ObservedRequestInit,
-  isTenantConfigError,
+  isScanAbortingError,
   resolveAndValidateDNS,
 } from '@dino/core';
 import type {
@@ -30,6 +30,8 @@ export function withAuth(
   role: AccountRole = 'USER',
 ): PipelineExecutor {
   return async (document, variables, options) => {
+    // An explicitly anonymous probe carries no credential: do not fetch one for it.
+    if (options?.unauthenticated === true) return executor(document, variables, options);
     const token = options?.authToken ?? (await tokenFactory.getToken({ role }));
     return executor(document, variables, { ...options, authToken: token });
   };
@@ -119,11 +121,12 @@ export function buildTokenResolver(
     try {
       return await tokenFactory.getToken({ role, ...(signal ? { signal } : {}) });
     } catch (err) {
+      // A config error is the user's setup, not a failed authentication: rethrow it untouched and unlogged (#2343).
+      if (isScanAbortingError(err)) throw err;
       let message = 'unknown error';
       if (err instanceof Error) message = err.message;
       else if (typeof err === 'string') message = err;
       log.warn(`[Auth] Failed to authenticate as ${role}: ${message}`);
-      if (isTenantConfigError(err)) throw err;
       throw new Error(`Auth failure for role "${role}": ${message}`, {
         cause: err,
       });
@@ -141,6 +144,10 @@ export function validateRbacRoles(rbacRoles: string[], authRoles?: Array<{ id: s
     if (nonUnauth.length > 0) {
       throw new CliError(
         `RBAC role(s) ${nonUnauth.join(', ')} require auth.roles to be configured in tenant config.`,
+        5,
+        'Add the role(s) to auth.roles in tenant config.',
+        undefined,
+        'config',
       );
     }
     return;
@@ -153,6 +160,10 @@ export function validateRbacRoles(rbacRoles: string[], authRoles?: Array<{ id: s
       `RBAC role(s) not found in tenant auth.roles: ${unsupported.join(', ')}. ` +
         `Configured roles: UNAUTHENTICATED, ${[...configuredRoleIds].join(', ')}. ` +
         `Add the missing role(s) to auth.roles in tenant config.`,
+      5,
+      undefined,
+      undefined,
+      'config',
     );
   }
 }
@@ -173,6 +184,10 @@ export function validateConfigConsistency(
     throw new CliError(
       `RBAC roles ${missing.join(', ')} have no auth.roles config. ` +
         `Add credential entries for these roles in tenant YAML.`,
+      5,
+      undefined,
+      undefined,
+      'config',
     );
   }
 }

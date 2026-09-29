@@ -38,7 +38,7 @@ export {
   resolveTenantConfigDir,
   resolveAndValidateDNS,
 } from './tenant/tenant-loader';
-export { TenantConfigError, isTenantConfigError } from './tenant/tenant-config-error';
+export { TenantConfigError, isTenantConfigError, tenantConfigCode } from './tenant/tenant-config-error';
 export type { TenantConfigErrorKind } from './tenant/tenant-config-error';
 export type { DNSValidationResult } from './tenant/tenant-loader';
 // #1850 — Node-only SSRF-pinning fetch (runner/CLI path). MUST NOT be imported by the Workers cloud bundle
@@ -181,7 +181,19 @@ export type {
   UpstreamErrorCode,
   ErrorMeta,
   ErrorClass,
+  DispatchAmbiguousReason,
 } from './errors';
+export { ERROR_CONTRACT, errorContractFor } from './error-contract';
+export * from './credential-unavailable';
+export {
+  errorBodyExtraFields,
+  VALIDATION_ERROR_CODES,
+  AUTH_ERROR_CODES,
+  NOT_FOUND_ERROR_CODES,
+  CONFLICT_ERROR_CODES,
+  UPSTREAM_ERROR_CODES,
+} from './errors';
+export type { ErrorContractEntry, ErrorCliKind } from './error-contract';
 export {
   DinoError,
   DinoValidationError,
@@ -191,6 +203,53 @@ export {
   DinoUpstreamError,
   errorClassToCode,
 } from './errors';
+export type {
+  CredentialNextAction,
+  CredentialNextActionKind,
+  CredentialReasonCode,
+} from './credential-next-action';
+export {
+  CREDENTIAL_NEXT_ACTION_KINDS,
+  CREDENTIAL_REASON_CODES,
+  parseCredentialNextAction,
+} from './credential-next-action';
+export type { CredentialOutcomeCode } from './credential-outcome';
+export { credentialOutcomeError, isCredentialOutcomeCode } from './credential-outcome';
+export type {
+  TargetConnectionOutcomeCode,
+  TargetConnectionUnusableStatus,
+} from './target-connection-outcome';
+export {
+  targetConnectionNotAuthorizedError,
+  targetConnectionOutcomeError,
+} from './target-connection-outcome';
+export type {
+  TargetConnectionConfiguration,
+  TargetConnectionExecutionPlane,
+  TargetConnectionLifecycleAction,
+  TargetConnectionPrivateScope,
+  TargetConnectionProposal,
+  TargetConnectionPurpose,
+  TargetConnectionRedirectPolicy,
+  TargetConnectionRequestLimits,
+  TargetConnectionStatus,
+  TargetConnectionListView, TargetConnectionProposeCommand, TargetConnectionVersionView,
+} from './types/target-connection';
+export {
+  TARGET_CONNECTION_CONTRACT_VERSION,
+  TARGET_CONNECTION_EXECUTION_PLANES,
+  TARGET_CONNECTION_LIFECYCLE_ACTIONS,
+  TARGET_CONNECTION_LIMIT_CEILINGS,
+  TARGET_CONNECTION_MAX_AUTH_PROFILES, TARGET_CONNECTION_MAX_FORWARDING_HOSTS, TARGET_CONNECTION_MAX_PORTS,
+  TARGET_CONNECTION_PRIVATE_SCOPES,
+  TARGET_CONNECTION_PURPOSES,
+  TARGET_CONNECTION_REDIRECT_POLICIES,
+  TARGET_CONNECTION_STATUSES,
+  TARGET_CONNECTION_TRANSITIONS,
+  TargetConnectionListRefSchema, TargetConnectionProposalSchema,
+  TargetConnectionProposeCommandSchema, TargetConnectionVersionRefSchema,
+  canTransitionTargetConnection,
+} from './types/target-connection';
 
 // Safe path validation (path traversal prevention)
 export { safePath } from './utils/safe-path';
@@ -202,6 +261,7 @@ export { recordGet, recordSet } from './utils/safe-record';
 export {
   safeExistsSync,
   safeReadFileSync,
+  safeReadFileSyncContained,
   safeReaddirSync,
   safeMkdirSync,
   safeWriteFileSync,
@@ -216,8 +276,82 @@ export {
 export { sanitizeErrorMessage } from './utils/error-sanitizer';
 
 // Branded ID types (platform safety — compile-time wrong-ID prevention)
-export type { TenantId, RunnerId, ScanId } from './types/ids';
-export { asTenantId, asRunnerId, asScanId } from './types/ids';
+export type {
+  TenantId,
+  RunnerId,
+  ScanId,
+  PresentationRequestId,
+  CheckpointId,
+  CheckpointVersionId,
+  HumanActionRequestId,
+} from './types/ids';
+export {
+  asTenantId,
+  asRunnerId,
+  asScanId,
+  parsePresentationRequestId,
+  parseCheckpointId,
+  parseCheckpointVersionId,
+  parseHumanActionRequestId,
+} from './types/ids';
+
+// Presentation Request, Checkpoint and Human Action Request (DIN-1354)
+export {
+  PRESENTATION_REQUEST_STATUSES,
+  PRESENTATION_REQUEST_TRANSITIONS,
+  PRESENTATION_CAPABILITIES,
+  isPresentationRequestStatus,
+  canTransitionPresentationRequest,
+  isTerminalPresentationRequestStatus,
+  derivePresentationNextAction,
+} from './types/presentation-request';
+export type {
+  PresentationRequestStatus,
+  PresentationCapability,
+  CanonicalArtifactReference,
+  CheckpointSnapshot,
+  PresentationRequestView,
+} from './types/presentation-request';
+export {
+  HUMAN_ACTION_REQUEST_STATUSES,
+  HUMAN_CONTRIBUTION_KINDS,
+  HAR_ACTION_TYPES,
+  HAR_ACTION_CONTRIBUTION,
+  HAR_REGISTRY,
+  PRESENTATION_STEP_IDS,
+  PRESENTATION_REASON_CODES,
+  CREDENTIAL_REFERENCE_ID_PATTERN,
+  canTransitionHumanActionRequest,
+  harRegistryEntry,
+  buildHumanHandoffContract,
+  parsePresentationNextAction,
+  PresentationRequestRefSchema,
+  HumanActionRequestRefSchema,
+  HarSubmissionCommandSchema,
+  PresentationReopenCommandSchema,
+  INVOKABLE_CAPABILITIES,
+  canonicalCapabilityValue,
+  capabilityArgumentsDigest,
+  verifyReopenArguments,
+  reopenAction,
+} from './types/human-action-request';
+export type {
+  HumanActionRequestStatus,
+  HumanContributionKind,
+  HarActionType,
+  HarRegistryEntry,
+  HarRegistryEntryId,
+  HarResumeTarget,
+  HumanHandoffContract,
+  HarAcceptedResponse,
+  HumanActionRequestView,
+  PresentationNextAction,
+  PresentationReasonCode,
+  PresentationStepId,
+  HarSubmissionCommand,
+  InvokableCapabilityId,
+  ValidatedCapabilityArguments,
+} from './types/human-action-request';
 
 // Runner–cloud contract types (shared between CLI runner and cloud backend)
 export type { RunnerJob, RunnerResult, ScanAttestationWire } from './types/runner';
@@ -256,8 +390,6 @@ export {
   AdmittedOutcomeSchema,
   BOOTSTRAP_IDEMPOTENCY_KEY_MAX,
   BootstrapCommandSchema,
-  NextActionSchema,
-  deriveNextAction,
   normalizeBootstrapSemantics,
   normalizeTargetScope,
   projectBootstrapResult,
@@ -271,7 +403,6 @@ export type {
   BootstrapCommand,
   BootstrapResult,
   BootstrapStatus,
-  NextAction,
   BootstrapSemanticsInput,
   TargetDefinitionScope,
 } from './types/bootstrap';
@@ -315,7 +446,14 @@ export { TIER_NAMES, FEATURE_KEYS, GATE_TYPES } from './types/entitlement';
 export type { TierName, FeatureKey, GateType, EntitlementResult } from './types/entitlement';
 
 // SSRF guard used by @dino/auth flow-runner (exported so auth can import from the @dino/core barrel).
-export { checkEndpointUrl, isLoopbackHostname, STRICT_DESTINATION } from './tenant/endpoint-validator';
+export {
+  checkEndpointUrl,
+  isBlockedIPv4,
+  isLoopbackHostname,
+  parseIPv4Octets,
+  STRICT_DESTINATION,
+} from './tenant/endpoint-validator';
+export { isBlockedIPv6 } from './tenant/endpoint-validator-ipv6';
 export type { EndpointPolicyOptions } from './tenant/endpoint-validator';
 export { observeTransport, createObservedNativeFetch, mergeTransportStates } from './tenant/transport-observation';
 export type { TransportState, TransportObservation, TransportControl, ObservedRequestInit } from './tenant/transport-observation';

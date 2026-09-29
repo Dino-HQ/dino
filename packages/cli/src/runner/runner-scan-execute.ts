@@ -20,7 +20,7 @@ import type { RunnerRbacWire } from './runner-scan-auth-wiring';
 import type { AcquiredScanAuth } from './scan-auth';
 import type { RunnerState } from './state-store';
 import type { CommandContext } from '../shared/base-command';
-import { resolveVerificationTarget, type DinoResult, type RunnerJob, type RunnerResult, type VerificationTarget, STRICT_DESTINATION } from '@dino/core';
+import { resolveVerificationTarget, type CredentialOutcomeCode, type DinoResult, type RunnerJob, type RunnerResult, type VerificationTarget, STRICT_DESTINATION } from '@dino/core';
 
 /** The engine boundary the runner drives: options in, the canonical `DinoResult` out (Cleanup V2 task 4c). */
 export type PipelineRunner = (options: PipelineOptions) => Promise<DinoResult>;
@@ -47,6 +47,7 @@ type ScanExecuteDeps = {
     tracker: NonNullable<PipelineOptions['tracker']>;
     hasRest: boolean;
     restExecutor: PipelineOptions['restExecutor'];
+    suppliedQueryParams?: PipelineOptions['suppliedQueryParams'];
     restOps: PipelineOptions['restOperations'];
     discoveryRaw: unknown;
     discovery: PipelineOptions['discovery'];
@@ -196,7 +197,7 @@ export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
 }
 
 type ResolvedRestExecutor =
-  | { ok: false; error: 'auth_failed' }
+  | { ok: false; error: 'auth_failed'; credentialCode?: CredentialOutcomeCode }
   | {
       ok: true;
       restExecutor: PipelineOptions['restExecutor'];
@@ -207,6 +208,7 @@ type ResolvedRestExecutor =
       authLost: () => boolean;
       rotatedRefreshToken: () => string | undefined;
       rbac?: RunnerRbacWire;
+      credentialFailure?: () => CredentialOutcomeCode | undefined;
     };
 
 async function resolveRestExecutor(
@@ -225,7 +227,7 @@ async function resolveRestExecutor(
     rand: deps.rand,
   });
   if (!authWire.ok) {
-    return { ok: false, error: 'auth_failed' };
+    return authWire;
   }
   return {
     ok: true,
@@ -237,6 +239,7 @@ async function resolveRestExecutor(
     ...(authWire.rbacDeclared === undefined ? {} : { rbacDeclared: authWire.rbacDeclared }),
     ...(baseRestExecutor === undefined ? {} : { rbacRestExecutor: baseRestExecutor }),
     ...(authWire.rbac === undefined ? {} : { rbac: authWire.rbac }),
+    ...(authWire.credentialFailure === undefined ? {} : { credentialFailure: authWire.credentialFailure }),
   };
 }
 
@@ -323,6 +326,14 @@ function startLiveScanWires(opts: ScanExecuteDeps): LiveScanWires {
   return { emitter, watch, signal: controller.signal, cancelObserved: () => cancelObserved };
 }
 
+/**
+ * #2326: the query parameters every REST request of this scan carries. Auth is acquired before the
+ * pipeline is assembled, and its query injections are the only query parameters the runner adds.
+ */
+export function runnerSuppliedQueryParams(getAuth: (() => AcquiredScanAuth) | undefined): string[] {
+  return (getAuth?.().injections ?? []).filter((i) => i.target === 'query').map((i) => i.name);
+}
+
 type PreparedScanContext = Awaited<ReturnType<typeof prepareRunnerScanContext>>;
 
 /** Assemble the buildPipelineOptions args (kept out of executeRunnerAssignment for the line cap). */
@@ -357,6 +368,7 @@ function assemblePipelineArgs(
     tracker: prepared.tracker,
     hasRest: prepared.hasRest,
     restExecutor: restWire.restExecutor,
+    suppliedQueryParams: runnerSuppliedQueryParams(restWire.getAuth),
     ...(restWire.rbacRestExecutor === undefined
       ? {}
       : { rbacRestExecutor: restWire.rbacRestExecutor }),
@@ -381,6 +393,10 @@ function assemblePipelineArgs(
   };
 }
 
+function credentialFailureField(code: CredentialOutcomeCode | undefined): { credentialFailure?: CredentialOutcomeCode } {
+  return code === undefined ? {} : { credentialFailure: code };
+}
+
 export async function executeRunnerAssignment(
   opts: ScanExecuteDeps & { pipelineRunner: PipelineRunner },
 ): Promise<RunnerResult> {
@@ -393,7 +409,9 @@ export async function executeRunnerAssignment(
       attemptId: assignment.attemptId,
       status: 'failed',
       error: 'auth_failed',
-      failureType: 'auth_failed',
+      // P1F: a typed credential outcome (revoked / stale / residency / reconfigure …) is reported as-is
+      // so the scan carries an honest, actionable reason instead of a generic auth failure.
+      failureType: restWire.credentialCode ?? 'auth_failed',
     };
   }
 
@@ -415,6 +433,7 @@ export async function executeRunnerAssignment(
       cliVersion: CLI_VERSION,
       rotatedRefreshToken: restWire.rotatedRefreshToken(),
       authLost: restWire.authLost(),
+      ...credentialFailureField(restWire.credentialFailure?.()),
       cancelObserved: wires.cancelObserved(),
       schemaSnapshot,
       attest: (r) => (signer === null ? Promise.resolve(undefined) : attestCanonicalResult({ result: r, scanId: assignment.scanId, agentVersion: CLI_VERSION, signer })),

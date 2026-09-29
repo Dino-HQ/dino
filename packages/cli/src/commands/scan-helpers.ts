@@ -126,7 +126,7 @@ interface ScanToolsAndModules {
  * #2143: user-relevant product notice on stderr (quiet-aware, no em-dash / winston prefix).
  * #2160: the notice must not claim "no auth is configured" when the user supplied a credential.
  */
-function noticeRbacSkipped(context: CommandContext, flags: ScanFlags): void {
+function noticeRbacSkipped(context: CommandContext, flags: ScanFlags, authEnabled: boolean): void {
   const ui = detectUi({
     quiet: flags.quiet,
     noColor: flags.noColor,
@@ -141,9 +141,25 @@ function noticeRbacSkipped(context: CommandContext, flags: ScanFlags): void {
     );
     return;
   }
+  if (authEnabled) {
+    printNotice('RBAC test skipped: auth is enabled, but the tenant config has no rbac.roles to compare.', ui, {
+      hint: 'Add an rbac: section with the roles to test to your tenant config.',
+    });
+    return;
+  }
   printNotice('RBAC test skipped: no auth is configured for this API.', ui, {
     hint: 'Configure auth to test role-based access.',
   });
+}
+
+/**
+ * rbac-matrix cannot run: no auth, or auth with no roles to compare (the engine would drop it and, if it was the
+ * only tool asked for, fail with no tools at all, #2342). A static header on its own still yields the two-state matrix.
+ */
+function rbacCannotRun(context: CommandContext, resolved: ResolvedScanConfig, rbacRequested: boolean): boolean {
+  if (usesStaticHeaderAuth(context) && rbacRequested) return false;
+  const noRoles = (readRbacRolesFromContext(context)?.length ?? 0) === 0;
+  return !resolved.auth?.enabled || noRoles;
 }
 
 export function prepareScanToolsAndModules(
@@ -157,14 +173,13 @@ export function prepareScanToolsAndModules(
   // admission then withholds, dragging completeness down and turning today's exit 0 into a
   // partial-coverage exit 6 for every existing `--token` scan. Reachable, not imposed.
   const rbacRequested = flags.tools?.includes('rbac-matrix') === true;
-  const authAbsent =
-    !resolved.auth?.enabled && !(usesStaticHeaderAuth(context) && rbacRequested);
+  const authAbsent = rbacCannotRun(context, resolved, rbacRequested);
   const effectiveTools: ToolName[] | undefined = authAbsent
     ? (validatedTools ?? ([...VALID_TOOL_NAMES] as ToolName[])).filter((t) => t !== 'rbac-matrix')
     : validatedTools;
 
   if (authAbsent && flags.tools?.includes('rbac-matrix')) {
-    noticeRbacSkipped(context, flags);
+    noticeRbacSkipped(context, flags, resolved.auth?.enabled === true);
   }
 
   // Every requested tool was dropped as inapplicable. Handing the engine an empty list made it
@@ -196,6 +211,28 @@ export function logRbacRolesHintWhenMissing(
       'No rbac.roles in tenant config: skipping RBAC matrix. Add an rbac: section to your tenant YAML to enable.',
     );
   }
+}
+
+/**
+ * `auth.enabled` asks the tenant's auth adapter for role tokens. A tenant with no adapter (`none`, as every ad-hoc
+ * `--endpoint` tenant is) has none to give, so the scan is refused before discovery sends a request (#2636).
+ */
+export function assertTenantAuthUsable(
+  context: Pick<CommandContext, 'tenantConfig'>,
+  auth: { enabled: boolean } | undefined,
+): void {
+  const adapter = context.tenantConfig.auth?.adapter;
+  if (auth?.enabled !== true || (adapter !== undefined && adapter !== 'none')) return;
+  throw new CliError(
+    "auth.enabled is true but the tenant's auth.adapter is none, so there are no role credentials to use",
+    5,
+    'For a token or API key, set .dino.yml auth to { type: header, header, valueEnv } or { type: oauth2, ... }. ' +
+      "For role-based auth, set the tenant's auth.adapter to jwt, oauth2 or api-key.",
+    undefined,
+    'config',
+    'permanent',
+    'CONFIG_INVALID',
+  );
 }
 
 export function buildScanExecutor(

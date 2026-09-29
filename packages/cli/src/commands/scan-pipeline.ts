@@ -62,6 +62,7 @@ type ScanPipelinePhaseParams = {
   useAdHocFallback: boolean;
   restExecutor: ReturnType<typeof createRestExecutor> | undefined;
   restBaseUrl: string | undefined;
+  suppliedQueryParams?: readonly string[] | undefined;
   openApiSpec: unknown;
   restOperations: Operation[] | undefined;
   introspectionLevel?: ScanIntrospectionLevel | undefined;
@@ -84,6 +85,7 @@ async function runScanPipelinePhase(params: ScanPipelinePhaseParams): Promise<Di
     useAdHocFallback,
     restExecutor,
     restBaseUrl,
+    suppliedQueryParams,
     openApiSpec,
     restOperations,
     introspectionLevel,
@@ -109,6 +111,7 @@ async function runScanPipelinePhase(params: ScanPipelinePhaseParams): Promise<Di
     timeoutMs: resolvedConfig.timeoutMs,
     restExecutor,
     restBaseUrl,
+    ...(suppliedQueryParams === undefined ? {} : { suppliedQueryParams }),
     openApiSpec,
     restOperations,
     ...(rateLimitBurst === undefined ? {} : { rateLimitBurst }),
@@ -199,6 +202,7 @@ export interface PipelineCatalogOptions {
   rbacDefaultExpectations: DefaultExpectationsMap | undefined;
   restExecutor: ReturnType<typeof createRestExecutor> | undefined;
   restBaseUrl: string | undefined;
+  suppliedQueryParams?: readonly string[] | undefined;
   openApiSpec: unknown;
   restOperations: Operation[] | undefined;
   /** #202: discovery fidelity for durable report disclosure */

@@ -4,14 +4,18 @@
  */
 
 import {
+  DinoError,
+  type DinoErrorCode,
+  errorContractFor,
   isTenantConfigError,
-  sanitizeErrorMessage,
-  SsrfBlockedError,
-  winningKind,
   type OutcomeKind,
+  SsrfBlockedError,
+  sanitizeErrorMessage,
+  winningKind,
 } from '@dino/core';
-import { CliError, hasNextAction, type AskUserNextAction } from './errors';
+import { type AskUserNextAction, CliError, hasNextAction } from './errors';
 import { stripControlsAndAnsi } from './neutralize';
+import { ENVELOPE_EXIT_CODES } from './output-contract';
 
 /** True when err is an SSRF/DNS block the CLI should treat as usage (exit 2), not crash (#193).
  *  Prefix match only - a mid-message "SSRF blocked:" (e.g. wrapped GraphQL errors[]) must NOT match. */
@@ -40,12 +44,14 @@ export function boundErrorMessage(err: unknown): string {
 }
 
 /** The table, precedence and resolver live in `@dino/core` (Cleanup V2 task 2); re-exported unchanged. */
-export { EXIT_CODE, resolveExitCode, type OutcomeKind } from '@dino/core';
+export { EXIT_CODE, type OutcomeKind, resolveExitCode } from '@dino/core';
 
 export interface RuntimeOutcomeError {
   kind: string;
   message: string;
   retryable: 'transient' | 'permanent';
+  /** Stable Dino identity when known (DinoError, a cloud error body, or a CliError carrying one). */
+  code?: DinoErrorCode;
   input?: unknown;
   suggestion?: string;
   nextAction?: AskUserNextAction;
@@ -60,7 +66,6 @@ export interface RuntimeOutcome {
   error?: RuntimeOutcomeError;
 }
 
-const ENVELOPE_EXIT_CODES = new Set([2, 4, 5, 70]);
 
 /** Pure: JSON envelope string for exits 2/4/5/70; null otherwise (INV-3). */
 export function envelopeFor(o: RuntimeOutcome, exitCode: number): string | null {
@@ -77,6 +82,8 @@ export function envelopeFor(o: RuntimeOutcome, exitCode: number): string | null 
     retryable: err.retryable,
     exitCode,
   };
+  // D2: the stable Dino identity, additive, so an agent keys on the same code HTTP sends.
+  if (err.code !== undefined) body.code = err.code;
   if (err.input !== undefined) body.input = sanitizeInput(err.input);
   if (err.suggestion !== undefined) body.suggestion = sanitizeErrorMessage(err.suggestion);
   const out: Record<string, unknown> = { error: body };
@@ -190,48 +197,130 @@ export function isTransientError(err: unknown): boolean {
   return hasTransientHttpStatus(raw);
 }
 
+/**
+ * #201: rewrite endpoint-validation jargon at the CLI boundary.
+ * Returns undefined when the message is not an endpoint-validation error.
+ */
+function humanizeEndpointValidationError(message: string): string | undefined {
+  // All engine SSRF/DNS errors carry the literal "SSRF blocked:" prefix + a reason code.
+  if (message.includes('SSRF blocked:')) {
+    if (message.includes('dns_resolution_failed')) {
+      return "We couldn't find that host. Check the endpoint URL for a typo and try again.";
+    }
+    if (
+      message.includes('blocked_ipv4') ||
+      message.includes('blocked_ipv6') ||
+      message.includes('metadata_host') ||
+      message.includes('unparseable_mapped_ip')
+    ) {
+      return "That endpoint points to a private or internal address, so Dino won't test it. Use a public API endpoint.";
+    }
+    if (message.includes('wrong_protocol')) {
+      return 'The endpoint URL must start with http:// or https://.';
+    }
+    if (message.includes('malformed_url')) {
+      return "That endpoint URL isn't valid. Example: https://api.example.com/graphql";
+    }
+    // Unknown/future reason code — never leak "SSRF blocked … <code>".
+    return "Dino couldn't test that endpoint: it didn't pass an address safety check.";
+  }
+  return undefined;
+}
+
+/** Known node/network failure signatures → product text; undefined when none matches. */
+function humanizeNetworkError(haystack: string, name: string, message: string): string | undefined {
+  if (haystack.includes('ECONNRESET') || message.includes('socket hang up')) {
+    return 'The connection to the API was closed unexpectedly. Check the endpoint and your network.';
+  }
+  if (haystack.includes('ENOTFOUND')) {
+    return "Couldn't resolve the endpoint host. Check the URL.";
+  }
+  if (haystack.includes('ECONNREFUSED')) {
+    return 'The endpoint refused the connection. Is it running and reachable?';
+  }
+  if (haystack.includes('ETIMEDOUT') || name === 'AbortError' || haystack.includes('AbortError')) {
+    return 'The request timed out. The endpoint may be slow or unreachable.';
+  }
+  if (message.includes('fetch failed')) {
+    return "Couldn't reach the endpoint. Check the URL and your network.";
+  }
+  return undefined;
+}
+
+/**
+ * #174/#201: map known node/network and endpoint-validation errors to clean product text.
+ * Default arm keeps the original `.message` (bounded). Never interpolates the raw error object or
+ * `process.env` — map by code/name/message substrings only. This is the ONE place a failure's
+ * human message is built (#2196 D5), so the prose and the stderr envelope carry the same words.
+ */
+export function humanizeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : '';
+  let code = '';
+  if (err !== null && typeof err === 'object') {
+    const rawCode = Reflect.get(err, 'code');
+    if (typeof rawCode === 'string') {
+      code = rawCode;
+    }
+  }
+  const haystack = `${code} ${name} ${message}`;
+
+  // #193: single-source with classifyCaughtKind - prefix/class only (not message substring).
+  if (isSsrfBlockedError(err)) {
+    const endpointMsg = humanizeEndpointValidationError(message);
+    if (endpointMsg !== undefined) return endpointMsg;
+  }
+
+  // #201: node's own malformed-URL TypeError. Anchor on the stable ERR_INVALID_URL code,
+  // not a message substring, so a target API's error text can't false-match.
+  if (code === 'ERR_INVALID_URL') {
+    return "That endpoint URL isn't valid. Example: https://api.example.com/graphql";
+  }
+  const network = humanizeNetworkError(haystack, name, message);
+  if (network !== undefined) return network;
+  return boundErrorMessage(err);
+}
+
+/** The one canonical, sanitized failure message both the prose and the envelope render (#2196 D5). */
+export function canonicalFailureMessage(err: unknown): string {
+  return sanitizeErrorMessage(humanizeError(err));
+}
+
 /** Classify a watch/iteration failure through the canonical caught-error path. */
 export function outcomeKindFromIterationError(err: unknown): OutcomeKind {
   return outcomeFromCaughtError(err).kind;
 }
 
-function kindFromExitCode(exitCode: number): OutcomeKind {
-  switch (exitCode) {
-    case 2:
-      return 'usage';
-    case 3:
-      return 'policy';
-    case 4:
-      return 'transient';
-    case 5:
-      return 'config';
-    case 6:
-      return 'partial';
-    case 70:
-      return 'crash';
-    default:
-      // Bare/legacy `1` and unknown codes collapse to the crash floor.
-      return 'crash';
-  }
-}
-
 const RESULT_ONLY_KINDS = new Set<OutcomeKind>(['clean', 'findings_below', 'policy', 'partial']);
 
 function classifyCaughtKind(err: unknown): OutcomeKind {
-  if (err instanceof CliError) {
-    if (err.kind !== undefined) return err.kind;
-    if (err.exitCode !== 1) return kindFromExitCode(err.exitCode);
-  }
-  // #193: after CliError (so exit-1 kindless SSRF CliError falls through here), before transient.
+  // Every CliError declares its honest kind (required since #2173's error-contract migration).
+  if (err instanceof CliError) return err.kind;
+  // A DinoError carries a stable code; the contract table decides its CLI kind (never message text).
+  // A code with no CLI projection (null) is one no CLI path should raise; reaching it is a CLI defect, so it
+  // is `crash` rather than a guessed kind. The envelope still carries the code and its table retryability.
+  if (err instanceof DinoError) return errorContractFor(err.code).cliKind ?? 'crash';
+  // #193: a raw SSRF/DNS block is usage, before the transient heuristics.
   if (isSsrfBlockedError(err)) return 'usage';
   if (isTenantConfigError(err)) return err.kind;
   return isTransientError(err) ? 'transient' : 'crash';
 }
 
 function retryableForCaught(kind: OutcomeKind, err: unknown): 'transient' | 'permanent' {
+  // A DinoError's retryability is the table's, per code — never inferred from its CLI kind.
+  if (err instanceof DinoError)
+    return errorContractFor(err.code).retryable ? 'transient' : 'permanent';
   if (kind === 'transient') return 'transient';
   if (err instanceof CliError) return err.retryable;
   return 'permanent';
+}
+
+/** The stable Dino code for a caught error, when it has one. */
+function codeForCaught(err: unknown): DinoErrorCode | undefined {
+  if (err instanceof DinoError) return err.code;
+  if (isTenantConfigError(err)) return err.code;
+  if (err instanceof CliError) return err.code;
+  return undefined;
 }
 
 /**
@@ -252,9 +341,12 @@ export function outcomeFromCaughtError(err: unknown): RuntimeOutcome {
 
   const error: RuntimeOutcomeError = {
     kind,
-    message: sanitizeErrorMessage(boundErrorMessage(err)),
+    // D5: the canonical, humanized message — the same words the prose renders.
+    message: canonicalFailureMessage(err),
     retryable,
   };
+  const code = codeForCaught(err);
+  if (code !== undefined) error.code = code;
   if (err instanceof CliError && err.hint !== undefined) {
     error.suggestion = err.hint;
   }
