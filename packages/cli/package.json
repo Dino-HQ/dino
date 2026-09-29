@@ -1,6 +1,6 @@
 {
   "name": "@dino-hq/cli",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "type": "module",
   "description": "The deterministic verification layer for APIs. An independent, reproducible verdict on whether an API change is correct, secure, and safe to ship — for AI agents, CI, and developers.",
   "license": "MIT",
@@ -67,17 +67,15 @@
     "@dino/engine": "*",
     "@dino/plugins": "*",
     "chalk": "^5.6.2",
+    "ci-info": "^4.4.0",
     "cosmiconfig": "^9.0.2",
     "esbuild": "^0.28.2",
     "ink": "7.1.1",
     "ora": "^8.2.0",
     "prompts": "^2.4.2",
-    "react": "^19.2.8"
+    "react": "^19.3.0"
   },
   "engines": {
     "node": ">=22"
-  },
-  "dependencies": {
-    "ci-info": "^4.4.0"
   }
 }
