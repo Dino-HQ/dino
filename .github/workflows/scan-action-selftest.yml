@@ -61,3 +61,42 @@ jobs:
           test "$CODE" = 2
           test "$WRITTEN" = false
           test ! -e .dino/reports/scan-report.sarif
+
+  # The full SARIF flow with a CLI that supports it: Dino reads this ref's previous analysis (none,
+  # since this job never uploads), writes SARIF and its state, and the action keeps the state as an
+  # artifact. upload-sarif is off so the smoke endpoint never files alerts in this repository.
+  sarif:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: read   # read the previous Dino analysis for this ref
+      actions: read           # read its state artifact
+    concurrency:
+      group: dino-sarif-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan (SARIF)
+        id: scan
+        uses: ./.github/actions/scan
+        with:
+          api-url: https://dino-smoke-endpoint.comiblock-security-center.workers.dev/graphql
+          format: sarif
+          cli-version: 1.3.0
+          accept-partial: true
+          upload-sarif: false
+
+      - name: SARIF written, reconciled and its state kept
+        shell: bash
+        env:
+          CODE: ${{ steps.scan.outputs.exit-code }}
+          WRITTEN: ${{ steps.scan.outputs.sarif-written }}
+          REPORT: ${{ steps.scan.outputs.report-path }}
+        run: |
+          test "$CODE" = 0
+          test "$WRITTEN" = true
+          test "$(jq -r .version "$REPORT")" = 2.1.0
+          test "$(jq '.runs | length' "$REPORT")" = 1
+          # The run segment marks an upload that carries Dino reconciliation state.
+          jq -r '.runs[0].automationDetails.id' "$REPORT" | grep -Eq '/s1\.[0-9a-f]{32}$'
