@@ -6,7 +6,7 @@
 
 import { canonicalDinoResultBytes, parseDinoResultV1 } from '@dino/core';
 
-export type ContractFormat = 'json' | 'markdown';
+export type ContractFormat = 'json' | 'markdown' | 'sarif';
 
 export interface LiveLeg {
   format: ContractFormat;
@@ -89,6 +89,20 @@ export function checkJsonFraming(stdout: string): {
   } catch (err) {
     return { pure: true, schemaValid: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * SARIF (#2177): stdout is exactly one SARIF 2.1.0 document with one run, serialised as `emitResult`
+ * writes it (2-space JSON plus one newline); any other byte on stdout is not the result → pure:false.
+ */
+export function checkSarifFraming(stdout: string): { pure: boolean; error?: string } {
+  const frame = parseStdoutJson(stdout);
+  if (!frame.ok) return { pure: false, error: frame.error };
+  const doc = frame.parsed as { version?: unknown; runs?: unknown };
+  if (doc.version !== '2.1.0') return { pure: false, error: 'stdout is not a SARIF 2.1.0 document' };
+  if (!Array.isArray(doc.runs) || doc.runs.length !== 1) return { pure: false, error: 'a Dino SARIF document has exactly one run' };
+  if (stdout !== `${JSON.stringify(frame.parsed, null, 2)}\n`) return { pure: false, error: 'stdout carries bytes outside the SARIF document' };
+  return { pure: true };
 }
 
 /** Lines outside markdown fenced code blocks (customer fences ignored - INV-2). */
@@ -192,11 +206,15 @@ export function checkDeterministicCores(
  * false-red as a Dino output regression (INV-5). */
 const RESULT_EXIT_CODES = new Set([0, 3, 6]);
 
-/** The result-document checks: canonical JSON framing, or a markdown logger leak. */
+/** The result-document checks: canonical JSON framing, SARIF framing, or a markdown logger leak. */
 function evaluateResultDocument(leg: LiveLeg): string[] {
   if (leg.format === 'json') {
     const framing = checkJsonFraming(leg.stdout);
     return framing.pure && framing.schemaValid ? [] : [`json: ${framing.error ?? 'framing or schema failure'}`];
+  }
+  if (leg.format === 'sarif') {
+    const framing = checkSarifFraming(leg.stdout);
+    return framing.pure ? [] : [`sarif: ${framing.error ?? 'framing failure'}`];
   }
   const leak = detectLoggerEnvelopeLeak(leg.stdout);
   return leak.leaked ? [`markdown logger leak: ${leak.line ?? 'detected'}`] : [];

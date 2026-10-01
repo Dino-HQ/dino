@@ -20,8 +20,10 @@ import {
 } from '@dino/engine';
 import { buildAdHocRegistry } from './scan-helpers';
 import { formatScanResultForOutput } from './scan-pipeline-format';
+import { emitScanSarif, type SarifMode } from './scan-sarif';
 import { shouldRenderInkView } from '../ink/InkRender';
 import { emitResult } from '../shared/emit-result';
+import { CliError } from '../shared/errors';
 import { findingMass } from '../shared/finding-mass';
 import { discoveryRead, type ScanStructureSource } from '../shared/introspection-level';
 import { safeUserPath } from '../shared/safe-user-path';
@@ -209,6 +211,10 @@ export interface PipelineCatalogOptions {
   introspectionLevel?: ScanIntrospectionLevel | undefined;
   /** #2306: structure provenance for report meta */
   structureSource?: 'live' | 'sdl' | undefined;
+  /** `--format sarif`: the repository file findings attach to, resolved before the scan started. */
+  sarifAnchorUri?: string | undefined;
+  /** `--format sarif`: stateless, or reconciled with GitHub code scanning (resolved before the scan started). */
+  sarifMode?: SarifMode | undefined;
 }
 
 /** #2269: exported for cross-surface tests: the one place the report, the card and the exit code read the result. */
@@ -219,8 +225,10 @@ export async function outputScanResult(params: {
   graphqlOps: GraphQLOperation[];
   restOperations?: readonly Operation[] | undefined;
   result: DinoResult;
+  sarifAnchorUri?: string | undefined;
+  sarifMode?: SarifMode | undefined;
 }): Promise<number> {
-  const { flags, resolvedConfig, context, graphqlOps, restOperations, result } = params;
+  const { flags, resolvedConfig, context, graphqlOps, restOperations, result, sarifAnchorUri, sarifMode } = params;
   await persistScanSnapshot({ resolvedConfig, graphqlOps, restOperations, context });
 
   if (result.verdict.degraded) {
@@ -229,8 +237,14 @@ export async function outputScanResult(params: {
   }
   // #2143: the report IS the result - always emit it to stdout, even with --quiet.
   // #2172: sole stdout writer is emitResult (INV-1). JSON is the canonical bytes, verbatim.
-  const output = formatScanResultForOutput(result, resolvedConfig.format);
-  emitResult(output, { format: resolvedConfig.format === 'json' ? 'canonical' : 'markdown' });
+  if (resolvedConfig.format === 'sarif') {
+    // Resolved before the scan (requireSarifAnchor, resolveSarifMode); never invented here.
+    if (sarifAnchorUri === undefined || sarifMode === undefined) throw new CliError('--format sarif was requested without a repository file to anchor findings to.', 2, undefined, undefined, 'usage');
+    await emitScanSarif({ result, anchorUri: sarifAnchorUri, modules: flags.modules, mode: sarifMode, quiet: flags.quiet === true });
+  } else {
+    const output = formatScanResultForOutput(result, resolvedConfig.format);
+    emitResult(output, { format: resolvedConfig.format === 'json' ? 'canonical' : 'markdown' });
+  }
 
   await tryRenderScanInkSummary({ flags, resolvedConfig, result });
 
@@ -241,7 +255,7 @@ export async function outputScanResult(params: {
 export async function runPipelineCatalogSnapshotAndPrint(
   options: PipelineCatalogOptions,
 ): Promise<number> {
-  const { context, flags, resolvedConfig, graphqlOps, restOperations, ...pipelineParams } = options;
+  const { context, flags, resolvedConfig, graphqlOps, restOperations, sarifAnchorUri, sarifMode, ...pipelineParams } = options;
   const useAdHocFallback = shouldFallBackToAdHocRegistry(context);
   logAdHocRegistryHintIfNeeded(context, useAdHocFallback);
 
@@ -262,6 +276,8 @@ export async function runPipelineCatalogSnapshotAndPrint(
     graphqlOps,
     restOperations,
     result,
+    sarifAnchorUri,
+    sarifMode,
   });
 }
 

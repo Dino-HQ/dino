@@ -3,7 +3,7 @@ import type { UiOptions } from '../shared/ui';
 import type { ReactNode } from 'react';
 
 /**
- * True when Ink summary views may render (TTY, not quiet, not JSON format).
+ * True when Ink summary views may render (TTY, not quiet, Markdown output).
  * Issue #1014 INV-1, INV-3.
  */
 export function shouldRenderInkView(
@@ -13,7 +13,8 @@ export function shouldRenderInkView(
   if (options.quiet) {
     return false;
   }
-  if (options.format === 'json') {
+  // The card is for people reading a Markdown report; machine formats (json, sarif) keep stdout pure.
+  if (options.format !== undefined && options.format !== 'markdown') {
     return false;
   }
   return ui.ink === true;

@@ -3,8 +3,9 @@
  * Spec: docs/CLI_SPEC.md §5.1
  */
 
+import { execFileSync } from 'node:child_process';
 import { createRestExecutor } from '@dino/agents';
-import { resolveConfig, recordSet, createPinnedFetch } from '@dino/core';
+import { resolveConfig, resolveTenantConfigDir, recordSet, createPinnedFetch } from '@dino/core';
 import { isReducedCoverage } from '@dino/engine';
 import {
   logVerboseDefaultsForScan,
@@ -25,6 +26,8 @@ import {
   withTracking,
 } from '../shared/base-command';
 import { CliError, NeedsInputError } from '../shared/errors';
+import { requireSarifAnchor } from '../shared/sarif-anchor';
+import { resolveSarifMode } from './scan-sarif';
 import { SCAN_ENDPOINT_DESCRIPTOR, resumeArgsForScan } from '../shared/scan-needs-input';
 import { detectUi, createSpinner, printNotice, printHeaderBanner } from '../shared/ui';
 import { CLI_VERSION } from '../version';
@@ -48,6 +51,10 @@ export interface ScanFlags extends CommonFlags {
   acceptPartial?: boolean;
   /** Requests per rate-limit burst; a burst below the common limit floor cannot disprove a limit. */
   burst?: number;
+  /** `--format sarif` in GitHub Actions: where to write the reconciliation state the next run reads. */
+  sarifState?: string;
+  /** `--format sarif` in GitHub Actions: a complete run replaces the previous analysis as is (lost state recovery). */
+  sarifRebaseline?: boolean;
 }
 
 /**
@@ -276,6 +283,36 @@ async function discoverAndPrepareScan(
   };
 }
 
+/** `git ls-files --error-unmatch`: an existing but untracked or ignored file is not in the repository. */
+function isTrackedByGit(absolutePath: string, workspace: string): boolean {
+  try {
+    // Ask the workspace's own repository: a git hook exports GIT_DIR / GIT_INDEX_FILE, which would point
+    // this question at whichever repository ran the hook.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+    execFileSync('git', ['ls-files', '--error-unmatch', '--', absolutePath], { cwd: workspace, env, stdio: 'ignore' });
+    return true;
+  } catch {
+    // Not tracked, not a repository, or no git: all mean the file cannot anchor a GitHub alert.
+    return false;
+  }
+}
+
+function sarifAnchorFor(context: CommandContext, flags: ScanFlags): string {
+  const api = context.tenantConfig.apis[0];
+  const cwd = process.cwd();
+  const workspace = process.env.GITHUB_WORKSPACE ?? cwd;
+  return requireSarifAnchor({
+    specPath: api?.type === 'rest' ? api.specPath : undefined,
+    schemaPath: api?.type === 'graphql' ? api.schemaPath : undefined,
+    tenantConfigDir: resolveTenantConfigDir(),
+    configPath: typeof flags.configPath === 'string' ? flags.configPath : undefined,
+    workflowRef: process.env.GITHUB_WORKFLOW_REF,
+    workspace,
+    cwd,
+    isTracked: (p) => isTrackedByGit(p, workspace),
+  });
+}
+
 async function executeScanBody(context: CommandContext, flags: ScanFlags): Promise<number> {
   const resolvedConfig: ResolvedScanConfig = resolveConfig({
     endpoint: flags.endpoint,
@@ -292,9 +329,13 @@ async function executeScanBody(context: CommandContext, flags: ScanFlags): Promi
     verbose: flags.verbose,
   });
 
+  // Before any request: a SARIF with no repository file to attach findings to, or a workflow that cannot
+  // reconcile with code scanning, is refused (exit 2), not invented.
+  const sarifAnchorUri = resolvedConfig.format === 'sarif' ? sarifAnchorFor(context, flags) : undefined;
+  const sarifMode = resolvedConfig.format === 'sarif' ? resolveSarifMode(flags, process.env) : undefined;
   logVerboseDefaultsForScan(flags, resolvedConfig);
   const options = await discoverAndPrepareScan(context, flags, resolvedConfig);
-  return runPipelineCatalogSnapshotAndPrint(options);
+  return runPipelineCatalogSnapshotAndPrint({ ...options, sarifAnchorUri, sarifMode });
 }
 
 /**

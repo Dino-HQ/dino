@@ -6,7 +6,7 @@ import { createRestExecutor } from '@dino/agents';
 import { createTracker, createNoopAdapter } from '@dino/analytics';
 import type { AttestationSigner, ToolName, PipelineOptions, Timer } from '@dino/engine';
 import { attestCanonicalResult } from './runner-attestation';
-import { buildCompletedRunnerResult, buildRunnerSchemaSnapshot } from './runner-scan-result';
+import { buildCompletedRunnerResult, buildRunnerSchemaSnapshot, failedRunnerResult } from './runner-scan-result';
 import { startCancelWatch } from './cancel-watch';
 import { createScanLogEmitter } from './log-emitter';
 import { resolveRunnerRestSpec } from './runner-rest-spec';
@@ -20,7 +20,7 @@ import type { RunnerRbacWire } from './runner-scan-auth-wiring';
 import type { AcquiredScanAuth } from './scan-auth';
 import type { RunnerState } from './state-store';
 import type { CommandContext } from '../shared/base-command';
-import { resolveVerificationTarget, type CredentialOutcomeCode, type DinoResult, type RunnerJob, type RunnerResult, type VerificationTarget, STRICT_DESTINATION } from '@dino/core';
+import { ExecutorHttpError, resolveVerificationTarget, type AuthenticationAcquisitionReport, type CredentialOutcomeCode, type DinoResult, type RunnerJob, type RunnerResult, type VerificationTarget, STRICT_DESTINATION } from '@dino/core';
 
 /** The engine boundary the runner drives: options in, the canonical `DinoResult` out (Cleanup V2 task 4c). */
 export type PipelineRunner = (options: PipelineOptions) => Promise<DinoResult>;
@@ -77,15 +77,26 @@ type ScanExecuteDeps = {
 export function withRunnerScanAuth(
   executor: PipelineOptions['executor'],
   getAuth: () => AcquiredScanAuth,
+  onFinalStatus?: (status: number) => void,
 ): PipelineOptions['executor'] {
   return async (document, variables, options) => {
     // The anonymous cell is the control every other cell is compared against: it gets none of the
     // acquired credential, in any of its forms.
     if (options?.unauthenticated === true) return executor(document, variables, options);
-    return executor(document, variables, {
-      ...options,
-      ...acquiredCredential(getAuth(), options?.authToken),
-    });
+    const ownContext = options?.authToken === undefined;
+    try {
+      const response = await executor(document, variables, {
+        ...options,
+        ...acquiredCredential(getAuth(), options?.authToken),
+      });
+      // DIN-1492: the Target's answer to a request made with the run's own acquired context. A caller-supplied
+      // token (an RBAC role cell) is a designed probe, never a rejection of that context.
+      if (ownContext && typeof response.status === 'number') onFinalStatus?.(response.status);
+      return response;
+    } catch (error) {
+      if (ownContext && error instanceof ExecutorHttpError) onFinalStatus?.(error.status);
+      throw error;
+    }
   };
 }
 
@@ -197,7 +208,12 @@ export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
 }
 
 type ResolvedRestExecutor =
-  | { ok: false; error: 'auth_failed'; credentialCode?: CredentialOutcomeCode }
+  | {
+      ok: false;
+      error: 'auth_failed';
+      credentialCode?: CredentialOutcomeCode;
+      authentication?: AuthenticationAcquisitionReport;
+    }
   | {
       ok: true;
       restExecutor: PipelineOptions['restExecutor'];
@@ -209,6 +225,8 @@ type ResolvedRestExecutor =
       rotatedRefreshToken: () => string | undefined;
       rbac?: RunnerRbacWire;
       credentialFailure?: () => CredentialOutcomeCode | undefined;
+      authentication?: () => AuthenticationAcquisitionReport | undefined;
+      targetResponse?: (status: number) => void;
     };
 
 async function resolveRestExecutor(
@@ -240,6 +258,8 @@ async function resolveRestExecutor(
     ...(baseRestExecutor === undefined ? {} : { rbacRestExecutor: baseRestExecutor }),
     ...(authWire.rbac === undefined ? {} : { rbac: authWire.rbac }),
     ...(authWire.credentialFailure === undefined ? {} : { credentialFailure: authWire.credentialFailure }),
+    ...(authWire.authentication === undefined ? {} : { authentication: authWire.authentication }),
+    ...(authWire.targetResponse === undefined ? {} : { targetResponse: authWire.targetResponse }),
   };
 }
 
@@ -357,6 +377,7 @@ function assemblePipelineArgs(
   const authedExecutor = withRunnerScanAuth(
     prepared.executor,
     restWire.getAuth ?? (() => ({ authFailed: false })),
+    restWire.targetResponse,
   );
   return {
     state: opts.state,
@@ -412,6 +433,7 @@ export async function executeRunnerAssignment(
       // P1F: a typed credential outcome (revoked / stale / residency / reconfigure …) is reported as-is
       // so the scan carries an honest, actionable reason instead of a generic auth failure.
       failureType: restWire.credentialCode ?? 'auth_failed',
+      ...(restWire.authentication === undefined ? {} : { authentication: restWire.authentication }),
     };
   }
 
@@ -433,11 +455,15 @@ export async function executeRunnerAssignment(
       cliVersion: CLI_VERSION,
       rotatedRefreshToken: restWire.rotatedRefreshToken(),
       authLost: restWire.authLost(),
+      authentication: restWire.authentication?.(),
       ...credentialFailureField(restWire.credentialFailure?.()),
       cancelObserved: wires.cancelObserved(),
       schemaSnapshot,
       attest: (r) => (signer === null ? Promise.resolve(undefined) : attestCanonicalResult({ result: r, scanId: assignment.scanId, agentVersion: CLI_VERSION, signer })),
     });
+  } catch (error) {
+    // DIN-1492: context was acquired before this failure; the report of what the run proved survives it.
+    return failedRunnerResult(assignment, error, restWire.authentication?.());
   } finally {
     wires.watch.stop();
     await wires.emitter.stop();

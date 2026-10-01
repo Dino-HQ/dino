@@ -11,6 +11,7 @@
  */
 
 import type { ScanId, TenantId } from './ids';
+import type { AuthenticationAcquisitionReport } from './scan-authentication';
 
 /**
  * A scan assignment sent from cloud to runner.
@@ -95,6 +96,8 @@ export type RunnerResult =
       attestation?: ScanAttestationWire | undefined;
       /** Rotated OAuth2 refresh_token to persist across scans (#1759 #30). */
       rotatedRefreshToken?: string | undefined;
+      /** DIN-1492: the run-scoped authentication outcome; omitted when the runner acquired nothing. */
+      authentication?: AuthenticationAcquisitionReport | undefined;
       /**
        * Runner-built GraphQL schema fingerprint (#2110). Optional — older runners and REST-only
        * scans omit it; cloud persists fail-soft when present.
@@ -110,6 +113,8 @@ export type RunnerResult =
       failureType?: string | undefined;
       /** Rotated OAuth2 refresh_token to persist across scans (#1759 #30). */
       rotatedRefreshToken?: string | undefined;
+      /** DIN-1492: the run-scoped authentication outcome; omitted when the runner acquired nothing. */
+      authentication?: AuthenticationAcquisitionReport | undefined;
     }
   | {
       scanId: ScanId;
@@ -124,4 +129,6 @@ export type RunnerResult =
       toolsCompletedCount: number;
       /** Rotated OAuth2 refresh_token to persist across scans (#1759 #30). */
       rotatedRefreshToken?: string | undefined;
+      /** DIN-1492: the run-scoped authentication outcome; omitted when the runner acquired nothing. */
+      authentication?: AuthenticationAcquisitionReport | undefined;
     };

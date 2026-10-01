@@ -89,7 +89,7 @@ export interface SubtleDigest {
 }
 
 /** SHA-256 of the canonical bytes, hex. Web Crypto so Node and Workers hash identically. */
-export async function dinoResultDigest(bytes: string, subtle: SubtleDigest = globalThis.crypto.subtle): Promise<string> {
+export async function dinoResultDigest(bytes: string, subtle: SubtleDigest = crypto.subtle): Promise<string> {
   const data = new TextEncoder().encode(bytes);
   return toHex(await subtle.digest('SHA-256', data));
 }

@@ -76,7 +76,7 @@ export const COMMON_PRESENTATION_FLAGS = {
     name: '--format',
     arg: '<markdown|json>',
     type: 'string',
-    description: 'Output format: markdown | json',
+    description: 'Output format: markdown | json | sarif (sarif: dino scan only, for GitHub code scanning)',
   },
   quiet: {
     name: '--quiet',

@@ -5,7 +5,7 @@
 
 import { SystemTimer } from '@dino/engine';
 import { ERROR_CONTRACT } from '@dino/core';
-import type { DinoErrorCode, ScanAttestationWire } from '@dino/core';
+import type { AuthenticationAcquisitionReport, DinoErrorCode, ScanAttestationWire } from '@dino/core';
 import type { Timer } from '@dino/engine';
 
 /** The failureType is a stable DinoErrorCode (e.g. a credential outcome), not a legacy discriminator. */
@@ -29,6 +29,7 @@ function failedResultBody(reason: string, extras: ScanFailedExtras): Record<stri
   const code = knownErrorCode(extras.failureType);
   if (code !== undefined) body.errorCode = code;
   if (extras.rotatedRefreshToken !== undefined) body.rotatedRefreshToken = extras.rotatedRefreshToken;
+  if (extras.authentication !== undefined) body.authentication = extras.authentication;
   return body;
 }
 
@@ -42,6 +43,8 @@ const RETRY_BASE_MS = 100;
 export type TerminalReportExtras = {
   attemptId: string;
   rotatedRefreshToken?: string;
+  /** DIN-1492: what this run proved about authentication (codes and counts only). */
+  authentication?: AuthenticationAcquisitionReport;
   /** Pool identity: scan-bound capability sent as x-dino-scan-capability (Spec B - a pool JWT carries no tenant claim). */
   capabilityToken?: string;
 };
@@ -165,6 +168,7 @@ export function createCloudReporter(
       if (report.attestation !== undefined) body.attestationBundle = report.attestation.bundle;
       if (report.schemaSnapshot !== undefined) body.schemaSnapshot = report.schemaSnapshot;
       if (report.rotatedRefreshToken !== undefined) body.rotatedRefreshToken = report.rotatedRefreshToken;
+      if (report.authentication !== undefined) body.authentication = report.authentication;
       await post(scanId, body, report.capabilityToken);
     },
 
@@ -184,6 +188,7 @@ export function createCloudReporter(
       };
       if (extras.rotatedRefreshToken !== undefined)
         body.rotatedRefreshToken = extras.rotatedRefreshToken;
+      if (extras.authentication !== undefined) body.authentication = extras.authentication;
       await post(scanId, body, extras.capabilityToken);
     },
   };

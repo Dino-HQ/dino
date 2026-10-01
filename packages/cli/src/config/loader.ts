@@ -92,6 +92,8 @@ export interface DinoCliConfig {
   endpoint?: string | undefined;
   /** API protocol for ad-hoc scans - graphql (introspection) or rest (OpenAPI). #560/#2140 */
   protocol?: 'graphql' | 'rest' | undefined;
+  /** The config file that was loaded (absolute path); `--format sarif` can anchor findings to it. */
+  configPath?: string | undefined;
   /** OpenAPI spec URL or file path - required when protocol is 'rest' (#2140). */
   specUrl?: string | undefined;
 }
@@ -185,5 +187,6 @@ export async function loadCliConfig(options?: LoadCliConfigOptions): Promise<Din
     endpoint: config.endpoint,
     protocol: config.protocol,
     specUrl: config.specUrl,
+    configPath: result.filepath,
   };
 }

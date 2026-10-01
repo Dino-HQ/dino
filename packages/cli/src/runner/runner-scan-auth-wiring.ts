@@ -7,6 +7,7 @@ import {
   isOAuth2RefreshLeaseEnabled,
 } from './oauth2-refresh-lease-client';
 import { wrapReauthingRestExecutor } from './reauthing-rest-executor';
+import { boundRoleIdentities, createAuthenticationRecorder, NOT_RELEASED, type AuthenticationRecorder } from './authentication-report';
 import {
   wireMultiRoleRbac,
   type RunnerRbacWire,
@@ -27,7 +28,7 @@ import { refreshOAuth2Auth } from './scan-auth-oauth2';
 import { buildRotatedRefreshGetter, readHydratedRefreshToken } from './runner-refresh-token';
 import type { RunnerState } from './state-store';
 import type { RestFuzzExecutor } from '@dino/agents';
-import type { CredentialOutcomeCode, RunnerJob } from '@dino/core';
+import type { AuthenticationAcquisitionReport, CredentialOutcomeCode, RunnerJob } from '@dino/core';
 
 export type { RunnerRbacWire } from './runner-rbac-wire';
 
@@ -166,7 +167,7 @@ async function refreshStaticAuth(
 ): Promise<{ profile: HydratedProfile; auth: AcquiredScanAuth }> {
   const fresh = await hydrateProfile(ctx);
   if (fresh === null) {
-    return { profile, auth: { authFailed: true } };
+    return { profile, auth: NOT_RELEASED };
   }
   const auth = await acquireScanAuth(fresh, {
     profileId: ctx.authProfileId,
@@ -196,8 +197,17 @@ export type RunnerAuthWireResult =
       rbac?: RunnerRbacWire;
       /** P1F: a typed credential outcome latched mid-scan (role hydrate, re-hydrate); it fails the scan. */
       credentialFailure?: () => CredentialOutcomeCode | undefined;
+      /** DIN-1492: what this run proved about authentication, read at the end of the run. */
+      authentication?: () => AuthenticationAcquisitionReport | undefined;
+      /** DIN-1492: the final status of an authenticated request outside the REST wrapper (GraphQL). */
+      targetResponse?: (status: number) => void;
     }
-  | { ok: false; error: 'auth_failed'; credentialCode?: CredentialOutcomeCode };
+  | {
+      ok: false;
+      error: 'auth_failed';
+      credentialCode?: CredentialOutcomeCode;
+      authentication?: AuthenticationAcquisitionReport;
+    };
 
 function latchAuthEverLost(
   authEverLost: { value: boolean },
@@ -253,15 +263,26 @@ async function performReauth(p: {
 async function attemptOptionalRbacWire(
   ctx: AuthWireContext,
   hydratedProfile: HydratedProfile,
+  recorder: AuthenticationRecorder,
 ): Promise<RunnerRbacWire | undefined> {
   try {
     return await wireMultiRoleRbac(hydratedProfile, {
-      hydrateProfile: (authProfileId, signal) => hydrateBindingProfile(ctx, authProfileId, signal),
-      acquire: (profile, authProfileId, signal) =>
-        acquireScanAuth(profile, {
+      hydrateProfile: async (authProfileId, signal) => {
+        const profile = await hydrateBindingProfile(ctx, authProfileId, signal);
+        // Dino did not release this role for the run: a closed outcome, not a silent gap.
+        if (profile === null) {
+          recorder.acquisition(authProfileId, NOT_RELEASED);
+        }
+        return profile;
+      },
+      acquire: async (profile, authProfileId, signal) => {
+        const auth = await acquireScanAuth(profile, {
           ...buildScanAuthDeps(ctx, authProfileId),
           ...(signal === undefined ? {} : { signal }),
-        }),
+        });
+        recorder.acquisition(authProfileId, auth);
+        return auth;
+      },
     });
   } catch (err) {
     // Kind and code say whether the skip is the operator's config or Dino's fault (#2636).
@@ -287,12 +308,15 @@ function authWireSuccess(opts: {
   rbac?: RunnerRbacWire;
   rbacDeclared?: boolean;
   credentialFailure: () => CredentialOutcomeCode | undefined;
+  recorder: AuthenticationRecorder;
 }): RunnerAuthWireResult {
   return {
     ok: true,
     restExecutor: opts.restExecutor,
     authConfigured: true,
     credentialFailure: opts.credentialFailure,
+    authentication: () => opts.recorder.report(),
+    targetResponse: (status) => opts.recorder.targetResponse(status),
     ...(opts.rbacDeclared === undefined ? {} : { rbacDeclared: opts.rbacDeclared }),
     getAuth: opts.getAuth,
     authLost: opts.authLost,
@@ -301,12 +325,25 @@ function authWireSuccess(opts: {
   };
 }
 
-/** P1F: a failed hydrate carries the cloud's typed credential outcome when there was one. */
-function hydrateFailure(ctx: AuthWireContext): RunnerAuthWireResult {
+/**
+ * P1F: a failed hydrate carries the cloud's typed credential outcome when there was one (the cloud shows that as
+ * not attempted). DIN-1492: any other failure (grant or hydrate unreachable, 5xx, malformed body) is still a fact of
+ * this run: Dino did not release the identity, reported as a closed outcome rather than silence.
+ */
+function hydrateFailure(ctx: AuthWireContext, recorder: AuthenticationRecorder): RunnerAuthWireResult {
   const code = ctx.credentialFailure?.code;
-  return code === undefined
+  if (code !== undefined) return { ok: false, error: 'auth_failed', credentialCode: code };
+  recorder.acquisition(ctx.authProfileId, NOT_RELEASED);
+  return acquisitionFailure(recorder);
+}
+
+
+/** DIN-1492: the run could not acquire context; the report says why (a closed code). */
+function acquisitionFailure(recorder: AuthenticationRecorder): RunnerAuthWireResult {
+  const authentication = recorder.report();
+  return authentication === undefined
     ? { ok: false, error: 'auth_failed' }
-    : { ok: false, error: 'auth_failed', credentialCode: code };
+    : { ok: false, error: 'auth_failed', authentication };
 }
 
 async function wireHydratedAuthProfile(opts: {
@@ -316,15 +353,16 @@ async function wireHydratedAuthProfile(opts: {
   authEverLost: { value: boolean };
 }): Promise<RunnerAuthWireResult> {
   const { ctx, baseRestExecutor, hasRest, authEverLost } = opts;
+  const recorder = createAuthenticationRecorder();
   const authLost = (): boolean => authEverLost.value;
 
   let hydratedProfile = await hydrateProfile(ctx);
-  if (hydratedProfile === null) return hydrateFailure(ctx);
+  if (hydratedProfile === null) return hydrateFailure(ctx, recorder);
 
+  recorder.expect(boundRoleIdentities(hydratedProfile));
   let currentAuth = await acquireFromHydrated(ctx, hydratedProfile);
-  if (currentAuth.authFailed) {
-    return { ok: false, error: 'auth_failed' };
-  }
+  recorder.acquisition(ctx.authProfileId, currentAuth);
+  if (currentAuth.authFailed) return acquisitionFailure(recorder);
 
   let currentRefreshToken = currentAuth.refreshToken;
   const originalHydratedRefreshToken = readHydratedRefreshToken(hydratedProfile);
@@ -335,45 +373,40 @@ async function wireHydratedAuthProfile(opts: {
 
   const credentialFailure = (): CredentialOutcomeCode | undefined => ctx.credentialFailure?.code;
   const rbacDeclared = hydratedProfileDeclaresRbac(hydratedProfile);
-  const rbac = await attemptOptionalRbacWire(ctx, hydratedProfile);
-
-  if (!hasRest || baseRestExecutor === undefined) {
-    return authWireSuccess({
-      restExecutor: baseRestExecutor,
+  const rbac = await attemptOptionalRbacWire(ctx, hydratedProfile, recorder);
+  const success = (restExecutor: RestFuzzExecutor | undefined): RunnerAuthWireResult =>
+    authWireSuccess({
+      restExecutor,
       getAuth: () => currentAuth,
       authLost,
       rotatedRefreshToken,
       ...(rbac === undefined ? {} : { rbac }),
       rbacDeclared,
       credentialFailure,
+      recorder,
     });
-  }
+
+  if (!hasRest || baseRestExecutor === undefined) return success(baseRestExecutor);
 
   const restExecutor = wrapReauthingRestExecutor(baseRestExecutor, {
     getAuth: () => currentAuth,
     refresh: async () => {
       if (hydratedProfile === null) {
-        currentAuth = latchAuthEverLost(authEverLost, { authFailed: true });
+        currentAuth = latchAuthEverLost(authEverLost, NOT_RELEASED);
+        recorder.reacquisition(ctx.authProfileId, currentAuth);
         return currentAuth;
       }
       const r = await performReauth({ ctx, authEverLost, hydratedProfile, currentRefreshToken });
       hydratedProfile = r.hydratedProfile;
       currentRefreshToken = r.currentRefreshToken;
       currentAuth = r.auth;
+      recorder.reacquisition(ctx.authProfileId, currentAuth);
       return currentAuth;
     },
     now: ctx.now,
+    onFinalStatus: (status) => recorder.targetResponse(status),
   });
-
-  return authWireSuccess({
-    restExecutor,
-    getAuth: () => currentAuth,
-    authLost,
-    rotatedRefreshToken,
-    ...(rbac === undefined ? {} : { rbac }),
-    rbacDeclared,
-    credentialFailure,
-  });
+  return success(restExecutor);
 }
 
 export async function wireRunnerScanAuth(opts: {

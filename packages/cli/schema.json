@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://usedino.dev/schema.json",
   "title": "Dino Configuration",
-  "description": "Configuration for .dino.yml — the Dino API quality scanner.",
+  "description": "Configuration for .dino.yml, the Dino verification layer for APIs.",
   "type": "object",
   "properties": {
     "endpoint": {

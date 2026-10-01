@@ -84,6 +84,13 @@ export type DinoErrorCode =
   | 'CREDENTIAL_RESIDENCY_MISMATCH'
   | 'CREDENTIAL_RECONFIGURE_REQUIRED'
   | 'CREDENTIAL_CUSTODY_UNAVAILABLE'
+  // A static Authentication Identity with no stored credential yet (DIN-1493): provide one through a handoff.
+  | 'CREDENTIAL_REQUIRED'
+  // Credential handoff outcomes (P1L / DIN-1493) — see credential-handoff-outcome.ts. NOT_FOUND is 404
+  // (existence-hiding across Organizations and for a link that is not the handoff's current one); the rest 409.
+  | 'CREDENTIAL_HANDOFF_NOT_FOUND'
+  | 'CREDENTIAL_HANDOFF_LINK_EXPIRED'
+  | 'CREDENTIAL_HANDOFF_CLOSED'
   // Target Connection outcomes (DIN-1490) — typed, fail-closed, each with a bounded `nextAction` (see
   // target-connection-outcome.ts). SCOPE_INVALID is 400; the rest are 409.
   | 'TARGET_CONNECTION_REQUIRED'
@@ -91,6 +98,10 @@ export type DinoErrorCode =
   | 'TARGET_CONNECTION_STALE'
   | 'TARGET_CONNECTION_SCOPE_INVALID'
   | 'TARGET_CONNECTION_SCOPE_UNAVAILABLE'
+  // Authentication Flow outcomes (DIN-1492) — admission refusals are 400; a missing admitted version is 409.
+  | 'AUTH_FLOW_INVALID'
+  | 'AUTH_FLOW_UNSAFE'
+  | 'AUTH_FLOW_NOT_ADMITTED'
   // Rate limit (429)
   | 'RATE_LIMITED'
   // Upstream/provider rate limit (429) — the SECRET CUSTODIAN throttled Dino (distinct from
@@ -223,9 +234,9 @@ function isDispatchAmbiguousReason(value: unknown): value is DispatchAmbiguousRe
   return value === 'lost_response' || value === 'already_dispatched';
 }
 
-/** Codes whose body may carry the closed-union bounded `nextAction` (credential and Target Connection outcomes). */
+/** Codes whose body may carry the closed-union bounded `nextAction` (credential, Connection and flow outcomes). */
 function hasBoundedNextAction(code: DinoErrorCode): boolean {
-  return code.startsWith('CREDENTIAL_') || code.startsWith('TARGET_CONNECTION_');
+  return code.startsWith('CREDENTIAL_') || code.startsWith('TARGET_CONNECTION_') || code.startsWith('AUTH_FLOW_');
 }
 
 const UPGRADE_CONTEXT_FIELDS = ['feature', 'limit', 'used', 'resetDate', 'allowedLevels'] as const;

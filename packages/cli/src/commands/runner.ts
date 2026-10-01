@@ -38,7 +38,7 @@ import {
 } from '../runner/state-store';
 import { maybeStartWakeServer } from '../runner/wake-server';
 import { CliError } from '../shared/errors';
-import { outcomeFromCaughtError } from '../shared/outcome';
+import { failedRunnerResult } from '../runner/runner-scan-result';
 import { CLI_VERSION } from '../version';
 import { formatRegisterErrorDetail, parseRegisterFlags, registerRequestBody, REGISTER_USAGE } from './runner-register-flags';
 import { cloudHttpFailure, dinoErrorFromCloudBodyText } from '../shared/cloud-error';
@@ -253,16 +253,8 @@ export function createRunnerExecuteScan(
         buildTenantConfig: buildRunnerTenantConfig,
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      // The cloud learns why a scan failed from the code; the message stays the raw text it always was.
-      const code = outcomeFromCaughtError(e).error?.code;
-      return {
-        scanId: assignment.scanId,
-        attemptId: assignment.attemptId,
-        status: 'failed',
-        error: message,
-        ...(code === undefined ? {} : { failureType: code }),
-      };
+      // A failure before authentication was wired (discovery, spec fetch): nothing to report about it.
+      return failedRunnerResult(assignment, e);
     }
   };
 }

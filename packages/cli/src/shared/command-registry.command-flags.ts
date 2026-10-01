@@ -45,6 +45,17 @@ export const SCAN_OWN_FLAGS = {
     type: 'boolean',
     description: 'Treat a reduced-coverage (partial) scan as success: exit 0 instead of 6',
   },
+  sarifState: {
+    name: '--sarif-state',
+    arg: '<file>',
+    type: 'string',
+    description: 'With --format sarif in GitHub Actions: write the code scanning reconciliation state here (upload it as an artifact)',
+  },
+  sarifRebaseline: {
+    name: '--sarif-rebaseline',
+    type: 'boolean',
+    description: 'With --format sarif in GitHub Actions: a complete run replaces the previous analysis as is (recovery after lost state)',
+  },
   burst: {
     name: '--burst',
     arg: '<n>',
@@ -279,6 +290,33 @@ export const INIT_OWN_FLAGS = {
     arg: 'SCOPE',
     type: 'string',
     description: 'OAuth2 scope (optional)',
+  },
+} satisfies Record<string, FlagSpec>;
+
+/** DIN-1493 `dino credential set`: there is deliberately no flag for the secret itself. */
+export const CREDENTIAL_OWN_FLAGS = {
+  authProfile: {
+    name: '--auth-profile',
+    arg: '<id>',
+    type: 'string',
+    description: 'The auth profile (static bearer, api_key or basic_auth) the credential is for',
+  },
+  har: {
+    name: '--har',
+    arg: '<harId>',
+    type: 'string',
+    description: 'The pending target_credential_authorization Human Action Request this answers',
+  },
+  stdin: {
+    name: '--stdin',
+    type: 'boolean',
+    description: 'Read the secret from piped stdin instead of the hidden prompt',
+  },
+  apiUrl: {
+    name: '--api-url',
+    arg: '<url>',
+    type: 'string',
+    description: 'Cloud API URL (optional override)',
   },
 } satisfies Record<string, FlagSpec>;
 

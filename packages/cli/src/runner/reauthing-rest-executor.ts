@@ -57,6 +57,8 @@ export function wrapReauthingRestExecutor(
     refresh: () => Promise<AcquiredScanAuth>;
     now: () => number;
     expiryMarginMs?: number;
+    /** DIN-1492: the final status of each call (after the one 401 re-acquisition), for the run's report. */
+    onFinalStatus?: (status: number) => void;
   },
 ): RestFuzzExecutor {
   let refreshInFlight: Promise<AcquiredScanAuth> | null = null;
@@ -86,7 +88,15 @@ export function wrapReauthingRestExecutor(
     return auth;
   }
 
-  return executeWithReauth(base, { authForCall, singleFlightRefresh });
+  const execute = executeWithReauth(base, { authForCall, singleFlightRefresh });
+  const onFinalStatus = opts.onFinalStatus;
+  if (onFinalStatus === undefined) return execute;
+  return async (operation, options) => {
+    const response = await execute(operation, options);
+    // A transport failure has no status: the Target neither rejected nor authorized anything.
+    if (response.status !== null) onFinalStatus(response.status);
+    return response;
+  };
 }
 
 function executeWithReauth(base: RestFuzzExecutor, authProvider: {

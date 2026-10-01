@@ -29,6 +29,10 @@ export type AuditAction =
   | 'target_connection.resumed'
   | 'target_connection.revoked'
   | 'target_connection.retired'
+  // DIN-1492 Authentication Flow versions.
+  | 'auth_flow.admitted'
+  | 'auth_flow.superseded'
+  | 'auth_flow.retired'
   // Scan lifecycle
   | 'scan.created'
   | 'scan.retried'
@@ -117,6 +121,10 @@ export type AuditAction =
   | 'credential_reference.rotated'
   | 'credential_reference.revoked'
   | 'credential_reference.operation_abandoned'
+  // Credential handoff (P1L / DIN-1493) — identifiers and reason codes only; never material or the link.
+  | 'credential_handoff.opened'
+  | 'credential_handoff.link_renewed'
+  | 'credential_handoff.stored'
   // Presentation Request / Human Action Request (DIN-1354) — identifiers only; never response content.
   | 'presentation_request.admitted'
   | 'presentation_request.transitioned'
@@ -189,6 +197,7 @@ export type AuditResourceType =
   | 'target_definition'
   | 'auth_profile'
   | 'credential_reference'
+  | 'credential_handoff'
   | 'presentation_request'
   | 'human_action_request'
   | 'token_factory_profile'
@@ -196,6 +205,7 @@ export type AuditResourceType =
   | 'api_key'
   | 'connected_app'
   | 'target_connection'
+  | 'authentication_flow'
   | 'workload_federation'
   | 'workspace'
   | 'billing'

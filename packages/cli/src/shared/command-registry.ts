@@ -5,6 +5,7 @@
 import {
   CHANGELOG_OWN_FLAGS,
   CONFIG_TELEMETRY_FLAGS,
+  CREDENTIAL_OWN_FLAGS,
   DIFF_OWN_FLAGS,
   DOCS_OWN_FLAGS,
   INIT_OWN_FLAGS,
@@ -136,6 +137,16 @@ export const COMMAND_REGISTRY = {
     commonConnection: false,
     effects: 'read_only',
     exitCodes: [0, 2, 70],
+  },
+  credential: {
+    summary:
+      'Put a Target credential into Dino custody for an auth profile at a no-echo prompt; prints only the Credential Reference.',
+    usage: 'dino credential set --auth-profile <id> [--har <harId>] [--stdin]',
+    ownFlags: CREDENTIAL_OWN_FLAGS,
+    commonPresentation: false,
+    commonConnection: false,
+    effects: 'non_idempotent',
+    exitCodes: [0, 1, 2, 4, 5, 70],
   },
   validate: {
     summary: 'Validate .dino.yml config (with helpful error messages).',
