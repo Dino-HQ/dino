@@ -1,0 +1,40 @@
+# Example: Dino findings as alerts in the repository's Security tab (GitHub code scanning).
+# Copy this into your repo's .github/workflows/ directory. Guide: https://usedino.dev/docs/ci#github-code-scanning
+#
+# Secrets:
+#   API_URL    — your deployed API endpoint (run Dino after the API is deployed)
+#   API_TOKEN  — bearer token for your API (optional)
+
+name: API Verification (code scanning)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write   # upload SARIF, read the previous Dino analysis
+  actions: read            # read the previous run's Dino state artifact (needed on private repositories)
+
+# One Dino SARIF writer per ref, across every workflow: each upload is reconciled with the previous
+# one, so two at once could close an alert neither re-tested.
+concurrency:
+  group: dino-sarif-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dino-scan:
+    runs-on: ubuntu-latest
+    steps:
+      # A local spec (or a committed .dino.yml) gives alerts a stable file to point at.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Dino-HQ/dino/.github/actions/scan@v1
+        with:
+          api-url: ${{ secrets.API_URL }}
+          api-token: ${{ secrets.API_TOKEN }}
+          cli-version: 1.3.0   # SARIF needs 1.3.0 or later
+          format: sarif
+          # protocol: rest
+          # spec-url: openapi.yaml

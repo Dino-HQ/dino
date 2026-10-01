@@ -34,3 +34,30 @@ jobs:
           test "$CODE" = 0
           test "$(jq -r .dinoResult "$REPORT")" = 1.0
           jq -e '.verdict.health.verdict' "$REPORT"
+
+  # 1.2.2 predates SARIF state reconciliation: format sarif must stop cleanly before any scan,
+  # upload nothing, and say which CLI it needs. (The full SARIF flow joins this test once the
+  # CLI release that supports it is published.)
+  sarif-needs-supported-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan (SARIF, CLI without support)
+        id: scan
+        continue-on-error: true
+        uses: ./.github/actions/scan
+        with:
+          api-url: https://dino-smoke-endpoint.comiblock-security-center.workers.dev/graphql
+          format: sarif
+          cli-version: 1.2.2
+
+      - name: Refused with exit 2, nothing written or uploaded
+        shell: bash
+        env:
+          CODE: ${{ steps.scan.outputs.exit-code }}
+          WRITTEN: ${{ steps.scan.outputs.sarif-written }}
+        run: |
+          test "$CODE" = 2
+          test "$WRITTEN" = false
+          test ! -e .dino/reports/scan-report.sarif
