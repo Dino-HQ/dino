@@ -35,9 +35,17 @@ inputs:
     required: false
     default: 'false'
   format:
-    description: 'Report format (markdown or json)'
+    description: 'Report format: markdown, json, or sarif (uploads findings to GitHub code scanning; needs CLI 1.3.0 or later, security-events: write, actions: read and a per-ref concurrency group, see the docs)'
     required: false
     default: 'markdown'
+  upload-sarif:
+    description: 'With format sarif: upload the SARIF to GitHub code scanning (set false to upload it yourself; the state artifact is uploaded either way)'
+    required: false
+    default: 'true'
+  github-token:
+    description: 'With format sarif: token Dino uses to read the previous code scanning analysis and its state artifact'
+    required: false
+    default: ${{ github.token }}
   cli-version:
     description: 'Dino CLI version to install, e.g. 1.2.1 (default: latest)'
     required: false
@@ -50,6 +58,9 @@ outputs:
   exit-code:
     description: 'dino scan exit code: 0 clean, 3 policy gate failed, 6 partial, 2/4/5/70 errors'
     value: ${{ steps.scan.outputs.exit-code }}
+  sarif-written:
+    description: 'With format sarif: true when Dino wrote SARIF; false when it withheld it (stderr says why) and existing alerts were left as they are'
+    value: ${{ steps.scan.outputs.sarif-written }}
   has-breaking-changes:
     description: 'Whether breaking schema changes were detected (only when fail-on-breaking is true)'
     value: ${{ steps.diff.outputs.has-breaking }}
@@ -106,22 +117,60 @@ runs:
         FAIL_ON_HIGH: ${{ inputs.fail-on-high }}
         ACCEPT_PARTIAL: ${{ inputs.accept-partial }}
         FORMAT: ${{ inputs.format }}
+        # Read only with format sarif: the previous code scanning analysis and its state artifact.
+        GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
         mkdir -p .dino/reports
-        if [ "$FORMAT" = json ]; then ext=json; else ext=md; fi
+        case "$FORMAT" in json) ext=json ;; sarif) ext=sarif ;; *) ext=md ;; esac
         REPORT_FILE=".dino/reports/scan-report.$ext"
         args=(scan --endpoint "$API_URL" --protocol "$PROTOCOL" --format "$FORMAT")
         [ -n "$SPEC_URL" ] && args+=(--spec-url "$SPEC_URL")
         [ -n "$DINO_API_TOKEN" ] && args+=(--token "$DINO_API_TOKEN")
         [ "$FAIL_ON_HIGH" = true ] && args+=(--fail-on-high)
         [ "$ACCEPT_PARTIAL" = true ] && args+=(--accept-partial)
+        if [ "$FORMAT" = sarif ]; then
+          if ! dino scan --help 2>/dev/null | grep -q -- '--sarif-state'; then
+            echo "::error::format: sarif needs Dino CLI 1.3.0 or later (installed: $(dino --version 2>/dev/null))."
+            echo "sarif-written=false" >> "$GITHUB_OUTPUT"
+            echo "exit-code=2" >> "$GITHUB_OUTPUT"
+            exit 2
+          fi
+          STATE_FILE="$RUNNER_TEMP/dino-sarif/dino.sarif.state.json"
+          mkdir -p "$(dirname "$STATE_FILE")"
+          args+=(--sarif-state "$STATE_FILE")
+          echo "sarif-state-path=$STATE_FILE" >> "$GITHUB_OUTPUT"
+        fi
         set +e
-        dino "${args[@]}" > "$REPORT_FILE"
+        # With format sarif the CLI also appends sarif-run-token to this step's outputs.
+        dino "${args[@]}" > "$REPORT_FILE.tmp"
         code=$?
         set -e
+        if [ "$FORMAT" = sarif ]; then
+          # An empty stdout means Dino withheld the SARIF (it says why on stderr); never upload an empty file.
+          if [ -s "$REPORT_FILE.tmp" ]; then mv "$REPORT_FILE.tmp" "$REPORT_FILE"; written=true; else rm -f "$REPORT_FILE.tmp"; written=false; fi
+          echo "sarif-written=$written" >> "$GITHUB_OUTPUT"
+        else
+          mv "$REPORT_FILE.tmp" "$REPORT_FILE"
+        fi
         echo "report-path=$REPORT_FILE" >> "$GITHUB_OUTPUT"
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         exit "$code"
+
+    # The state first: if the SARIF upload then fails, the next run still reconciles against the
+    # previous analysis, whose own state artifact is intact.
+    - name: Upload SARIF State
+      if: always() && steps.scan.outputs.sarif-written == 'true'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: dino-sarif-state-${{ steps.scan.outputs.sarif-run-token }}
+        path: ${{ steps.scan.outputs.sarif-state-path }}
+        if-no-files-found: error
+
+    - name: Upload to GitHub Code Scanning
+      if: always() && steps.scan.outputs.sarif-written == 'true' && inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+      with:
+        sarif_file: ${{ steps.scan.outputs.report-path }}
 
     - name: Upload Scan Report
       if: always()

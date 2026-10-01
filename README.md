@@ -40,6 +40,8 @@ Dino discovers every operation, tests the live API for security, correctness, co
 
   `v1` moves only for backward-compatible changes to the action; a breaking input change starts `v2`. For a hardened workflow, pin the action to a full commit SHA instead of `@v1`.
 
+  With `format: sarif` (CLI 1.3.0 or later), findings become alerts in the repository's Security tab. Dino never closes an alert it did not re-test: a partial run carries the untested ones forward. It needs `security-events: write`, `actions: read` and a per-ref `concurrency` group; see [examples/dino-code-scanning.yml](./examples/dino-code-scanning.yml) and [GitHub code scanning](https://usedino.dev/docs/ci#github-code-scanning).
+
 - **Everything else:** [usedino.dev/docs](https://usedino.dev/docs): exit codes, the `DinoResult` contract, configuration and every command.
 
 ---
