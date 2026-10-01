@@ -34,7 +34,7 @@ jobs:
         with:
           api-url: ${{ secrets.API_URL }}
           api-token: ${{ secrets.API_TOKEN }}
-          cli-version: 1.3.0   # SARIF needs 1.3.0 or later
+          cli-version: 1.3.0
           format: sarif
           # protocol: rest
           # spec-url: openapi.yaml

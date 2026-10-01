@@ -34,7 +34,7 @@ Dino discovers every operation, tests the live API for security, correctness, co
   - uses: Dino-HQ/dino/.github/actions/scan@v1
     with:
       api-url: ${{ secrets.API_URL }}
-      cli-version: 1.2.1
+      cli-version: 1.3.0
       fail-on-high: true
   ```
 
