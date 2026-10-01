@@ -29,7 +29,7 @@ export interface UserConfigInput {
   protocol?: 'graphql' | undefined;
   tenant?: string | undefined;
   environment?: string | undefined;
-  format?: ('json' | 'markdown') | undefined;
+  format?: ('json' | 'markdown' | 'sarif') | undefined;
   snapshotDir?: string | undefined;
   autonomy?: { level: 'observe' | 'enforce' } | undefined;
   auth?: { enabled: boolean; role?: string | undefined } | undefined;

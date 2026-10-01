@@ -156,7 +156,8 @@ export const HAR_REGISTRY = {
     constraints: [
       'decision is authorize or decline',
       'the version must still be pending and configured against the current Target Definition',
-      'every bound auth profile must still belong to this Target with a usable Credential Reference',
+      'every bound auth profile must still belong to this Target, with a usable Credential Reference if it stores a credential',
+      'each bound login_flow auth profile authorizes exactly the Authentication Flow version the version pins, which must still be admitted',
     ],
     example: { decision: '<authorize|decline>' },
   },
@@ -283,7 +284,7 @@ export async function capabilityArgumentsDigest(
   value: Readonly<Record<string, unknown>>,
 ): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalCapabilityValue(value));
-  const hash = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 

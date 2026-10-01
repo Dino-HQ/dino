@@ -5,6 +5,7 @@
 import { Value } from '@sinclair/typebox/value';
 import {
   AuthFlowDefSchema,
+  classifyAcquisitionFailure,
   createBag,
   runAuthFlowResilient,
   TestModeOtpResolver,
@@ -13,7 +14,7 @@ import {
   type FetchLike,
   type FlowRunnerDeps,
 } from '@dino/auth';
-import { recordGet } from '@dino/core';
+import { recordGet, type AuthenticationAcquisitionFailure } from '@dino/core';
 import { createHttpOtpResolver, type OtpHttpClient } from './http-otp-resolver';
 import type { OAuth2RefreshLeaseClient } from './oauth2-refresh-lease-client';
 import type { TSchema } from '@sinclair/typebox';
@@ -47,6 +48,8 @@ export interface AcquiredScanAuth {
   cookieHeader?: string;
   expiresAt?: number | null;
   authFailed: boolean;
+  /** DIN-1492: why context was not acquired, as a closed code (set whenever `authFailed`). */
+  failure?: AuthenticationAcquisitionFailure;
   /** ms at acquisition - feeds L1 proportional margin. */
   acquiredAt?: number;
   /** Rotated OAuth2 refresh token (when refresh sub-flow is configured). */
@@ -139,7 +142,7 @@ function acquireStaticAuth(profile: HydratedProfile): AcquiredScanAuth {
   // still completed CLEAN (false output). Mirrors login_flow's `token_not_acquired` gate. `none` is
   // the one legitimate no-credential method and returns above.
   if (credential.trim() === '') {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'secret_unavailable' };
   }
   if (method === 'bearer') {
     return { authToken: credential, authFailed: false };
@@ -155,24 +158,24 @@ function acquireStaticAuth(profile: HydratedProfile): AcquiredScanAuth {
 
   const configJson = profile.configJson;
   if (configJson === null || configJson.trim() === '') {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'secret_unavailable' };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(configJson) as unknown;
   } catch {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'secret_unavailable' };
   }
   if (!isRecord(parsed)) {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'secret_unavailable' };
   }
   const inn = parsed.in;
   const name = parsed.name;
   if (inn !== 'header' && inn !== 'query') {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'secret_unavailable' };
   }
   if (typeof name !== 'string' || name.trim() === '') {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'secret_unavailable' };
   }
   if (inn === 'header') {
     return {
@@ -260,24 +263,35 @@ export function buildFlowRunnerDeps(
   };
 }
 
+/** DIN-1492: log the closed code, never the raw reason (it names variables and secret references). */
+function flowFailure(
+  deps: ScanAuthDeps,
+  result: { reason: string; failedStepIndex: number },
+): AcquiredScanAuth {
+  const failure = classifyAcquisitionFailure(result.reason);
+  deps.logger?.info('scan_auth_failed', {
+    profileId: deps.profileId,
+    failure,
+    failedStepIndex: result.failedStepIndex,
+  });
+  return { authFailed: true, failure };
+}
+
 async function acquireLoginFlowAuth(
   profile: HydratedProfile,
   deps: ScanAuthDeps,
 ): Promise<AcquiredScanAuth> {
   const flow = parseAuthFlow(profile.flow);
   if (flow === null) {
-    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, reason: 'invalid_flow' });
-    return { authFailed: true };
+    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, failure: 'flow_invalid' });
+    return { authFailed: true, failure: 'flow_invalid' };
   }
 
   const secrets = parseLoginFlowSecrets(profile.credential);
   const otpSetup = buildOtpResolver(profile, secrets, deps);
   if (!otpSetup.ok) {
-    deps.logger?.info('scan_auth_failed', {
-      profileId: deps.profileId,
-      reason: 'otp_setup_failed',
-    });
-    return { authFailed: true };
+    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, failure: 'otp_unavailable' });
+    return { authFailed: true, failure: 'otp_unavailable' };
   }
 
   try {
@@ -288,14 +302,7 @@ async function acquireLoginFlowAuth(
       deps.fromStepIndex ?? 0,
     );
 
-    if (!result.ok) {
-      deps.logger?.info('scan_auth_failed', {
-        profileId: deps.profileId,
-        reason: result.reason,
-        failedStepIndex: result.failedStepIndex,
-      });
-      return { authFailed: true };
-    }
+    if (!result.ok) return flowFailure(deps, result);
 
     const { accessTokenVar, refreshTokenVar } = flow.result;
     const authToken =
@@ -320,10 +327,9 @@ async function acquireLoginFlowAuth(
       acquiredAt: deps.now(),
       authFailed: false,
     };
-  } catch (err) {
-    const reason = err instanceof Error ? err.name : 'flow_threw';
-    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, reason });
-    return { authFailed: true };
+  } catch {
+    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, failure: 'target_unreachable' });
+    return { authFailed: true, failure: 'target_unreachable' };
   }
 }
 
@@ -337,7 +343,7 @@ export async function acquireScanAuth(
   }
   const staticAuth = acquireStaticAuth(profile);
   if (staticAuth.authFailed) {
-    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, reason: 'static_invalid' });
+    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, failure: 'secret_unavailable' });
     return staticAuth;
   }
   deps.logger?.info('scan_auth_acquired', {

@@ -103,6 +103,11 @@ export const TargetConnectionProposalSchema = z
       .object({
         authProfileIds: z.array(z.string().min(1).max(128)).max(TARGET_CONNECTION_MAX_AUTH_PROFILES),
         anonymous: z.boolean(),
+        /**
+         * DIN-1496: per bound `login_flow` auth profile, the admitted Authentication Flow version to authorize.
+         * Each must be that profile's admitted version; omitted, Dino binds the admitted version of each.
+         */
+        flowVersions: z.record(z.string().min(1).max(128), z.number().int().min(1)).optional(),
       })
       .strict(),
     credentialForwarding: z
@@ -126,6 +131,13 @@ export const TargetConnectionProposalSchema = z
   .strict();
 export type TargetConnectionProposal = z.infer<typeof TargetConnectionProposalSchema>;
 
+/** One pinned Authentication Flow version: its id, number and content digest (a different digest is a different flow). */
+export interface TargetConnectionFlowPin {
+  readonly versionId: string;
+  readonly version: number;
+  readonly flowDigest: string;
+}
+
 /** The admitted, normalized configuration of one version — exactly what is stored and compared. */
 export interface TargetConnectionConfiguration {
   readonly scope: {
@@ -138,7 +150,18 @@ export interface TargetConnectionConfiguration {
   };
   readonly privateAddressScope: TargetConnectionPrivateScope;
   readonly executionPlane: TargetConnectionExecutionPlane;
-  readonly authentication: { readonly authProfileIds: readonly string[]; readonly anonymous: boolean };
+  readonly authentication: {
+    readonly authProfileIds: readonly string[];
+    readonly anonymous: boolean;
+    /** DIN-1496: the exact admitted Authentication Flow version each bound `login_flow` profile authorizes. */
+    readonly flowVersions: Readonly<Record<string, TargetConnectionFlowPin>>;
+    /**
+     * DIN-1493: the Credential Reference each bound profile held when this version was proposed (null: none). Using
+     * a different reference — a first credential, or a relink — needs a new version authorized by a human; rotating
+     * versions of the same reference is the Credential Reference lifecycle and stays within this authorization.
+     */
+    readonly credentialReferences: Readonly<Record<string, string | null>>;
+  };
   readonly credentialForwarding: { readonly hosts: readonly string[] };
   readonly redirectPolicy: TargetConnectionRedirectPolicy;
   readonly requestLimits: TargetConnectionRequestLimits;

@@ -7,6 +7,7 @@ import { sanitizeEventError } from '@dino/analytics';
 import { recordGet } from '@dino/core';
 import { setLogLevel } from '@dino/engine';
 import { runLogin, runLogout, runWhoami } from './commands/auth';
+import { runCredentialFromArgv } from './commands/credential';
 import { runChangelog } from './commands/changelog';
 import { runConfigFromArgv, runTelemetryFromArgv } from './commands/config';
 import { runDiff } from './commands/diff';
@@ -112,6 +113,7 @@ export type { OutcomeKind, RuntimeOutcome, RuntimeOutcomeError } from './shared/
 export type { ContractFormat, LiveLeg, ContractVerdict } from './shared/output-contract';
 export {
   checkJsonFraming,
+  checkSarifFraming,
   detectLoggerEnvelopeLeak,
   checkExitContract,
   checkNoSecretLeak,
@@ -145,15 +147,16 @@ export function normalizeToolsAndModules(flags: Record<string, unknown>): void {
 }
 
 // B14 (#587): Validate --format before dispatch — unknown values silently fall through to markdown
-const VALID_FORMATS = new Set(['markdown', 'json']);
-type CliOutputFormat = 'markdown' | 'json';
+const VALID_FORMATS = new Set(['markdown', 'json', 'sarif']);
+type CliOutputFormat = 'markdown' | 'json' | 'sarif';
+const VALID_FORMATS_TEXT = 'markdown, json, sarif (scan only)';
 
 function validateFormat(raw: string | undefined): CliOutputFormat | undefined {
   if (raw !== undefined && !VALID_FORMATS.has(raw)) {
-    console.error(`Invalid --format: "${raw}". Valid: markdown, json`);
+    console.error(`Invalid --format: "${raw}". Valid: ${VALID_FORMATS_TEXT}`);
     return undefined;
   }
-  return raw as 'markdown' | 'json' | undefined;
+  return raw as CliOutputFormat | undefined;
 }
 
 /** Coerced booleans + tenant/format slice merged last into pipeline handlers. */
@@ -171,6 +174,8 @@ type TenantCliCommonFlags = {
   header: string | string[] | undefined;
   token: string | undefined;
   allowPrivateTarget: boolean;
+  /** The `.dino.yml` actually loaded, if any (a stable file for `--format sarif` to anchor findings to). */
+  configPath: string | undefined;
 };
 
 /** Options for handleCommandError. */
@@ -252,6 +257,7 @@ async function runWithoutTenantContext(
   if (command === 'whoami') {
     return runBareCommand(() => runWhoami(flags), flags);
   }
+  if (command === 'credential') return runBareCommand(() => runCredentialFromArgv(argv, flags), flags);
   if (command === 'init') {
     return dispatchBareInit(flags, runBareCommand);
   }
@@ -284,8 +290,7 @@ async function invokeTrackedPipelineCommand(opts: InvokeTrackedPipelineOptions):
   } finally {
     try {
       await context.tracker.shutdown(1000);
-    } catch {
-      void 0;
+    } catch { // masked-fix:allowed - telemetry flush is best-effort; it never changes the command's outcome
     }
   }
 }
@@ -309,6 +314,7 @@ function buildTenantCliCommonFlags(
     token: flags.token as string | undefined, // #2160
     // Read straight off argv: the opt-in must come from the operator, never from `.dino.yml`.
     allowPrivateTarget: flags.allowPrivateTarget === true,
+    configPath: config?.configPath,
   };
 }
 
@@ -351,7 +357,10 @@ async function runTenantBackedCommand(
 
   const rawFormat = flags.format as string | undefined;
   if (rawFormat !== undefined && !VALID_FORMATS.has(rawFormat)) {
-    return usageFailure(`Invalid --format: "${rawFormat}". Valid: markdown, json`, flags);
+    return usageFailure(`Invalid --format: "${rawFormat}". Valid: ${VALID_FORMATS_TEXT}`, flags);
+  }
+  if (rawFormat === 'sarif' && command !== 'scan') {
+    return usageFailure(`--format sarif is only available for dino scan. Use --format json or markdown with dino ${command}.`, flags);
   }
 
   const commonFlags = buildTenantCliCommonFlags(flags, config);
@@ -391,8 +400,7 @@ async function runTenantBackedCommand(
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   try {
     maybeShowTelemetryNotice();
-  } catch {
-    void 0;
+  } catch { // masked-fix:allowed - the telemetry notice is best-effort; it never blocks a command
   }
 
   const { command, flags } = parseArgs(argv);

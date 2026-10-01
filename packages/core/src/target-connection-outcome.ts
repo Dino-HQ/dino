@@ -68,3 +68,27 @@ export function targetConnectionNotAuthorizedError(status: TargetConnectionUnusa
     meta: { nextAction: { kind: 'provide_input', reasonCode: NOT_AUTHORIZED_REASON[status] } },
   });
 }
+
+/**
+ * DIN-1496 — the Authentication Flow version a Connection version authorized is no longer the admitted one (superseded,
+ * retired, or never pinned). A new Connection version must bind the admitted flow and be authorized by a human.
+ */
+/**
+ * DIN-1493 — an identity the Connection version binds now uses a different Credential Reference (a first credential,
+ * or a relink) than the one the human authorized. A new version must bind it and be authorized.
+ */
+export function targetConnectionCredentialChangedError(detail: string): DinoError {
+  return new DinoError({
+    code: 'TARGET_CONNECTION_STALE',
+    message: `The stored credential this Target Connection authorized has changed; propose a new version: ${detail}`,
+    meta: { nextAction: { kind: 'provide_input', reasonCode: 'target_connection_credential_changed' } },
+  });
+}
+
+export function targetConnectionFlowChangedError(detail: string): DinoError {
+  return new DinoError({
+    code: 'TARGET_CONNECTION_STALE',
+    message: `The Authentication Flow this Target Connection authorized is no longer admitted; propose a new version: ${detail}`,
+    meta: { nextAction: { kind: 'provide_input', reasonCode: 'target_connection_flow_changed' } },
+  });
+}

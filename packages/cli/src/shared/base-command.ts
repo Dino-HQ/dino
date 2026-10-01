@@ -122,7 +122,7 @@ export interface CommonFlags {
   [key: string]: unknown;
   tenant: string;
   env?: string | undefined;
-  format?: ('markdown' | 'json') | undefined;
+  format?: ('markdown' | 'json' | 'sarif') | undefined;
   quiet?: boolean | undefined;
   verbose?: boolean | undefined;
   debug?: boolean | undefined;

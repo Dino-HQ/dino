@@ -34,7 +34,13 @@ export {
 } from './sanitize';
 export { freezeDeep } from './freeze';
 export { partitionTools, toolCompleted, toolFailed, type VerificationToolRecord } from './tool-partition';
-export { buildFindingFingerprint, type FindingFingerprintInput } from './fingerprint';
+export {
+  buildFindingFingerprint,
+  canonicalEvidenceKey,
+  canonicalTargetKey,
+  dinoFindingFingerprint,
+  type FindingFingerprintInput,
+} from './fingerprint';
 export { scopeDrift, operationSignature, type ScopeDrift, type OperationIdentity, type ChangedOperation } from './drift';
 export { DINO_TOOL_NAMES, DINO_SEVERITY_LEVELS, DINO_ENVELOPE_LEVELS, Sha256Hex } from './v1-common';
 export { VERDICT_REASONS, TRIM_STEPS } from './v1-verdict';

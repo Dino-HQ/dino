@@ -177,6 +177,8 @@ function terminalExtras(result: RunnerResult, assignment: RunnerJob): TerminalRe
     ...(result.rotatedRefreshToken === undefined
       ? {}
       : { rotatedRefreshToken: result.rotatedRefreshToken }),
+    // DIN-1492: the run-scoped authentication outcome, on whichever terminal status the run reached.
+    ...(result.authentication === undefined ? {} : { authentication: result.authentication }),
     // Pool identity: the results POST needs the scan-bound capability or the cloud 401s it (Spec B).
     ...(assignment.capabilityToken === undefined
       ? {}

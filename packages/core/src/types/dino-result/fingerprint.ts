@@ -6,6 +6,7 @@
  * field values (the rbac auth state does) or two tuples could join to identical bytes.
  */
 import { dinoResultDigest, type SubtleDigest } from './canonical';
+import type { DinoResultV1 } from './v1';
 
 export interface FindingFingerprintInput {
   tenantId: string;
@@ -20,4 +21,39 @@ export interface FindingFingerprintInput {
 export function buildFindingFingerprint(input: FindingFingerprintInput, subtle?: SubtleDigest): Promise<string> {
   const parts = [input.tenantId, input.tool, input.operation, input.classification, input.evidenceKey];
   return dinoResultDigest(parts.join('\u0000'), subtle);
+}
+
+type Finding = DinoResultV1['findings'][number];
+
+/** A finding's identity key: the target's own key (spec-scope D4a.2), never a fallback or sentinel. */
+export function canonicalTargetKey(target: Finding['target']): string {
+  if (target.kind === 'operation') return target.operationKey;
+  if (target.kind === 'schema-element') return target.elementKey;
+  return target.tool;
+}
+
+/** The evidence key that keeps non-operation targets and rbac auth states distinct under one target key. */
+export function canonicalEvidenceKey(f: Pick<Finding, 'target' | 'authState'>): string {
+  const parts: string[] = [];
+  if (f.target.kind !== 'operation') parts.push(`target-kind:${f.target.kind}`);
+  if (f.authState !== undefined) parts.push(`rbac-auth-state:${f.authState}`);
+  return parts.join('|');
+}
+
+/** The one fingerprint of a canonical finding: what the cloud stores and what SARIF uploads carry. */
+export function dinoFindingFingerprint(
+  tenantId: string,
+  f: Pick<Finding, 'tool' | 'target' | 'classification' | 'authState'>,
+  subtle?: SubtleDigest,
+): Promise<string> {
+  return buildFindingFingerprint(
+    {
+      tenantId,
+      tool: f.tool,
+      operation: canonicalTargetKey(f.target),
+      classification: f.classification,
+      evidenceKey: canonicalEvidenceKey(f),
+    },
+    subtle,
+  );
 }

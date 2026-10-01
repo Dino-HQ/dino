@@ -134,6 +134,7 @@ export {
   SCOPE_GAP_REASONS,
   Sha256Hex,
   buildFindingFingerprint,
+  canonicalEvidenceKey, canonicalTargetKey, dinoFindingFingerprint,
   scopeDrift,
   operationSignature,
   partitionTools,
@@ -215,16 +216,12 @@ export {
 } from './credential-next-action';
 export type { CredentialOutcomeCode } from './credential-outcome';
 export { credentialOutcomeError, isCredentialOutcomeCode } from './credential-outcome';
-export type {
-  TargetConnectionOutcomeCode,
-  TargetConnectionUnusableStatus,
-} from './target-connection-outcome';
-export {
-  targetConnectionNotAuthorizedError,
-  targetConnectionOutcomeError,
-} from './target-connection-outcome';
+export * from './target-connection-outcome';
+export * from './auth-flow-outcome';
+export * from './credential-handoff-outcome';
 export type {
   TargetConnectionConfiguration,
+  TargetConnectionFlowPin,
   TargetConnectionExecutionPlane,
   TargetConnectionLifecycleAction,
   TargetConnectionPrivateScope,
@@ -250,6 +247,9 @@ export {
   TargetConnectionProposeCommandSchema, TargetConnectionVersionRefSchema,
   canTransitionTargetConnection,
 } from './types/target-connection';
+
+export * from './types/authentication-flow';
+export * from './types/scan-authentication';
 
 // Safe path validation (path traversal prevention)
 export { safePath } from './utils/safe-path';
@@ -461,3 +461,6 @@ export { VerificationTargetSchema, TenantEndpointSchema, resolveVerificationTarg
 export { normalizeVerificationTarget } from './tenant/verification-target';
 export type { VerificationTargetConfig, VerificationTarget, VerificationTargets } from './tenant/verification-target';
 export type { WithheldBaseline, RestBaselineSetup } from './types/workload-setup';
+
+// SARIF 2.1.0 projection of a DinoResult for GitHub code scanning (#2177)
+export { renderDinoResultSarif, sarifCategory, sarifUnverifiedReason, sarifWithheldReason, type RenderSarifOptions, type SarifLog, type SarifResult, type SarifRule, type SarifRun, isStatefulRunSegment, parseSarifState, SARIF_STATE_VERSION, sarifRunToken, sarifUnitLabel, sarifUnitOf, splitAutomationId, type ParsedSarifState, type SarifState, type SarifStateEntry, type SarifUnit, SARIF_RULE_TEXT, type SarifRuleText, SECURITY_CLASSIFICATIONS, isSecurityClassification, reconcileSarif, type ReconcileSarifOptions, type ReconcileSarifOutcome, type SarifPrevious, type SarifPreviousAnalysis, type SarifPreviousState } from './sarif';

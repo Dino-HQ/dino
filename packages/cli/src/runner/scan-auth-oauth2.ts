@@ -9,6 +9,7 @@
 
 import {
   backoffDelayMs,
+  classifyAcquisitionFailure,
   classifyAuthFailureReason,
   createBag,
   runAuthRefresh,
@@ -31,6 +32,7 @@ import {
   type HydratedProfile,
   type ScanAuthDeps,
 } from './scan-auth';
+import { NOT_RELEASED } from './authentication-report';
 import type { OAuth2RefreshLeaseClient } from './oauth2-refresh-lease-client';
 
 const COALESCE_BACKOFF_MS = 250;
@@ -46,15 +48,17 @@ export function authResultToAcquired(opts: {
 }): AcquiredScanAuth {
   const { profile, flow, secrets, result, deps } = opts;
   if (!result.ok) {
+    // DIN-1492: log the closed code, never the raw reason (it names variables and references).
+    const failure = classifyAcquisitionFailure(result.reason);
     deps.logger?.info('scan_auth_failed', {
       profileId: deps.profileId,
-      reason: result.reason,
+      failure,
       failedStepIndex: result.failedStepIndex,
       ...(result.reason === 'http_400' && result.failedStepIndex === 0
         ? { terminal: 're_auth_required' }
         : {}),
     });
-    return { authFailed: true };
+    return { authFailed: true, failure };
   }
   const { accessTokenVar, refreshTokenVar } = flow.result;
   const authToken =
@@ -89,7 +93,7 @@ function acquiredFromCoalescedHydrate(
 ): AcquiredScanAuth {
   const flow = parseAuthFlow(profile.flow);
   if (flow === null) {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'flow_invalid' };
   }
   const secrets = parseLoginFlowSecrets(profile.credential);
   const bag = createBag(secrets);
@@ -108,7 +112,7 @@ async function coalesceWithoutIdpRefresh(
   deps: ScanAuthDeps,
 ): Promise<AcquiredScanAuth> {
   if (deps.rehydrateProfile === undefined) {
-    return { authFailed: true };
+    return NOT_RELEASED;
   }
   for (let attempt = 0; attempt < COALESCE_MAX_ATTEMPTS; attempt += 1) {
     await deps.sleep(COALESCE_BACKOFF_MS);
@@ -122,11 +126,9 @@ async function coalesceWithoutIdpRefresh(
       return acquiredFromCoalescedHydrate(fresh, deps);
     }
   }
-  deps.logger?.info('scan_auth_failed', {
-    profileId: deps.profileId,
-    reason: 'coalesce_exhausted',
-  });
-  return { authFailed: true };
+  // DIN-1492: the peer's refreshed identity was never re-released to this run (every re-hydrate failed or was stale).
+  deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, failure: NOT_RELEASED.failure });
+  return NOT_RELEASED;
 }
 
 /** runAuthRefresh wrapped in the L2 transient-retry (mirrors runAuthFlowResilient; permanent reasons fail fast). */
@@ -236,7 +238,7 @@ async function runLeasedOAuth2Refresh(opts: {
       deps: opts.deps,
     });
   }
-  return { authFailed: true };
+  return { authFailed: true, failure: 'target_unreachable' };
 }
 
 async function refreshOAuth2AuthWithLease(
@@ -247,12 +249,9 @@ async function refreshOAuth2AuthWithLease(
 ): Promise<AcquiredScanAuth> {
   const acquire = await leaseClient.acquire();
   if (!acquire.ok) {
-    deps.logger?.info('scan_auth_failed', {
-      profileId: deps.profileId,
-      reason: 'lease_acquire_failed',
-      detail: acquire.reason,
-    });
-    return { authFailed: true };
+    // DIN-1492: Dino's refresh lease failed, not the Target.
+    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, failure: NOT_RELEASED.failure });
+    return NOT_RELEASED;
   }
   if (!acquire.acquired) {
     return coalesceWithoutIdpRefresh(profile, deps);
@@ -260,12 +259,12 @@ async function refreshOAuth2AuthWithLease(
 
   const flow = parseAuthFlow(profile.flow);
   if (flow?.refresh === undefined) {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'flow_invalid' };
   }
   const secrets = parseLoginFlowSecrets(profile.credential);
   const otpSetup = buildOtpResolver(profile, secrets, deps);
   if (!otpSetup.ok) {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'otp_unavailable' };
   }
 
   try {
@@ -289,8 +288,8 @@ export async function refreshOAuth2Auth(
 ): Promise<AcquiredScanAuth> {
   const flow = parseAuthFlow(profile.flow);
   if (flow?.refresh === undefined) {
-    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, reason: 'no_refresh_flow' });
-    return { authFailed: true };
+    deps.logger?.info('scan_auth_failed', { profileId: deps.profileId, failure: 'flow_invalid' });
+    return { authFailed: true, failure: 'flow_invalid' };
   }
 
   if (deps.refreshLeaseClient !== undefined && deps.refreshLeaseEnabled === true) {
@@ -300,7 +299,7 @@ export async function refreshOAuth2Auth(
   const secrets = parseLoginFlowSecrets(profile.credential);
   const otpSetup = buildOtpResolver(profile, secrets, deps);
   if (!otpSetup.ok) {
-    return { authFailed: true };
+    return { authFailed: true, failure: 'otp_unavailable' };
   }
 
   const result = await runAuthRefreshResilient(

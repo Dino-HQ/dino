@@ -63,7 +63,7 @@ export interface ResolvedScanConfig {
   /** Max concurrent API requests */
   concurrency: number;
   /** Output format */
-  format: 'json' | 'markdown';
+  format: 'json' | 'markdown' | 'sarif';
   /** Report output directory */
   outputDir: string;
   /** Snapshot directory */

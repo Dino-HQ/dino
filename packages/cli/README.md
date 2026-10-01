@@ -152,7 +152,7 @@ Options most commands accept:
 | `--protocol graphql\|rest` | Target protocol (default `graphql`) |
 | `--spec-url <url\|path>` | OpenAPI document, required for REST |
 | `--token <token>` / `--header "<Name: value>"` | Auth for the target API; `--header` repeats |
-| `--format markdown\|json` | Output format; JSON is the default when output is piped |
+| `--format markdown\|json\|sarif` | Output format: Markdown by default, `json` for machines, `sarif` (scan only) for GitHub code scanning |
 | `--quiet` / `--verbose` / `--debug` | Less output, applied defaults and diagnostics, full stack traces |
 | `--no-color` | No color (the `NO_COLOR` environment variable works too) |
 
@@ -208,6 +208,49 @@ With GitHub Actions, use the scan action and pin the CLI version:
 ```
 
 The action also takes `protocol`, `spec-url`, `api-token`, `accept-partial`, `fail-on-breaking` and `format`, and outputs `report-path` and `exit-code`. For a hardened workflow, pin the action to a full commit SHA instead of `@v1`. More: [usedino.dev/docs/ci](https://usedino.dev/docs/ci).
+
+### GitHub code scanning
+
+`dino scan --format sarif` writes SARIF 2.1.0, so findings show up as alerts in the repository's Security tab:
+
+```yaml
+permissions:
+  contents: read
+  security-events: write # upload SARIF, read the previous analysis
+  actions: read          # read the previous run's state artifact (needed on private repositories)
+concurrency:
+  group: dino-sarif-${{ github.ref }} # one Dino SARIF writer per ref, in every workflow
+  cancel-in-progress: false
+steps:
+  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  - id: dino
+    run: |
+      code=0
+      npx -y @dino-hq/cli scan --spec-url openapi.yaml --endpoint "$API_URL" --format sarif --sarif-state dino.sarif.state.json > dino.sarif.tmp || code=$?
+      if [ -s dino.sarif.tmp ]; then mv dino.sarif.tmp dino.sarif; fi
+      exit "$code"
+    env:
+      API_URL: ${{ secrets.API_URL }}
+      GITHUB_TOKEN: ${{ github.token }}
+  - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    if: always() && hashFiles('dino.sarif') != ''
+    with:
+      name: dino-sarif-state-${{ steps.dino.outputs.sarif-run-token }}
+      path: dino.sarif.state.json
+  - uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+    if: always() && hashFiles('dino.sarif') != ''
+    with:
+      sarif_file: dino.sarif
+```
+
+- GitHub closes every alert missing from an upload, so Dino never leaves out an alert it did not re-test. In GitHub Actions each upload is reconciled with the previous Dino analysis for the same ref and scope: a partial run uploads what it verified and carries forward every alert on an operation it did not test, and an alert closes only when Dino re-tested its exact operation with the same test plan.
+- The state the next run needs is written to `--sarif-state` and kept as the artifact above. Keep artifact retention longer than the gap between scans: if the state is gone, Dino writes no SARIF (existing alerts stay open) until a complete run with `--sarif-rebaseline` starts over.
+- Dino writes no SARIF, and keeps the scan's exit code, when it cannot tell which alerts an upload would close: GitHub could not be read, the state is missing, or another Dino upload landed during the scan. A run that reached nothing (unreachable target, every tool failed, nothing in scope) never writes SARIF.
+- Outside GitHub Actions, `--format sarif` writes SARIF only for a complete run.
+- Every alert points at a file git tracks: the local OpenAPI spec or SDL, else the `.dino.yml`, else the workflow file. A generated or untracked file does not count. With none of these, `--format sarif` exits `2` before sending any request.
+- A scan narrowed with `--tools` or `--modules` uploads under its own category, so it never closes alerts from a full scan.
+- Only security findings (access control, data leaks, CORS, missing rate limits and similar) are filed as security alerts; contract and deprecation findings are quality alerts.
+- The scan's exit code is the same as with `--format json`. A result too large for GitHub (over 25,000 results or 10 MB compressed) exits `2` instead of being cut short.
 
 ## Verify a download
 

@@ -15,6 +15,11 @@ export const CREDENTIAL_REASON_CODES = [
   'credential_residency_mismatch',
   'credential_reconfigure_required',
   'credential_custody_unavailable',
+  // Credential handoff outcomes (DIN-1493).
+  'credential_required',
+  'credential_handoff_not_found',
+  'credential_handoff_link_expired',
+  'credential_handoff_closed',
   // Target Connection outcomes (DIN-1490).
   'target_connection_required',
   'target_connection_pending_authorization',
@@ -24,6 +29,14 @@ export const CREDENTIAL_REASON_CODES = [
   'target_connection_stale',
   'target_connection_scope_invalid',
   'target_connection_scope_unavailable',
+  // The Connection's pinned Authentication Flow version is no longer admitted (DIN-1496).
+  'target_connection_flow_changed',
+  // The Credential Reference an identity uses is not the one its Connection authorized (DIN-1493).
+  'target_connection_credential_changed',
+  // Authentication Flow outcomes (DIN-1492).
+  'auth_flow_invalid',
+  'auth_flow_unsafe',
+  'auth_flow_not_admitted',
 ] as const;
 export type CredentialReasonCode = (typeof CREDENTIAL_REASON_CODES)[number];
 

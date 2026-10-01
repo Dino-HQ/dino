@@ -14,6 +14,7 @@ export type CredentialOutcomeCode = Extract<
   | 'CREDENTIAL_RESIDENCY_MISMATCH'
   | 'CREDENTIAL_RECONFIGURE_REQUIRED'
   | 'CREDENTIAL_CUSTODY_UNAVAILABLE'
+  | 'CREDENTIAL_REQUIRED'
 >;
 
 const OUTCOMES: Record<
@@ -49,6 +50,11 @@ const OUTCOMES: Record<
     status: 503,
     message: 'Secret custody is unavailable',
     nextAction: { kind: 'retry', reasonCode: 'credential_custody_unavailable' },
+  },
+  CREDENTIAL_REQUIRED: {
+    status: 409,
+    message: 'This auth profile has no stored credential yet; a human provides it through a credential handoff',
+    nextAction: { kind: 'provide_input', reasonCode: 'credential_required' },
   },
 };
 

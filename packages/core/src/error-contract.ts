@@ -88,12 +88,21 @@ export const ERROR_CONTRACT = {
   CREDENTIAL_RESIDENCY_MISMATCH: config(409),
   CREDENTIAL_RECONFIGURE_REQUIRED: config(409),
   CREDENTIAL_CUSTODY_UNAVAILABLE: transient(503),
+  CREDENTIAL_REQUIRED: config(409),
+  // Credential handoff outcomes (see credential-handoff-outcome.ts for their nextAction).
+  CREDENTIAL_HANDOFF_NOT_FOUND: usage(404),
+  CREDENTIAL_HANDOFF_LINK_EXPIRED: usage(409),
+  CREDENTIAL_HANDOFF_CLOSED: usage(409),
   // Target Connection outcomes (see target-connection-outcome.ts for their nextAction).
   TARGET_CONNECTION_REQUIRED: config(409),
   TARGET_CONNECTION_NOT_AUTHORIZED: config(409),
   TARGET_CONNECTION_STALE: config(409),
   TARGET_CONNECTION_SCOPE_INVALID: usage(400),
   TARGET_CONNECTION_SCOPE_UNAVAILABLE: config(409),
+  // Authentication Flow outcomes (see auth-flow-outcome.ts for their nextAction).
+  AUTH_FLOW_INVALID: usage(400),
+  AUTH_FLOW_UNSAFE: usage(400),
+  AUTH_FLOW_NOT_ADMITTED: config(409),
   // 429 / 503 — try again later.
   RATE_LIMITED: transient(429),
   PROVIDER_RATE_LIMITED: transient(429),
