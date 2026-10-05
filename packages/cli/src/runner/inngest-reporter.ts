@@ -24,6 +24,7 @@ function failedResultBody(reason: string, extras: ScanFailedExtras): Record<stri
   };
   // #1759 L3 — carry the discriminator the cloud branches on; without it auth_lost re-queue never fires.
   if (extras.failureType !== undefined) body.failureType = extras.failureType;
+  if (extras.failureNextAction !== undefined) body.failureNextAction = extras.failureNextAction;
   // Additive: when failureType is a stable DinoErrorCode (a credential outcome), surface it as
   // `errorCode` too, so the cloud can read the machine identity without parsing failureType.
   const code = knownErrorCode(extras.failureType);
@@ -61,6 +62,8 @@ export type ScanCompletedReport = TerminalReportExtras & {
 /** Fields on the failed scan-results POST (#1759 L3, #30). */
 export type ScanFailedExtras = TerminalReportExtras & {
   failureType?: string;
+  /** DIN-1502: the refusing decision's bounded NextAction; the cloud keeps it only if it parses. */
+  failureNextAction?: { kind: string; reasonCode: string };
 };
 
 /** Fields on the cancelled scan-results POST (live-scan-logs Spec B). */

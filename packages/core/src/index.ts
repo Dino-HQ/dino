@@ -204,19 +204,12 @@ export {
   DinoUpstreamError,
   errorClassToCode,
 } from './errors';
-export type {
-  CredentialNextAction,
-  CredentialNextActionKind,
-  CredentialReasonCode,
-} from './credential-next-action';
-export {
-  CREDENTIAL_NEXT_ACTION_KINDS,
-  CREDENTIAL_REASON_CODES,
-  parseCredentialNextAction,
-} from './credential-next-action';
+export * from './credential-next-action';
 export type { CredentialOutcomeCode } from './credential-outcome';
 export { credentialOutcomeError, isCredentialOutcomeCode } from './credential-outcome';
 export * from './target-connection-outcome';
+export * from './scan-failure';
+export * from './billing-outcome';
 export * from './auth-flow-outcome';
 export * from './credential-handoff-outcome';
 export type {
@@ -234,6 +227,7 @@ export type {
 } from './types/target-connection';
 export {
   TARGET_CONNECTION_CONTRACT_VERSION,
+  proposalOf,
   TARGET_CONNECTION_EXECUTION_PLANES,
   TARGET_CONNECTION_LIFECYCLE_ACTIONS,
   TARGET_CONNECTION_LIMIT_CEILINGS,
@@ -248,8 +242,10 @@ export {
   canTransitionTargetConnection,
 } from './types/target-connection';
 
+export * from './types/auth-profile';
 export * from './types/authentication-flow';
 export * from './types/scan-authentication';
+export * from './types/commercial-state';
 
 // Safe path validation (path traversal prevention)
 export { safePath } from './utils/safe-path';
@@ -311,6 +307,8 @@ export type {
   CanonicalArtifactReference,
   CheckpointSnapshot,
   PresentationRequestView,
+  PresentationRequestListView,
+  HarForNextAction,
 } from './types/presentation-request';
 export {
   HUMAN_ACTION_REQUEST_STATUSES,
@@ -326,6 +324,9 @@ export {
   buildHumanHandoffContract,
   parsePresentationNextAction,
   PresentationRequestRefSchema,
+  PRESENTATION_REQUEST_LIST_STATUSES,
+  PRESENTATION_REQUEST_LIST_MAX,
+  PresentationRequestListRefSchema,
   HumanActionRequestRefSchema,
   HarSubmissionCommandSchema,
   PresentationReopenCommandSchema,
@@ -349,6 +350,7 @@ export type {
   PresentationReasonCode,
   PresentationStepId,
   HarSubmissionCommand,
+  PresentationRequestListRef,
   InvokableCapabilityId,
   ValidatedCapabilityArguments,
 } from './types/human-action-request';

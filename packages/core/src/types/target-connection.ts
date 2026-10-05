@@ -178,11 +178,54 @@ export interface TargetConnectionVersionView {
   readonly status: TargetConnectionStatus;
   readonly statusChangedAt: string;
   readonly configuration: TargetConnectionConfiguration;
+  /** This version as a proposal: passed back unchanged, it proposes the same configuration (same digest). */
+  readonly proposal: TargetConnectionProposal;
   readonly authoredBy: string;
   readonly authoredByType: 'member' | 'service_account';
   readonly authoredAt: string;
   /** The Presentation Request that asks a human to authorize this version. */
   readonly authorizationRequestId: string;
+  /** This version's configuration digest: a human's authorization names it, binding the approval to this scope (DIN-1498). */
+  readonly configurationDigest: string;
+}
+
+const SCHEME_DEFAULT_PORT: Readonly<Record<string, number>> = { http: 80, https: 443 };
+
+/** Ports admission derived (every allowed scheme's default), not ports a proposal narrowed explicitly. */
+function isDerivedDefaultPorts(scope: TargetConnectionConfiguration['scope']): boolean {
+  if (!scope.defaultPorts) return false;
+  const derived = [...new Set(scope.allowedSchemes.map((s) => SCHEME_DEFAULT_PORT[s]))].sort((a, b) => (a ?? 0) - (b ?? 0));
+  return derived.length === scope.ports.length && derived.every((port, i) => port === scope.ports[i]);
+}
+
+/**
+ * The proposal that admits exactly this configuration again. The admitted configuration also carries what admission
+ * derives — the destination host, whether ports are the Definition's defaults, the credential pins, and forwarding of an
+ * anonymous Connection — which a caller never proposes; this drops them, so a read-back re-proposes unchanged.
+ */
+export function proposalOf(configuration: TargetConnectionConfiguration): TargetConnectionProposal {
+  const { scope, authentication } = configuration;
+  const flowVersions = Object.fromEntries(
+    Object.entries(authentication.flowVersions).map(([profileId, pin]) => [profileId, pin.version]),
+  );
+  return {
+    scope: {
+      allowedSchemes: [...scope.allowedSchemes],
+      ...(isDerivedDefaultPorts(scope) ? {} : { ports: [...scope.ports] }),
+      pathPrefix: scope.pathPrefix,
+    },
+    privateAddressScope: configuration.privateAddressScope,
+    executionPlane: configuration.executionPlane,
+    authentication: {
+      authProfileIds: [...authentication.authProfileIds],
+      anonymous: authentication.anonymous,
+      ...(Object.keys(flowVersions).length === 0 ? {} : { flowVersions }),
+    },
+    ...(authentication.anonymous ? {} : { credentialForwarding: { hosts: [...configuration.credentialForwarding.hosts] } }),
+    redirectPolicy: configuration.redirectPolicy,
+    requestLimits: { ...configuration.requestLimits },
+    purposes: [...configuration.purposes],
+  };
 }
 
 const id = z.string().trim().min(1).max(128);

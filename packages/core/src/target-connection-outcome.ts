@@ -15,6 +15,18 @@ export type TargetConnectionOutcomeCode = Extract<
   | 'TARGET_CONNECTION_SCOPE_UNAVAILABLE'
 >;
 
+const TARGET_CONNECTION_OUTCOME_CODES: ReadonlySet<string> = new Set<TargetConnectionOutcomeCode>([
+  'TARGET_CONNECTION_REQUIRED',
+  'TARGET_CONNECTION_NOT_AUTHORIZED',
+  'TARGET_CONNECTION_STALE',
+  'TARGET_CONNECTION_SCOPE_INVALID',
+  'TARGET_CONNECTION_SCOPE_UNAVAILABLE',
+]);
+
+export function isTargetConnectionOutcomeCode(code: string): code is TargetConnectionOutcomeCode {
+  return TARGET_CONNECTION_OUTCOME_CODES.has(code);
+}
+
 /** Why a pinned or selected Connection version is not usable now; each is its own NextAction reason. */
 export type TargetConnectionUnusableStatus = 'PENDING_AUTHORIZATION' | 'SUSPENDED' | 'REVOKED' | 'RETIRED';
 

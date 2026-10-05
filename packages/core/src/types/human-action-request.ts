@@ -85,7 +85,11 @@ export const CREDENTIAL_REFERENCE_ID_PATTERN =
 
 /** A human decides a proposed Target Connection version: authorize it, or decline it (it is then retired). */
 const TargetConnectionAuthorizationResponseSchema = z
-  .object({ decision: z.enum(['authorize', 'decline']) })
+  .object({
+    decision: z.enum(['authorize', 'decline']),
+    /** The version's configuration digest the human reviewed: an approval binds to exactly that scope (DIN-1498). */
+    configurationDigest: z.string().trim().min(1).max(256),
+  })
   .strict();
 
 const TargetCredentialAuthorizationResponseSchema = z
@@ -100,6 +104,13 @@ export interface HarRegistryEntry {
   readonly reasonCode: PresentationReasonCode;
   /** The respondent's live grant must hold this at every submission. */
   readonly requiredPermission: DinoPermission;
+  /**
+   * Who may submit (DIN-1498, revised 2026-10-05). `direct_human`: a human signed in to Dino directly; an agent or
+   * other delegated client acting for them is refused, because a token representing a human does not prove the human
+   * approved. `delegable`: a delegated client may submit the human's answer. Every authority-granting HAR is
+   * `direct_human`.
+   */
+  readonly respondent: 'direct_human' | 'delegable';
   readonly ttlSeconds: number;
   /** Recorded on each HAR so an expiry decision names the rule it was made under. */
   readonly clockRuleVersion: string;
@@ -122,6 +133,9 @@ export const HAR_REGISTRY = {
     blockedStepId: 'credential_setup',
     reasonCode: 'credential_authorization_required',
     requiredPermission: 'api:update',
+    // Retired: bootstrap no longer opens it (DIN-1498, one approval per bundle); kept so historical rows read. The
+    // Target Connection authorization pins the credential and is the one human approval.
+    respondent: 'direct_human',
     ttlSeconds: SEVEN_DAYS_SECONDS,
     clockRuleVersion: 'har-expiry-v1',
     responseSchemaId: 'dino.har.target_credential_authorization.v1',
@@ -145,21 +159,23 @@ export const HAR_REGISTRY = {
     blockedStepId: 'connection_authorization',
     reasonCode: 'target_connection_authorization_required',
     requiredPermission: 'api:update',
+    respondent: 'direct_human',
     ttlSeconds: SEVEN_DAYS_SECONDS,
     clockRuleVersion: 'har-expiry-v1',
-    responseSchemaId: 'dino.har.target_connection_authorization.v1',
+    responseSchemaId: 'dino.har.target_connection_authorization.v2',
     responseSchema: TargetConnectionAuthorizationResponseSchema,
     missingContribution:
       'Authorize, or decline, the proposed Target Connection version: how and where Dino may reach this Target.',
     whyRequired:
       'A Target Connection permits Dino to interact with a customer Target under a credential; a human with api:update must authorize each version.',
     constraints: [
-      'decision is authorize or decline',
+      'decision is authorize or decline, given by a human signed in to Dino directly (never an agent acting for them)',
+      'configurationDigest is the digest of the version the human reviewed; a changed version needs a new review',
       'the version must still be pending and configured against the current Target Definition',
       'every bound auth profile must still belong to this Target, with a usable Credential Reference if it stores a credential',
       'each bound login_flow auth profile authorizes exactly the Authentication Flow version the version pins, which must still be admitted',
     ],
-    example: { decision: '<authorize|decline>' },
+    example: { decision: '<authorize|decline>', configurationDigest: '<configuration-digest-of-the-version>' },
   },
 } as const satisfies Record<string, HarRegistryEntry>;
 
@@ -233,6 +249,11 @@ export interface HumanActionRequestView {
   readonly createdAt: string;
   readonly statusChangedAt: string | null;
   readonly supersedesHarId: HumanActionRequestId | null;
+  /**
+   * DIN-1498: where the human approves a pending `direct_human` HAR, relative to Dino's API origin (MCP results also
+   * carry the absolute `approvalUrl`). Null when the HAR is not pending or an agent may answer it.
+   */
+  readonly approvalPath: string | null;
   readonly acceptedResponse: HarAcceptedResponse | null;
 }
 
@@ -384,6 +405,21 @@ export function parsePresentationNextAction(value: unknown): PresentationNextAct
 export const PresentationRequestRefSchema = z
   .object({ requestId: z.string().trim().min(1).max(128) })
   .strict();
+
+/**
+ * Which of the Organization's Requests to list, newest first: `open` (default) leaves out SUCCEEDED, FAILED and
+ * CANCELLED. A page holds at most `limit` (default and maximum 50); `cursor` is the previous page's `nextCursor`.
+ */
+export const PRESENTATION_REQUEST_LIST_STATUSES = ['open', 'all'] as const;
+export const PRESENTATION_REQUEST_LIST_MAX = 50;
+export const PresentationRequestListRefSchema = z
+  .object({
+    status: z.enum(PRESENTATION_REQUEST_LIST_STATUSES).optional(),
+    limit: z.number().int().min(1).max(PRESENTATION_REQUEST_LIST_MAX).optional(),
+    cursor: z.string().trim().min(1).max(128).optional(),
+  })
+  .strict();
+export type PresentationRequestListRef = z.infer<typeof PresentationRequestListRefSchema>;
 
 /** A Human Action Request named by id (MCP tool argument). */
 export const HumanActionRequestRefSchema = z

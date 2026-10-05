@@ -159,6 +159,9 @@ export type AuditAction =
   | 'billing.tier_changed'
   | 'billing.customer_linked'
   | 'billing.cancellation_scheduled'
+  | 'billing.payment_action_required'
+  | 'billing.delivery_for_deleted_workspace'
+  | 'billing.subscription_mismatch'
   | 'billing.seats_changed'
   | 'billing.customer_mismatch'
   // GitHub installation lifecycle

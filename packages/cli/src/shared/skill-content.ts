@@ -58,4 +58,5 @@ The rule that matters most: anything that is not a substantiated pass is not a p
 
 - Everything here is local. This skill ships inside the \`dino\` CLI, so it matches the installed version; for per-run specifics, trust the live JSON envelope over any prose.
 - CI: see https://usedino.dev/docs/ci (GitHub Action or any CI). Run Dino after the target is deployed, not before.
+- This skill covers the CLI. Agents onboarding an Organization through Dino's MCP server follow https://usedino.dev/docs/for-agents and the guidance the server returns once connected.
 `;

@@ -24,11 +24,12 @@ import {
   type ScanAuthDeps,
 } from './scan-auth';
 import { outcomeFromCaughtError } from '../shared/outcome';
+import type { CredentialFailureSink, ReleaseRefusalCode } from './runner-hydrate';
 import { refreshOAuth2Auth } from './scan-auth-oauth2';
 import { buildRotatedRefreshGetter, readHydratedRefreshToken } from './runner-refresh-token';
 import type { RunnerState } from './state-store';
 import type { RestFuzzExecutor } from '@dino/agents';
-import type { AuthenticationAcquisitionReport, CredentialOutcomeCode, RunnerJob } from '@dino/core';
+import type { AuthenticationAcquisitionReport, CredentialNextAction, RunnerJob } from '@dino/core';
 
 export type { RunnerRbacWire } from './runner-rbac-wire';
 
@@ -42,7 +43,7 @@ function scanAuthLogger(): { info: (event: string, data?: Record<string, unknown
 
 type AuthWireContext = {
   /** P1F: the last typed credential outcome the cloud returned for this scan's hydrate. */
-  credentialFailure?: { code?: CredentialOutcomeCode };
+  credentialFailure?: { code?: ReleaseRefusalCode; nextAction?: CredentialNextAction | undefined };
   state: RunnerState;
   assignment: RunnerJob;
   authProfileId: string;
@@ -65,9 +66,9 @@ function buildOtpClient(ctx: AuthWireContext) {
 }
 
 /** Every hydrate (primary, refresh, RBAC role) latches the FIRST typed credential outcome for the scan. */
-function latchCredentialFailure(ctx: AuthWireContext): (code: CredentialOutcomeCode) => void {
-  return (code) => {
-    ctx.credentialFailure ??= { code };
+function latchCredentialFailure(ctx: AuthWireContext): CredentialFailureSink {
+  return (code, nextAction) => {
+    ctx.credentialFailure ??= { code, nextAction };
   };
 }
 
@@ -196,7 +197,7 @@ export type RunnerAuthWireResult =
       rotatedRefreshToken: () => string | undefined;
       rbac?: RunnerRbacWire;
       /** P1F: a typed credential outcome latched mid-scan (role hydrate, re-hydrate); it fails the scan. */
-      credentialFailure?: () => CredentialOutcomeCode | undefined;
+      credentialFailure?: () => ReleaseRefusalCode | undefined;
       /** DIN-1492: what this run proved about authentication, read at the end of the run. */
       authentication?: () => AuthenticationAcquisitionReport | undefined;
       /** DIN-1492: the final status of an authenticated request outside the REST wrapper (GraphQL). */
@@ -205,7 +206,8 @@ export type RunnerAuthWireResult =
   | {
       ok: false;
       error: 'auth_failed';
-      credentialCode?: CredentialOutcomeCode;
+      credentialCode?: ReleaseRefusalCode;
+      credentialNextAction?: CredentialNextAction;
       authentication?: AuthenticationAcquisitionReport;
     };
 
@@ -307,7 +309,7 @@ function authWireSuccess(opts: {
   rotatedRefreshToken: () => string | undefined;
   rbac?: RunnerRbacWire;
   rbacDeclared?: boolean;
-  credentialFailure: () => CredentialOutcomeCode | undefined;
+  credentialFailure: () => ReleaseRefusalCode | undefined;
   recorder: AuthenticationRecorder;
 }): RunnerAuthWireResult {
   return {
@@ -331,8 +333,10 @@ function authWireSuccess(opts: {
  * this run: Dino did not release the identity, reported as a closed outcome rather than silence.
  */
 function hydrateFailure(ctx: AuthWireContext, recorder: AuthenticationRecorder): RunnerAuthWireResult {
-  const code = ctx.credentialFailure?.code;
-  if (code !== undefined) return { ok: false, error: 'auth_failed', credentialCode: code };
+  const { code, nextAction } = ctx.credentialFailure ?? {};
+  if (code !== undefined) {
+    return { ok: false, error: 'auth_failed', credentialCode: code, ...(nextAction ? { credentialNextAction: nextAction } : {}) };
+  }
   recorder.acquisition(ctx.authProfileId, NOT_RELEASED);
   return acquisitionFailure(recorder);
 }
@@ -371,7 +375,7 @@ async function wireHydratedAuthProfile(opts: {
     () => currentRefreshToken,
   );
 
-  const credentialFailure = (): CredentialOutcomeCode | undefined => ctx.credentialFailure?.code;
+  const credentialFailure = (): ReleaseRefusalCode | undefined => ctx.credentialFailure?.code;
   const rbacDeclared = hydratedProfileDeclaresRbac(hydratedProfile);
   const rbac = await attemptOptionalRbacWire(ctx, hydratedProfile, recorder);
   const success = (restExecutor: RestFuzzExecutor | undefined): RunnerAuthWireResult =>
