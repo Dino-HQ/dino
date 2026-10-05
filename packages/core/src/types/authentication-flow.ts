@@ -42,6 +42,38 @@ export type AuthenticationFlowVersionView = {
   readonly admittedAt: string;
 };
 
+/**
+ * The flow format an agent writes (DIN-1492 live run: an agent shown no format guessed three wrong shapes). It mirrors
+ * the Auth Flow Runner's schema (`AuthFlowDefSchema` in @dino/auth); `AUTHENTICATION_FLOW_EXAMPLE` is pinned admissible.
+ */
+export const AUTHENTICATION_FLOW_FORMAT =
+  'A flow is {steps, result, injections}. steps run in order; a request step is {type:"request", transport:"rest"|"graphql", ' +
+  'method?, urlTemplate (a path joined to the Target, or an absolute URL), headers?, bodyTemplate?, extract?: [{var, ' +
+  'from:"json"|"header"|"cookie"|"status", selector (a dotted JSON path such as data.token, or a header/cookie name), ' +
+  'optional?}]}; other steps are {type:"await_otp", into} and {type:"totp", secretRef:"{{seed}}", into}. result is ' +
+  '{accessTokenVar?, refreshTokenVar?, userIdVar?, expiresAtVar? (epoch ms), expiresInVar? (seconds)}. injections are ' +
+  '[{target:"header"|"cookie"|"query", name, valueTemplate}]. Optional: reauth {fromStepIndex} (re-auth runs the steps ' +
+  'from there), refresh {step} (one request step, handed {{refresh_token}}), otp {extractPattern} (a regex whose first ' +
+  'capturing group is the 4-8 digit code in an inbox email, e.g. code: (\\d{6})). A secret a human enters later is a {{name}} ' +
+  'placeholder in a value; a variable an earlier step extracted is referenced the same way.';
+
+/** A username/password login whose JSON response carries the token: admissible as written (pinned by a test). */
+export const AUTHENTICATION_FLOW_EXAMPLE = {
+  steps: [
+    {
+      type: 'request',
+      transport: 'rest',
+      method: 'POST',
+      urlTemplate: '/login',
+      headers: { 'Content-Type': 'application/json' },
+      bodyTemplate: { username: '{{username}}', password: '{{password}}' }, // nosonar: {{placeholders}} a human fills later, not secrets
+      extract: [{ var: 'token', from: 'json', selector: 'data.token' }],
+    },
+  ],
+  result: { accessTokenVar: 'token' },
+  injections: [{ target: 'header', name: 'Authorization', valueTemplate: 'Bearer {{token}}' }],
+};
+
 const id = z.string().trim().min(1).max(128);
 
 /** Propose a flow for an Authentication Identity (HTTP body + path, MCP `propose_authentication_flow`). */
@@ -50,7 +82,9 @@ export const AuthenticationFlowProposeCommandSchema = z
     authProfileId: id,
     idempotencyKey: z.string().trim().min(1).max(BOOTSTRAP_IDEMPOTENCY_KEY_MAX),
     /** Validated by admission against the Auth Flow Runner's own schema and rules. */
-    flow: z.unknown(),
+    flow: z
+      .unknown()
+      .describe(`${AUTHENTICATION_FLOW_FORMAT} Example: ${JSON.stringify(AUTHENTICATION_FLOW_EXAMPLE)}`),
     /** Hosts besides the Target's destination the flow may call; every other request goes to the Target. */
     tokenHosts: z.array(z.string().trim().min(1).max(253)).max(AUTHENTICATION_FLOW_MAX_TOKEN_HOSTS).optional(),
   })

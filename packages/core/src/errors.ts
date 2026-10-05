@@ -102,6 +102,21 @@ export type DinoErrorCode =
   | 'AUTH_FLOW_INVALID'
   | 'AUTH_FLOW_UNSAFE'
   | 'AUTH_FLOW_NOT_ADMITTED'
+  // Scan execution outcomes (DIN-1503/1504/1505/1506) — why an attempt could not run or failed, each with a bounded
+  // `nextAction` (see scan-failure.ts). API_SPEC_REQUIRED is also the 409 at scan admission.
+  | 'SCAN_API_SPEC_REQUIRED'
+  | 'SCAN_API_SPEC_UNAVAILABLE'
+  | 'SCAN_DISCOVERY_FAILED'
+  | 'SCAN_RUNNER_UNAVAILABLE'
+  | 'SCAN_RUNNER_FAILED'
+  // Billing handoff outcomes (DIN-1357) — each with a bounded `nextAction` (see billing-outcome.ts).
+  | 'BILLING_PROVIDER_UNAVAILABLE'
+  | 'BILLING_PROVIDER_NOT_CONFIGURED'
+  | 'BILLING_PROVIDER_REJECTED'
+  | 'BILLING_CUSTOMER_NOT_FOUND'
+  | 'BILLING_RETURN_URL_NOT_ALLOWED'
+  | 'BILLING_CHECKOUT_OUTCOME_UNKNOWN'
+  | 'BILLING_SUBSCRIPTION_EXISTS'
   // Rate limit (429)
   | 'RATE_LIMITED'
   // Upstream/provider rate limit (429) — the SECRET CUSTODIAN throttled Dino (distinct from
@@ -234,9 +249,25 @@ function isDispatchAmbiguousReason(value: unknown): value is DispatchAmbiguousRe
   return value === 'lost_response' || value === 'already_dispatched';
 }
 
-/** Codes whose body may carry the closed-union bounded `nextAction` (credential, Connection and flow outcomes). */
+const SCAN_OUTCOME_CODES: ReadonlySet<DinoErrorCode> = new Set<DinoErrorCode>([
+  'SCAN_API_SPEC_REQUIRED',
+  'SCAN_API_SPEC_UNAVAILABLE',
+  'SCAN_DISCOVERY_FAILED',
+  'SCAN_RUNNER_UNAVAILABLE',
+  'SCAN_RUNNER_FAILED',
+]);
+
+/** Codes whose body may carry the closed-union bounded `nextAction` (credential, Connection, flow, scan, billing and entitlement outcomes). */
 function hasBoundedNextAction(code: DinoErrorCode): boolean {
-  return code.startsWith('CREDENTIAL_') || code.startsWith('TARGET_CONNECTION_') || code.startsWith('AUTH_FLOW_');
+  return (
+    code.startsWith('CREDENTIAL_') ||
+    code.startsWith('BILLING_') ||
+    code === 'QUOTA_EXCEEDED' ||
+    code === 'TIER_UPGRADE_REQUIRED' ||
+    code.startsWith('TARGET_CONNECTION_') ||
+    code.startsWith('AUTH_FLOW_') ||
+    SCAN_OUTCOME_CODES.has(code)
+  );
 }
 
 const UPGRADE_CONTEXT_FIELDS = ['feature', 'limit', 'used', 'resetDate', 'allowedLevels'] as const;
@@ -246,7 +277,9 @@ const UPGRADE_CONTEXT_FIELDS = ['feature', 'limit', 'used', 'resetDate', 'allowe
  * whitelist `toJSON()` applies. The OpenAPI error schema is generated from it.
  */
 export function errorBodyExtraFields(code: DinoErrorCode): readonly (keyof DinoErrorJson)[] {
-  if (code === 'QUOTA_EXCEEDED' || code === 'TIER_UPGRADE_REQUIRED') return UPGRADE_CONTEXT_FIELDS;
+  if (code === 'QUOTA_EXCEEDED' || code === 'TIER_UPGRADE_REQUIRED') {
+    return [...UPGRADE_CONTEXT_FIELDS, 'nextAction'];
+  }
   if (hasBoundedNextAction(code)) return ['nextAction'];
   if (code === 'DISPATCH_AMBIGUOUS') return ['reason'];
   return [];

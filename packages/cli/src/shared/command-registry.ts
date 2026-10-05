@@ -106,13 +106,18 @@ export const COMMAND_REGISTRY = {
   login: {
     summary:
       'Authenticate via browser (Connected Apps + PKCE); stores a token in ~/.dino/credentials.json.',
-    usage: 'dino login [--api-url <url>]',
+    usage: 'dino login [--api-url <url>] [--no-browser]',
     ownFlags: {
       apiUrl: {
         name: '--api-url',
         arg: '<url>',
         type: 'string',
         description: 'Cloud API URL (optional override)',
+      },
+      noBrowser: {
+        name: '--no-browser',
+        type: 'boolean',
+        description: 'Do not open a browser: print the sign-in URL and paste the code back (machines without a browser)',
       },
     },
     commonPresentation: false,
@@ -141,7 +146,7 @@ export const COMMAND_REGISTRY = {
   credential: {
     summary:
       'Put a Target credential into Dino custody for an auth profile at a no-echo prompt; prints only the Credential Reference.',
-    usage: 'dino credential set --auth-profile <id> [--har <harId>] [--stdin]',
+    usage: 'dino credential set --auth-profile <id> [--stdin]',
     ownFlags: CREDENTIAL_OWN_FLAGS,
     commonPresentation: false,
     commonConnection: false,

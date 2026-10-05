@@ -301,12 +301,6 @@ export const CREDENTIAL_OWN_FLAGS = {
     type: 'string',
     description: 'The auth profile (static bearer, api_key or basic_auth) the credential is for',
   },
-  har: {
-    name: '--har',
-    arg: '<harId>',
-    type: 'string',
-    description: 'The pending target_credential_authorization Human Action Request this answers',
-  },
   stdin: {
     name: '--stdin',
     type: 'boolean',

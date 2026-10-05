@@ -4,7 +4,8 @@
  * cloud still requires `dcg` and serves `dcg.json`), cancellation and the completed-tool count are read
  * off the verification records, and the attestation — when an identity exists — signs the same bytes.
  */
-import { canonicalDinoResultBytes, dinoResultDigest, partitionTools, type AuthenticationAcquisitionReport, type CredentialOutcomeCode, type DinoResult, type GraphQLOperation, type RunnerJob, type RunnerResult, type ScanAttestationWire } from '@dino/core';
+import { DinoError, parseCredentialNextAction, canonicalDinoResultBytes, dinoResultDigest, partitionTools, type AuthenticationAcquisitionReport, type DinoResult, type GraphQLOperation, type RunnerJob, type RunnerResult, type ScanAttestationWire } from '@dino/core';
+import type { ReleaseRefusalCode } from './runner-hydrate';
 import { buildSnapshot } from '@dino/engine';
 import { outcomeFromCaughtError } from '../shared/outcome';
 
@@ -38,12 +39,15 @@ export function failedRunnerResult(
   authentication?: AuthenticationAcquisitionReport,
 ): RunnerResult {
   const code = outcomeFromCaughtError(error).error?.code;
+  // DIN-1506: a typed failure carries its bounded NextAction to the cloud with its code.
+  const nextAction = error instanceof DinoError ? parseCredentialNextAction(error.meta?.nextAction) : undefined;
   return {
     scanId: assignment.scanId,
     attemptId: assignment.attemptId,
     status: 'failed',
     error: error instanceof Error ? error.message : String(error),
     ...(code === undefined ? {} : { failureType: code }),
+    ...(nextAction === undefined ? {} : { failureNextAction: nextAction }),
     ...(authentication === undefined ? {} : { authentication }),
   };
 }
@@ -57,7 +61,7 @@ export type CompletedRunnerResultOpts = {
   /** DIN-1492: the run-scoped authentication report, carried on every terminal status. */
   authentication?: AuthenticationAcquisitionReport | undefined;
   /** P1F: a typed credential outcome latched during the scan (e.g. a revoked RBAC role credential). */
-  credentialFailure?: CredentialOutcomeCode;
+  credentialFailure?: ReleaseRefusalCode;
   cancelObserved: boolean;
   schemaSnapshot?: unknown;
   /** Resolved by the caller; `undefined` when no identity or the signer failed (INV-1). */

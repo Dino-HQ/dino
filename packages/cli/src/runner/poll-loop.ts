@@ -204,6 +204,7 @@ async function handleAssignment(config: PollLoopConfig, assignment: RunnerJob): 
   } else {
     await config.reporter.reportFailed(result.scanId, result.error ?? 'pipeline_failed', {
       ...(result.failureType === undefined ? {} : { failureType: result.failureType }),
+      ...(result.failureNextAction === undefined ? {} : { failureNextAction: result.failureNextAction }),
       ...extras,
     });
   }

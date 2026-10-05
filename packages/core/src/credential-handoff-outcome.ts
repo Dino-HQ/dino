@@ -46,13 +46,12 @@ export const CREDENTIAL_HANDOFF_TTL_SECONDS = 24 * 60 * 60;
 
 /** Stated with every stored outcome: storing a credential never authorizes its use. */
 export const CREDENTIAL_HANDOFF_STORED_STATEMENT =
-  'Stored in custody. Using it for this Target still requires authorizing it (Human Action Request or Target Connection). This is not credential health or Target health.';
+  'Stored in custody. Using it for this Target still requires a human to authorize a Target Connection that pins it. This is not credential health or Target health.';
 
-/** MCP `open_credential_handoff`: which Authentication Identity (and optional credential HAR) the handoff serves. */
+/** MCP `open_credential_handoff`: which Authentication Identity the handoff serves. */
 export const CredentialHandoffOpenCommandSchema = z
   .object({
     authProfileId: z.string().trim().min(1).max(128),
-    harId: z.string().trim().min(1).max(128).optional(),
   })
   .strict();
 export type CredentialHandoffOpenCommand = z.infer<typeof CredentialHandoffOpenCommandSchema>;
@@ -64,7 +63,6 @@ export interface CredentialHandoffOpened {
     readonly status: 'open' | 'completed';
     readonly targetId: string;
     readonly authProfileId: string;
-    readonly harId: string | null;
     readonly expiresAt: string;
     readonly linkExpiresAt: string;
     readonly result: { readonly credentialReferenceId: string; readonly version: number } | null;

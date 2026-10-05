@@ -3,23 +3,38 @@
  * auth (#2388 Task 7: the rbac lease signal cancels grant, hydrate, and login-flow requests).
  */
 
-import { isCredentialOutcomeCode, type CredentialOutcomeCode } from '@dino/core';
+import {
+  isCredentialOutcomeCode,
+  isTargetConnectionOutcomeCode,
+  parseCredentialNextAction,
+  type CredentialNextAction,
+  type CredentialOutcomeCode,
+  type TargetConnectionOutcomeCode,
+} from '@dino/core';
 import type { FetchLike } from '@dino/auth';
 import type { HydratedProfile } from './scan-auth';
 
-/** Receives the typed credential outcome (P1F) when the cloud refused a grant or hydrate with one. */
-export type CredentialFailureSink = (code: CredentialOutcomeCode) => void;
+/**
+ * Why the cloud refused to release the identity: a credential outcome (P1F), or the scan's Target Connection no
+ * longer authorizing it (DIN-1490; surfaced since DIN-1502).
+ */
+export type ReleaseRefusalCode = CredentialOutcomeCode | TargetConnectionOutcomeCode;
+
+/** Receives the typed refusal, with the bounded NextAction the refusing decision returned (if it parses). */
+export type CredentialFailureSink = (code: ReleaseRefusalCode, nextAction?: CredentialNextAction) => void;
 
 /**
- * P1F (DIN-1353): read a typed credential outcome from a non-2xx body. Only codes in the closed
- * credential set are surfaced; anything else (authority denials, malformed bodies) stays generic.
+ * P1F (DIN-1353) / DIN-1502: read a typed release refusal from a non-2xx body. Only codes in the closed credential
+ * and Target Connection sets are surfaced; anything else (authority denials, malformed bodies) stays generic.
  */
 async function reportCredentialFailure(res: Response, sink: CredentialFailureSink | undefined): Promise<void> {
   if (sink === undefined) return;
   try {
-    const body = (await res.json()) as { error?: { code?: unknown } };
+    const body = (await res.json()) as { error?: { code?: unknown; nextAction?: unknown } };
     const code = body.error?.code;
-    if (typeof code === 'string' && isCredentialOutcomeCode(code)) sink(code);
+    if (typeof code === 'string' && (isCredentialOutcomeCode(code) || isTargetConnectionOutcomeCode(code))) {
+      sink(code, parseCredentialNextAction(body.error?.nextAction));
+    }
   } catch (err) {
     // Unparseable body → no typed outcome; the caller's generic failure stands. Name only (INV-6).
     console.warn(

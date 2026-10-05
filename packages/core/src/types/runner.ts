@@ -111,6 +111,11 @@ export type RunnerResult =
       status: 'failed';
       error: string;
       failureType?: string | undefined;
+      /**
+       * DIN-1502: the bounded NextAction the refusing decision returned (e.g. which status a Connection is in). The
+       * cloud keeps it only if it parses against the closed union; otherwise it derives one from `failureType`.
+       */
+      failureNextAction?: { kind: string; reasonCode: string } | undefined;
       /** Rotated OAuth2 refresh_token to persist across scans (#1759 #30). */
       rotatedRefreshToken?: string | undefined;
       /** DIN-1492: the run-scoped authentication outcome; omitted when the runner acquired nothing. */

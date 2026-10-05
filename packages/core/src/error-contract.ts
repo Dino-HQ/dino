@@ -103,6 +103,24 @@ export const ERROR_CONTRACT = {
   AUTH_FLOW_INVALID: usage(400),
   AUTH_FLOW_UNSAFE: usage(400),
   AUTH_FLOW_NOT_ADMITTED: config(409),
+  // Scan execution outcomes (see scan-failure.ts for their nextAction). Only API_SPEC_REQUIRED is an HTTP response
+  // (scan admission); the rest are recorded on a failed attempt.
+  SCAN_API_SPEC_REQUIRED: config(409),
+  SCAN_API_SPEC_UNAVAILABLE: transient(null),
+  SCAN_DISCOVERY_FAILED: config(null),
+  SCAN_RUNNER_UNAVAILABLE: config(null),
+  SCAN_RUNNER_FAILED: transient(null),
+  // Billing handoff outcomes (DIN-1357; see billing-outcome.ts for their nextAction). The provider-side codes keep
+  // Polar's outage (retry) apart from a missing configuration or a permanent refusal (neither fixed by retrying).
+  BILLING_PROVIDER_UNAVAILABLE: transient(503),
+  BILLING_PROVIDER_NOT_CONFIGURED: config(503),
+  BILLING_PROVIDER_REJECTED: config(502),
+  BILLING_CUSTOMER_NOT_FOUND: config(409),
+  BILLING_RETURN_URL_NOT_ALLOWED: usage(400),
+  // The provider may have created a checkout under this Idempotency-Key but never confirmed it: the key is spent.
+  BILLING_CHECKOUT_OUTCOME_UNKNOWN: config(409),
+  // One live subscription per Organization: plan changes go through the billing portal, never a second checkout.
+  BILLING_SUBSCRIPTION_EXISTS: config(409),
   // 429 / 503 — try again later.
   RATE_LIMITED: transient(429),
   PROVIDER_RATE_LIMITED: transient(429),

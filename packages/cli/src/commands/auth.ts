@@ -9,11 +9,11 @@ import { runOAuthLogin } from '../auth/oauth-login';
 import { clearStoredToken, getValidToken, readStoredToken } from '../auth/token-store';
 import { CliError } from '../shared/errors';
 import { cloudHttpFailure, decodeCloudErrorResponse } from '../shared/cloud-error';
-import { detectUi } from '../shared/ui';
 import type { StoredToken } from '../auth/token-store';
 
 function apiUrlFlag(flags: Record<string, unknown>): string | undefined {
-  const v = flags['api-url'];
+  // The CLI parser camel-cases flags (`--api-url` → `apiUrl`).
+  const v = flags.apiUrl ?? flags['api-url'];
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
@@ -21,17 +21,21 @@ function defaultOpenBrowser(url: string): void {
   const platform = process.platform;
   // Platform openers are fixed binaries on PATH by OS convention (open / cmd / xdg-open).
   /* eslint-disable sonarjs/no-os-command-from-path -- intentional browser launch */
+  // A machine with no browser opener still logs in: the URL is printed, and a spawn failure is not a crash.
+  const launch = (cmd: string, args: string[]) =>
+    spawn(cmd, args, { detached: true, stdio: 'ignore' })
+      .on('error', () => undefined)
+      .unref();
   if (platform === 'darwin') {
-    spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    launch('open', [url]);
     return;
   }
   if (platform === 'win32') {
-    spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
+    launch('cmd', ['/c', 'start', '', url]);
     return;
   }
   // Constructed so knip does not treat a literal PATH binary as an undeclared dependency.
-  const linuxOpener = ['xdg', 'open'].join('-');
-  spawn(linuxOpener, [url], { detached: true, stdio: 'ignore' }).unref();
+  launch(['xdg', 'open'].join('-'), [url]);
   /* eslint-enable sonarjs/no-os-command-from-path */
 }
 
@@ -93,15 +97,23 @@ async function bestEffortRevoke(
   }
 }
 
+/** The login environment: `--api-url` selects the API, and with it the OAuth issuer (staging vs live). */
+export function loginEnv(flags: Record<string, unknown>): Record<string, string | undefined> {
+  return envFromProcess({ DINO_API_URL: apiUrlFlag(flags) ?? process.env.DINO_API_URL });
+}
+
+/**
+ * The browser opens unless `--no-browser` is passed, with or without a TTY: an agent or `!` in Claude Code runs
+ * without one, and a printed URL alone left those logins stuck (DIN-1495). The URL is printed either way.
+ */
+export function loginOpensBrowser(flags: Record<string, unknown>): boolean {
+  return !(flags['no-browser'] === true || flags.noBrowser === true);
+}
+
 /** `dino login` - browser OAuth (PKCE + loopback) or `--no-browser` manual path. */
 export async function runLogin(flags: Record<string, unknown>): Promise<number> {
-  const noBrowser = flags['no-browser'] === true || flags.noBrowser === true;
-  const ui = detectUi({
-    quiet: flags.quiet === true,
-    noColor: flags.noColor === true,
-  });
-  const env = envFromProcess();
-  const effectiveNoBrowser = noBrowser || !ui.interactive;
+  const env = loginEnv(flags);
+  const effectiveNoBrowser = !loginOpensBrowser(flags);
 
   try {
     const token = await runOAuthLogin({
@@ -134,7 +146,7 @@ export async function runLogin(flags: Record<string, unknown>): Promise<number> 
 
 /** `dino logout` - best-effort revoke, then clear local store. */
 export async function runLogout(flags: Record<string, unknown>): Promise<number> {
-  const env = envFromProcess();
+  const env = loginEnv(flags);
   const stored = readStoredToken(env);
   if (stored !== null) {
     await bestEffortRevoke(stored, env);
