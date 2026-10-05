@@ -117,11 +117,20 @@ export const ScanAuthenticationRefSchema = z
   .object({ scanId: z.string().trim().min(1).max(128) })
   .strict();
 
+/** DIN-1506: why a failed attempt failed — a stable code, the runner's redacted message, and a bounded NextAction. */
+export type ScanAttemptFailureView = {
+  readonly code: string;
+  readonly detail: string | null;
+  readonly nextAction: { readonly kind: string; readonly reasonCode: string } | null;
+};
+
 export type ScanAuthenticationAttemptView = {
   readonly attemptId: string;
   readonly attemptNumber: number;
   readonly status: string;
   readonly authentication: ScanAuthenticationView | null;
+  /** Null unless the attempt failed. */
+  readonly failure: ScanAttemptFailureView | null;
 };
 
 export type ScanAuthenticationListView = {

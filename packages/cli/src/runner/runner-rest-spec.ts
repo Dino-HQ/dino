@@ -8,7 +8,7 @@
 import { unlink as fsUnlink, writeFile as fsWriteFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { RunnerJob } from '@dino/core';
+import { scanOutcomeError, type RunnerJob } from '@dino/core';
 
 export interface RunnerRestSpecLogger {
   info(msg: string, data?: Record<string, unknown>): void;
@@ -141,8 +141,10 @@ async function resolveUrlRunnerRestSpec(
 /**
  * Resolve a runner REST config from the assignment: fetch the OpenAPI spec via the PINNED fetchImpl
  * (SSRF-safe, DNS-pinned, 16 MiB cap), write it to a temp file, return the local specPath + a cleanup.
- * INV-1: a rest+specUrl scan whose fetch fails THROWS (never a silent GraphQL/empty fallback).
- * Non-rest OR rest-without-specUrl → { restConfig: undefined } (caller keeps the GraphQL path).
+ * INV-1: a rest+specUrl scan whose fetch fails THROWS SCAN_API_SPEC_UNAVAILABLE (never a silent GraphQL/empty
+ * fallback). DIN-1505: a REST API with no spec at all THROWS SCAN_API_SPEC_REQUIRED — the runner never guesses
+ * GraphQL for a declared REST API. Non-rest → { restConfig: undefined } (the GraphQL path: a declared GraphQL API,
+ * or an ad-hoc scan with no API and so no protocol).
  */
 export async function resolveRunnerRestSpec(
   assignment: Pick<RunnerJob, 'protocol' | 'specUrl' | 'specBody' | 'specFormat' | 'scanId'>,
@@ -155,5 +157,12 @@ export async function resolveRunnerRestSpec(
   if (uploaded.restConfig !== undefined) {
     return uploaded;
   }
-  return resolveUrlRunnerRestSpec(assignment, deps);
+  let fromUrl: RunnerRestSpecResult;
+  try {
+    fromUrl = await resolveUrlRunnerRestSpec(assignment, deps);
+  } catch (err) {
+    throw scanOutcomeError('SCAN_API_SPEC_UNAVAILABLE', err instanceof Error ? err.message : String(err), err);
+  }
+  if (fromUrl.restConfig === undefined) throw scanOutcomeError('SCAN_API_SPEC_REQUIRED');
+  return fromUrl;
 }

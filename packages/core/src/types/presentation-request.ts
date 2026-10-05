@@ -106,10 +106,24 @@ export interface PresentationRequestView {
   readonly nextAction?: PresentationNextAction;
 }
 
+/** The Organization's Requests, newest first and bounded; each is the same projection a single read returns. */
+export interface PresentationRequestListView {
+  readonly items: readonly PresentationRequestView[];
+  readonly count: number;
+  /** Pass as `cursor` for the next, older page; null when there is none. */
+  readonly nextCursor: string | null;
+}
+
+/** What the next action reads of each HAR. */
+export type HarForNextAction = Pick<
+  HumanActionRequestView,
+  'harId' | 'status' | 'expiresAt' | 'supersedesHarId' | 'registryEntry'
+>;
+
 /** A HAR that re-asks after expiry asks the same question; one superseding a revoked answer says so. */
 function completeReason(
-  pending: HumanActionRequestView,
-  hars: readonly HumanActionRequestView[],
+  pending: HarForNextAction,
+  hars: readonly HarForNextAction[],
 ): PresentationNextAction['reasonCode'] {
   if (pending.supersedesHarId === null) return HAR_REGISTRY[pending.registryEntry].reasonCode;
   const superseded = hars.find((h) => h.harId === pending.supersedesHarId);
@@ -119,21 +133,27 @@ function completeReason(
 }
 
 /**
- * The one safe next action for a Request, derived from its status and HARs. Pure, so every surface
- * derives the same action from the same state.
+ * The one safe next action for a Request, derived from its status and HARs at `now`. Pure, so every surface
+ * derives the same action from the same state. A PENDING HAR past its deadline is expired whether or not the
+ * sweep has marked it yet (submission refuses it, and reopen expires it first), so it is never offered.
  */
 export function derivePresentationNextAction(
   status: PresentationRequestStatus,
   requestId: PresentationRequestId,
-  hars: readonly HumanActionRequestView[],
-  /** SHA-256 hex of the re-ask arguments ({@link canonicalCapabilityValue}); without it none is offered. */
-  reopenDigest?: string,
+  hars: readonly HarForNextAction[],
+  at: {
+    readonly now: Date;
+    /** SHA-256 hex of the re-ask arguments ({@link canonicalCapabilityValue}); without it none is offered. */
+    readonly reopenDigest?: string | undefined;
+  },
 ): PresentationNextAction | undefined {
+  const { now, reopenDigest } = at;
   if (status === 'AWAITING_HUMAN') {
-    const pending = hars.find((h) => h.status === 'PENDING');
+    const due = (h: HarForNextAction) => h.status === 'PENDING' && Date.parse(h.expiresAt) <= now.getTime();
+    const pending = hars.find((h) => h.status === 'PENDING' && !due(h));
     if (pending === undefined) {
-      // Waiting with nothing to answer: the last HAR expired unanswered, so the next step is to re-ask.
-      return hars.at(-1)?.status === 'EXPIRED' && reopenDigest !== undefined
+      // Waiting with nothing to answer: the last HAR expired unanswered (marked or due), so the next step is to re-ask.
+      return (hars.at(-1)?.status === 'EXPIRED' || hars.some(due)) && reopenDigest !== undefined
         ? reopenAction(requestId, reopenDigest)
         : undefined;
     }

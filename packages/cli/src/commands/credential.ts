@@ -11,7 +11,7 @@ import { cloudHttpFailure, decodeCloudErrorResponse } from '../shared/cloud-erro
 import { CliError } from '../shared/errors';
 import { promptHidden } from '../shared/hidden-prompt';
 
-export const CREDENTIAL_USAGE = 'dino credential set --auth-profile <id> [--har <harId>] [--stdin]';
+export const CREDENTIAL_USAGE = 'dino credential set --auth-profile <id> [--stdin]';
 
 /** Flags that would put a secret on the command line (shell history, process lists); always refused. */
 const SECRET_FLAGS = ['credential', 'secret', 'password', 'token', 'value', 'apiKey', 'key'];
@@ -29,8 +29,8 @@ export interface CredentialDeps {
   readonly sleep: (ms: number) => Promise<void>;
 }
 
-type Opened = { handoff: { handoffId: string; harId: string | null }; link: { url: string } };
-type Stored = { credentialReferenceId: string; version: number; statement: string; nextAction: { harId: string } | null };
+type Opened = { handoff: { handoffId: string }; link: { url: string } };
+type Stored = { credentialReferenceId: string; version: number; statement: string };
 
 function usage(message: string): CliError {
   return new CliError(message, 2, `Usage: ${CREDENTIAL_USAGE}`, undefined, 'usage');
@@ -67,9 +67,8 @@ function parseInvocation(argv: string[], flags: Record<string, unknown>) {
   }
   const authProfileId = flags.authProfile;
   if (typeof authProfileId !== 'string' || authProfileId === '') throw usage('--auth-profile <id> is required');
-  const harId = typeof flags.har === 'string' && flags.har !== '' ? flags.har : undefined;
   const apiUrl = typeof flags.apiUrl === 'string' && flags.apiUrl !== '' ? flags.apiUrl : undefined;
-  return { authProfileId, harId, stdin: flags.stdin === true, apiUrl };
+  return { authProfileId, stdin: flags.stdin === true, apiUrl };
 }
 
 async function request(
@@ -136,7 +135,7 @@ export async function runCredentialFromArgv(
       url: `${base}/v1/tenants/${encodeURIComponent(me.tenantId)}/credential-handoffs`,
       token,
       method: 'POST',
-      body: { authProfileId: inv.authProfileId, ...(inv.harId === undefined ? {} : { harId: inv.harId }) },
+      body: { authProfileId: inv.authProfileId },
     }),
     'Opening the credential handoff',
   );
@@ -152,10 +151,5 @@ export async function runCredentialFromArgv(
   const stored = await expectOk<Stored>(res, 'Storing the credential');
   deps.print(`Stored in Dino custody: Credential Reference ${stored.credentialReferenceId} (version ${stored.version}).`);
   deps.print(stored.statement);
-  if (stored.nextAction !== null) {
-    deps.print(
-      `Next: authorize it by answering Human Action Request ${stored.nextAction.harId} with credentialReferenceId ${stored.credentialReferenceId}.`,
-    );
-  }
   return 0;
 }

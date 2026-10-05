@@ -7,10 +7,10 @@ import { createTracker, createNoopAdapter } from '@dino/analytics';
 import type { AttestationSigner, ToolName, PipelineOptions, Timer } from '@dino/engine';
 import { attestCanonicalResult } from './runner-attestation';
 import { buildCompletedRunnerResult, buildRunnerSchemaSnapshot, failedRunnerResult } from './runner-scan-result';
-import { startCancelWatch } from './cancel-watch';
-import { createScanLogEmitter } from './log-emitter';
-import { resolveRunnerRestSpec } from './runner-rest-spec';
+import { startLiveScanWires, type LiveScanWires } from './runner-live-wires';
+import { resolveRunnerRestSpec, type RunnerRestSpecResult } from './runner-rest-spec';
 import { wireRunnerScanAuth } from './runner-scan-auth-wiring';
+import { acquiredCredential, discoveryAuthOf, discoveryFailed, refusedRunnerResult, type DiscoveryAuth } from './runner-discovery-auth';
 import { buildAdHocRegistry } from '../commands/scan';
 import { discoverOperationsDetailed } from '../shared/base-command';
 import { discoveryRead } from '../shared/introspection-level';
@@ -19,13 +19,14 @@ import { CLI_VERSION } from '../version';
 import type { RunnerRbacWire } from './runner-scan-auth-wiring';
 import type { AcquiredScanAuth } from './scan-auth';
 import type { RunnerState } from './state-store';
+import type { ReleaseRefusalCode } from './runner-hydrate';
 import type { CommandContext } from '../shared/base-command';
-import { ExecutorHttpError, resolveVerificationTarget, type AuthenticationAcquisitionReport, type CredentialOutcomeCode, type DinoResult, type RunnerJob, type RunnerResult, type VerificationTarget, STRICT_DESTINATION } from '@dino/core';
+import { ExecutorHttpError, resolveVerificationTarget, type AuthenticationAcquisitionReport, type CredentialNextAction, type DinoResult, type RunnerJob, type RunnerResult, type VerificationTarget, STRICT_DESTINATION } from '@dino/core';
 
 /** The engine boundary the runner drives: options in, the canonical `DinoResult` out (Cleanup V2 task 4c). */
 export type PipelineRunner = (options: PipelineOptions) => Promise<DinoResult>;
 
-type ScanExecuteDeps = {
+export type ScanExecuteDeps = {
   state: RunnerState;
   assignment: RunnerJob;
   fetchImpl: typeof fetch;
@@ -100,28 +101,6 @@ export function withRunnerScanAuth(
   };
 }
 
-/**
- * The acquired credential in every form it can take, or nothing at all.
- *
- * #1981 — non-bearer auth (api_key / basic_auth / cookie- or header-based login_flow) is carried
- * ONLY by `injections` / `cookieHeader`. R4 threaded the bearer token but dropped these, so those
- * profiles authenticated successfully and then scanned unauthenticated — a silent false-CLEAN.
- * A failed acquisition contributes nothing (never a fabricated credential).
- */
-function acquiredCredential(
-  auth: AcquiredScanAuth,
-  callerToken: string | undefined,
-): Partial<{ authToken: string; injections: AcquiredScanAuth['injections']; cookieHeader: string }> {
-  const token = callerToken ?? (auth.authFailed ? undefined : auth.authToken);
-  if (auth.authFailed) return token === undefined ? {} : { authToken: token };
-  const { injections, cookieHeader } = auth;
-  return {
-    ...(token === undefined ? {} : { authToken: token }),
-    ...(injections === undefined || injections.length === 0 ? {} : { injections }),
-    ...(cookieHeader === undefined || cookieHeader === '' ? {} : { cookieHeader }),
-  };
-}
-
 /** @internal Exported for unit tests (#2124). */
 export function resolveBaseEffectiveTools(agentSet?: string[]): ToolName[] {
   const base = [...VALID_TOOL_NAMES].filter((t) => t !== 'rbac-matrix') as ToolName[];
@@ -155,10 +134,8 @@ export function agentSetAllowsRbac(agentSet?: string[]): boolean {
   return agentSet.some((name) => name === 'rbac-matrix' && VALID_TOOL_NAMES.has(name));
 }
 
-/** @internal Exported for #2087 integration tests. */
-export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
-  const { state, assignment } = deps;
-  const restSpec = await resolveRunnerRestSpec(assignment, {
+async function runnerRestSpec(deps: ScanExecuteDeps): Promise<RunnerRestSpecResult> {
+  return resolveRunnerRestSpec(deps.assignment, {
     fetchImpl: deps.fetchImpl,
     logger: {
       info(msg, data) {
@@ -169,6 +146,18 @@ export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
       },
     },
   });
+}
+
+/**
+ * @internal Exported for #2087 integration tests. DIN-1504: `inputs` carries the spec the caller already resolved and
+ * the scan's credential for discovery; without them the spec is resolved here and discovery is unauthenticated.
+ */
+export async function prepareRunnerScanContext(
+  deps: ScanExecuteDeps,
+  inputs?: { restSpec?: RunnerRestSpecResult; discoveryAuth?: DiscoveryAuth | undefined },
+) {
+  const { state, assignment } = deps;
+  const restSpec = inputs?.restSpec ?? (await runnerRestSpec(deps));
   try {
     const tenantConfig = deps.buildTenantConfig(
       state.tenantId,
@@ -181,6 +170,9 @@ export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
       { url: assignment.targetUrl },
       STRICT_DESTINATION,
     );
+    // DIN-1504: discovery runs with the scan's own credential, in header and cookie form; the endpoint stays the Target
+    // URL (it is logged), so a query-injected key is not sent to discovery.
+    const authHeaders = inputs?.discoveryAuth?.();
     const context: CommandContext = {
       selectedTarget,
       tenantConfig,
@@ -189,8 +181,14 @@ export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
       tracker,
       // The pool runner scans customer-controlled targets: the widened policy can never apply.
       allowPrivateTarget: false,
+      ...(authHeaders === undefined || Object.keys(authHeaders).length === 0 ? {} : { authHeaders }),
     };
-    const discoveryMeta = await discoverOperationsDetailed(context);
+    let discoveryMeta: Awaited<ReturnType<typeof discoverOperationsDetailed>>;
+    try {
+      discoveryMeta = await discoverOperationsDetailed(context);
+    } catch (error) {
+      throw discoveryFailed(error);
+    }
     const registry = buildAdHocRegistry(discoveryMeta.graphqlOperations, state.tenantId);
     // #1850 — the pool runner hits customer-controlled targets; pass the (pinned in prod) fetchImpl so the
     // GraphQL executor's connection is pinned to the validated IP. In tests deps.fetchImpl is the injected mock.
@@ -203,7 +201,7 @@ export async function prepareRunnerScanContext(deps: ScanExecuteDeps) {
     const hasRest = restOps.length > 0;
     return { tracker, registry, executor, effectiveTools, restOps, hasRest, discoveryMeta, selectedTarget };
   } finally {
-    await restSpec.cleanup();
+    if (inputs?.restSpec === undefined) await restSpec.cleanup();
   }
 }
 
@@ -211,7 +209,8 @@ type ResolvedRestExecutor =
   | {
       ok: false;
       error: 'auth_failed';
-      credentialCode?: CredentialOutcomeCode;
+      credentialCode?: ReleaseRefusalCode;
+      credentialNextAction?: CredentialNextAction;
       authentication?: AuthenticationAcquisitionReport;
     }
   | {
@@ -224,7 +223,7 @@ type ResolvedRestExecutor =
       authLost: () => boolean;
       rotatedRefreshToken: () => string | undefined;
       rbac?: RunnerRbacWire;
-      credentialFailure?: () => CredentialOutcomeCode | undefined;
+      credentialFailure?: () => ReleaseRefusalCode | undefined;
       authentication?: () => AuthenticationAcquisitionReport | undefined;
       targetResponse?: (status: number) => void;
     };
@@ -312,40 +311,6 @@ export function rbacPipelineFields(
   return { effectiveTools: [] as ToolName[] };
 }
 
-type LiveScanWires = {
-  emitter: ReturnType<typeof createScanLogEmitter>;
-  watch: { stop: () => void };
-  signal: AbortSignal;
-  cancelObserved: () => boolean;
-};
-
-/**
- * Live emission + cancel observation (Spec B). Both are best-effort and NEVER fail the scan
- * (INV-1); the abort controller is fired ONLY by an observed cloud cancel flag (INV-4).
- */
-function startLiveScanWires(opts: ScanExecuteDeps): LiveScanWires {
-  const controller = new AbortController();
-  let cancelObserved = false;
-  const common = {
-    cloudEndpoint: opts.state.cloudEndpoint,
-    runnerToken: opts.state.token,
-    capabilityToken: opts.assignment.capabilityToken,
-    scanId: opts.assignment.scanId,
-    attemptId: opts.assignment.attemptId,
-    httpClient: opts.cloudHttpClient,
-    timer: opts.timer,
-  };
-  const emitter = createScanLogEmitter(common);
-  const watch = startCancelWatch({
-    ...common,
-    onCancel: () => {
-      cancelObserved = true;
-      controller.abort();
-    },
-  });
-  return { emitter, watch, signal: controller.signal, cancelObserved: () => cancelObserved };
-}
-
 /**
  * #2326: the query parameters every REST request of this scan carries. Auth is acquired before the
  * pipeline is assembled, and its query injections are the only query parameters the runner adds.
@@ -388,9 +353,9 @@ function assemblePipelineArgs(
     effectiveTools,
     tracker: prepared.tracker,
     hasRest: prepared.hasRest,
-    restExecutor: restWire.restExecutor,
+    restExecutor: prepared.hasRest ? restWire.restExecutor : undefined,
     suppliedQueryParams: runnerSuppliedQueryParams(restWire.getAuth),
-    ...(restWire.rbacRestExecutor === undefined
+    ...(restWire.rbacRestExecutor === undefined || !prepared.hasRest
       ? {}
       : { rbacRestExecutor: restWire.rbacRestExecutor }),
     restOps: prepared.restOps,
@@ -414,29 +379,48 @@ function assemblePipelineArgs(
   };
 }
 
-function credentialFailureField(code: CredentialOutcomeCode | undefined): { credentialFailure?: CredentialOutcomeCode } {
+function credentialFailureField(code: ReleaseRefusalCode | undefined): { credentialFailure?: ReleaseRefusalCode } {
   return code === undefined ? {} : { credentialFailure: code };
 }
 
+/**
+ * DIN-1504: the credential decision comes first. The spec is resolved (typed SCAN_API_SPEC_* on failure), then the
+ * grant/hydrate decision; a refusal returns before the runner sends the Target anything. Discovery then runs with the
+ * scan's own credential, so a Target that requires authentication for introspection can be discovered at all.
+ */
 export async function executeRunnerAssignment(
   opts: ScanExecuteDeps & { pipelineRunner: PipelineRunner },
 ): Promise<RunnerResult> {
-  const { assignment, pipelineRunner } = opts;
-  const prepared = await prepareRunnerScanContext(opts);
-  const restWire = await resolveRestExecutor(opts, prepared.hasRest);
-  if (!restWire.ok) {
-    return {
-      scanId: assignment.scanId,
-      attemptId: assignment.attemptId,
-      status: 'failed',
-      error: 'auth_failed',
-      // P1F: a typed credential outcome (revoked / stale / residency / reconfigure …) is reported as-is
-      // so the scan carries an honest, actionable reason instead of a generic auth failure.
-      failureType: restWire.credentialCode ?? 'auth_failed',
-      ...(restWire.authentication === undefined ? {} : { authentication: restWire.authentication }),
-    };
+  const { assignment } = opts;
+  let restSpec: RunnerRestSpecResult;
+  try {
+    restSpec = await runnerRestSpec(opts);
+  } catch (error) {
+    return failedRunnerResult(assignment, error);
   }
+  try {
+    // The REST executor is wired with the credential up front (whether the Target has REST operations is known only
+    // after discovery); the pipeline is handed it only when discovery found some.
+    const restWire = await resolveRestExecutor(opts, true);
+    if (!restWire.ok) return refusedRunnerResult(assignment, restWire);
+    let prepared: PreparedScanContext;
+    try {
+      prepared = await prepareRunnerScanContext(opts, { restSpec, discoveryAuth: discoveryAuthOf(restWire.getAuth) });
+    } catch (error) {
+      return failedRunnerResult(assignment, error, restWire.authentication?.());
+    }
+    return await runPipeline(opts, prepared, restWire);
+  } finally {
+    await restSpec.cleanup();
+  }
+}
 
+async function runPipeline(
+  opts: ScanExecuteDeps & { pipelineRunner: PipelineRunner },
+  prepared: PreparedScanContext,
+  restWire: Extract<ResolvedRestExecutor, { ok: true }>,
+): Promise<RunnerResult> {
+  const { assignment, pipelineRunner } = opts;
   const wires = startLiveScanWires(opts);
 
   try {

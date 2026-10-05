@@ -23,6 +23,14 @@ export const CREDENTIAL_REASON_CODES = [
   // Target Connection outcomes (DIN-1490).
   'target_connection_required',
   'target_connection_pending_authorization',
+  // The version awaits authorization but its HAR expired unanswered: reopen its Presentation Request (DIN-1566).
+  'target_connection_authorization_expired',
+  // A response to its HAR was accepted and the continuation is finishing: resume the Request (DIN-1566).
+  'target_connection_authorization_in_progress',
+  // Its authorization Request can no longer proceed: cancel it (retiring the pending version), then propose (DIN-1566).
+  'target_connection_authorization_unavailable',
+  // Refused only because another identity it binds is refused: fix that identity or propose without it (DIN-1566).
+  'target_connection_bundle_blocked',
   'target_connection_suspended',
   'target_connection_revoked',
   'target_connection_retired',
@@ -37,6 +45,21 @@ export const CREDENTIAL_REASON_CODES = [
   'auth_flow_invalid',
   'auth_flow_unsafe',
   'auth_flow_not_admitted',
+  // Scan execution outcomes (DIN-1503/1504/1505/1506).
+  'scan_api_spec_required',
+  'scan_api_spec_unavailable',
+  'scan_discovery_failed',
+  'scan_runner_unavailable',
+  'scan_runner_failed',
+  // Commercial outcomes (DIN-1257).
+  'billing_plan_required',
+  'billing_payment_action_required',
+  'billing_provider_unavailable',
+  'billing_provider_not_configured',
+  'billing_provider_rejected',
+  'billing_return_url_not_allowed',
+  'billing_checkout_outcome_unknown',
+  'billing_subscription_exists',
 ] as const;
 export type CredentialReasonCode = (typeof CREDENTIAL_REASON_CODES)[number];
 

@@ -414,6 +414,8 @@ export async function runOAuthLogin(deps: LoginDeps): Promise<StoredToken> {
     });
     if (manual !== null) return manual;
   } else {
+    console.info('Opening your browser to sign in to Dino. If it does not open, visit:');
+    console.info(authorizeUrl);
     deps.openBrowser(authorizeUrl);
   }
 
