@@ -4,38 +4,13 @@ Thank you for your interest in contributing to Dino. This guide covers everythin
 
 ---
 
-## Development Setup
+## About this repository
 
-### Prerequisites
+This repository is a read-only source mirror of the Dino CLI, published at each release so you can read and audit the code. It does not build on its own: the CLI depends on internal packages that are not published here.
 
-- Node.js 20+
-- npm 10+
-
-### Install
-
-```bash
-git clone https://github.com/Dino-HQ/dino.git
-cd dino
-npm install
-```
-
-### Build
-
-```bash
-npm run build
-```
-
-### Test
-
-```bash
-npm test
-```
-
-### Lint
-
-```bash
-npm run lint
-```
+- **Use the CLI:** `npm install -g @dino-hq/cli` (Node.js 22+). See the [install guide](https://usedino.dev/docs/install).
+- **Report a bug or request a feature:** open a [GitHub issue](https://github.com/Dino-HQ/dino/issues).
+- **Propose a change:** pull requests are welcome as proposals. A maintainer reviews them and ports accepted changes to the main repository; they land here with the next release.
 
 ---
 
@@ -43,15 +18,10 @@ npm run lint
 
 ```
 packages/
-  cli/          Command-line interface (@dino-hq/cli)
-  core/         Types, config, severity model (@dino-hq/core)
-  agents/       Agent tools — fuzzer, RBAC, etc. (@dino-hq/agents)
-  plugins/      Protocol discovery plugins (@dino-hq/plugins)
-  analytics/    Event tracking adapter (@dino-hq/analytics)
-  reasoning/    AI reasoning layer (@dino-hq/reasoning)
+  cli/       Command-line interface (@dino-hq/cli)
+  core/      Types, config, severity model
+  plugins/   Protocol discovery plugins
 ```
-
-Package dependency chain: `cli → agents → plugins → core`. Each package has its own `package.json`, `tsconfig.json`, and test suite.
 
 ---
 
@@ -81,10 +51,8 @@ Types: `feat`, `fix`, `test`, `docs`, `chore`, `refactor`.
 ### Pull requests
 
 1. Fork the repo and create your branch from `main`
-2. Write tests for new functionality
-3. Ensure `npm test` passes
-4. Ensure `npm run lint` passes
-5. Open a PR with a clear description
+2. Include tests for new behavior
+3. Open a PR with a clear description of the problem and the change
 
 ---
 
@@ -102,8 +70,6 @@ Every PR should include appropriate tests:
 ## Code Style
 
 - TypeScript strict mode
-- Prettier for formatting
-- ESLint for linting
 - No `any` types in new code
 - No `dangerouslySetInnerHTML`
 - No hardcoded credentials or API keys
